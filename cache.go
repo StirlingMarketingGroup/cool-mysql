@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
-	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -53,7 +52,6 @@ var selectGroup = groupcache.NewGroup("selectGroup", 512<<20, groupcache.GetterF
 		db := ctx.Value(ctxDB).(*Database)
 		ch := reflect.MakeChan(reflect.ChanOf(reflect.BothDir, ctx.Value(ctxStrct).(reflect.Type)), 0)
 
-		log.Println("groupcache is getting thar rows")
 		err := db.selectRows(ch.Interface(), key[strings.IndexByte(key, ';')+1:])
 		if err != nil {
 			return err
