@@ -24,7 +24,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	timeZone *time.Location) (db *Database, err error) {
 	writes := mysql.NewConfig()
 	writes.User = wUser
-	writes.Passwd = wUser
+	writes.Passwd = wPass
 	writes.DBName = wSchema
 	writes.Net = "tcp"
 	writes.Addr = net.JoinHostPort(wHost, strconv.Itoa(wPort))
@@ -34,7 +34,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 
 	reads := mysql.NewConfig()
 	reads.User = rUser
-	reads.Passwd = rUser
+	reads.Passwd = rPass
 	reads.DBName = rSchema
 	reads.Net = "tcp"
 	reads.Addr = net.JoinHostPort(rHost, strconv.Itoa(rPort))
@@ -48,6 +48,8 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 // NewFromDSN creates a new Database from config
 // DSN strings for both connections
 func NewFromDSN(writes, reads string) (db *Database, err error) {
+	db = new(Database)
+
 	db.Writes, err = sql.Open("mysql", writes)
 	if err != nil {
 		return nil, err
@@ -73,16 +75,4 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	}
 
 	return
-}
-
-// Select selects one or more rows into the
-// struct or chan of structs in the destination
-func (db *Database) Select(dest interface{}, query string, cache time.Duration) chan error {
-	errCh := make(chan error)
-
-	go func() {
-
-	}()
-
-	return errCh
 }
