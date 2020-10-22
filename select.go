@@ -13,7 +13,11 @@ import (
 
 // Select selects one or more rows into the
 // chan of structs in the destination
-func (db *Database) Select(dest interface{}, query string, cache time.Duration) error {
+func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
+	query = ReplaceParams(query, params...)
+	// fmt.Println(query)
+	// os.Exit(0)
+
 	if cache == 0 {
 		return db.selectRows(dest, query)
 	}

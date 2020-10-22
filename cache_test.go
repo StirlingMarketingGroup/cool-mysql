@@ -1,91 +1,103 @@
 package mysql
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/StirlingMarketingGroup/go-smg/mysql"
+	smgMySQL "github.com/StirlingMarketingGroup/go-smg/mysql"
+	"github.com/shopspring/decimal"
 )
 
-func BenchmarkCoolSelectCached(b *testing.B) {
-	db, err := New("rfamro", "", "Rfam", "mysql-rfam-public.ebi.ac.uk", 4497,
-		"rfamro", "", "Rfam", "mysql-rfam-public.ebi.ac.uk", 4497,
+func BenchmarkCoolSelectIsCached(b *testing.B) {
+	db, err := New(user, pass, schema, host, port,
+		user, pass, schema, host, port,
 		nil)
 	if err != nil {
 		panic(err)
 	}
 
-	type author struct {
-		AuthorID int     `mysql:"author_id"`
-		Name     string  `mysql:"name"`
-		LastName *string `mysql:"last_name"`
-		Initials *string `mysql:"initials"`
-		Orcid    *string `mysql:"orcid"`
-		Synonyms *string `mysql:"synonyms"`
+	type genomeRow struct {
+		UpID            string          `mysql:"upid"`
+		AssemblyAcc     sql.NullString  `mysql:"assembly_acc"`
+		AssemblyVersion sql.NullInt32   `mysql:"assembly_version"`
+		TotalLength     decimal.Decimal `mysql:"total_length"`
+		Created         time.Time       `mysql:"created"`
 	}
 
-	var authorsCh chan author
+	var genome genomeRow
 
-	var authorID int
-	var name string
-
+	var genomeCh chan genomeRow
 	var i int
 	for n := 0; n < b.N; n++ {
-		authorsCh = make(chan author)
-		err := db.Select(authorsCh, "select`author_id`,`name`,`last_name`,`initials`,`orcid`,`synonyms`from`author`", time.Minute)
+		genomeCh = make(chan genomeRow)
+		err := db.Select(genomeCh, "select`upid`,`assembly_acc`,`assembly_version`,`total_length`,`created`from`genome`where`total_length`>@@TotalLength limit 1000", cacheTime, Params{
+			"TotalLength": 28111,
+		})
 		if err != nil {
 			panic(err)
 		}
 
-		for r := range authorsCh {
-			authorID = r.AuthorID
-			name = r.Name
+		for r := range genomeCh {
+			genome = r
 
 			i++
 		}
 	}
 
-	fmt.Println(i, authorID, name)
+	fmt.Println(i, genome)
 }
 
-func BenchmarkSMGSelectCached(b *testing.B) {
-	db, err := mysql.NewDataBase(
+func BenchmarkSMGSelectIsCached(b *testing.B) {
+	db, err := smgMySQL.NewDataBase(
 		fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&collation=utf8mb4_unicode_ci",
-			"rfamro",
-			"",
-			"mysql-rfam-public.ebi.ac.uk",
-			4497,
-			"Rfam",
+			user,
+			pass,
+			host,
+			port,
+			schema,
 		),
 		fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&collation=utf8mb4_unicode_ci",
-			"rfamro",
-			"",
-			"mysql-rfam-public.ebi.ac.uk",
-			4497,
-			"Rfam",
+			user,
+			pass,
+			host,
+			port,
+			schema,
 		),
 	)
 	if err != nil {
 		panic(err)
 	}
 
-	var authorID int
-	var name string
+	type genomeRow struct {
+		UpID            string
+		AssemblyAcc     string
+		AssemblyVersion int
+		TotalLength     decimal.Decimal
+		Created         time.Time
+	}
+
+	var genome genomeRow
 
 	var i int
 	for n := 0; n < b.N; n++ {
-		d, err := db.Get("select`author_id`,`name`,`last_name`,`initials`,`orcid`,`synonyms`from`author`", time.Minute)
+		d, err := db.Get("select`upid`,`assembly_acc`,`assembly_version`,`total_length`,`created`from`genome`where`total_length`>@@TotalLength limit 1000", cacheTime, smgMySQL.Params{
+			"TotalLength": 28111,
+		})
 		if err != nil {
 			panic(err)
 		}
 		for _, r := range d {
-			authorID = mysql.Int(r, "author_id")
-			name = mysql.Str(r, "name")
+			genome.UpID = smgMySQL.Str(r, "upid")
+			genome.AssemblyAcc = smgMySQL.Str(r, "assembly_acc")
+			genome.AssemblyVersion = smgMySQL.Int(r, "assembly_version")
+			genome.TotalLength = smgMySQL.Decimal(r, "total_length")
+			genome.Created = smgMySQL.Time(r, "created", smgMySQL.Date)
 
 			i++
 		}
 	}
 
-	fmt.Println(i, authorID, name)
+	fmt.Println(i, genome)
 }

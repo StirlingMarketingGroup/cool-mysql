@@ -22,7 +22,10 @@ func getCacheKey(query string, c time.Duration) string {
 	// Really important step: basically we use the first 8 bytes of the hash
 	// to get a relatively unique (maybe not but that's okay here) int for this
 	// query, and get the remainder of that int/the cache duration (in nanoseconds)...
-	r := time.Duration(m.Sum64() % uint64(c.Nanoseconds()))
+	var r time.Duration
+	if c != 0 {
+		r = time.Duration(m.Sum64() % uint64(c.Nanoseconds()))
+	}
 
 	// ... so that we have a number of nano seconds to offset our current
 	// time by that's between 0 & the cache duration, essentially creating a unique time slot
@@ -44,6 +47,7 @@ type ctxValue int
 
 const (
 	ctxDB ctxValue = iota
+	ctxCh
 	ctxStrct
 )
 
