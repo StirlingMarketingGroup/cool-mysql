@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"time"
 
@@ -15,8 +17,8 @@ import (
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
 	query = ReplaceParams(query, params...)
-	// fmt.Println(query)
-	// os.Exit(0)
+	fmt.Println(query)
+	os.Exit(0)
 
 	if cache == 0 {
 		return db.selectRows(dest, query)

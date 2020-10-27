@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/shopspring/decimal"
 )
 
 // Params are a map of paramterer names to values
 // use in the query like `select @@Name`
 type Params map[string]interface{}
 
-var replaceParamsPool = sync.Pool{
+var stringsBuilderPool = sync.Pool{
 	New: func() interface{} {
 		return new(strings.Builder)
 	},
@@ -42,8 +44,8 @@ func ReplaceParams(query string, params ...Params) string {
 	start := 0
 	l := len(query)
 
-	s := replaceParamsPool.Get().(*strings.Builder)
-	defer replaceParamsPool.Put(s)
+	s := stringsBuilderPool.Get().(*strings.Builder)
+	defer stringsBuilderPool.Put(s)
 	s.Reset()
 
 	next := func() {
@@ -112,7 +114,7 @@ func ReplaceParams(query string, params ...Params) string {
 				k := query[start : i+1]
 				v, ok := params[0][k]
 				if ok {
-					WriteEncoded(s, v)
+					WriteEncoded(s, v, true)
 				} else {
 					s.WriteString("@@")
 					s.WriteString(k)
@@ -135,21 +137,20 @@ func ReplaceParams(query string, params ...Params) string {
 // safely to the query, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func WriteEncoded(w *strings.Builder, x interface{}) {
-	if isNil(x) {
+func WriteEncoded(w *strings.Builder, x interface{}, possiblyNull bool) {
+	if possiblyNull && isNil(x) {
 		w.WriteString("null")
 		return
 	}
 
 	h := hex.NewEncoder(w)
 
-	// first handle literals, and changing types to their underlying types
 	switch v := x.(type) {
 	case Literal:
 		w.WriteString(string(v))
 		return
 	case JSON:
-		WriteEncoded(w, string(v))
+		WriteEncoded(w, string(v), false)
 		return
 	case bool:
 		if v {
@@ -181,7 +182,18 @@ func WriteEncoded(w *strings.Builder, x interface{}) {
 		complex64, complex128:
 		fmt.Fprintf(w, "%v", v)
 		return
+	case decimal.Decimal:
+		w.WriteString(v.String())
+		return
+	case fmt.Stringer:
+		WriteEncoded(w, v.String(), false)
+		return
 	}
+
+	// r := reflect.ValueOf(x)
+	// switch true {
+	// 	case r.Type() == reflect.SliceOf(reflect.)
+	// }
 
 	panic(fmt.Errorf("not sure how to interpret %q of type %T", x, x))
 }

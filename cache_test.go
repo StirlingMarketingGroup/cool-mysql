@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/StirlingMarketingGroup/go-smg/bid2"
 	smgMySQL "github.com/StirlingMarketingGroup/go-smg/mysql"
 	"github.com/shopspring/decimal"
 )
@@ -33,7 +34,7 @@ func BenchmarkCoolSelectIsCached(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		genomeCh = make(chan genomeRow)
 		err := db.Select(genomeCh, "select`upid`,`assembly_acc`,`assembly_version`,`total_length`,`created`from`genome`where`total_length`>@@TotalLength limit 1000", cacheTime, Params{
-			"TotalLength": 28111,
+			"TotalLength": bid2.New(),
 		})
 		if err != nil {
 			panic(err)
