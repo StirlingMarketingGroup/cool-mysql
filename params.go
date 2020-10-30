@@ -133,6 +133,10 @@ func ReplaceParams(query string, params ...Params) string {
 	return s.String()
 }
 
+type Encodable interface {
+	CoolMySQLEncode(*strings.Builder)
+}
+
 // WriteEncoded takes a string builder and any value and writes it
 // safely to the query, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
@@ -146,11 +150,15 @@ func WriteEncoded(w *strings.Builder, x interface{}, possiblyNull bool) {
 	h := hex.NewEncoder(w)
 
 	switch v := x.(type) {
+
 	case Literal:
 		w.WriteString(string(v))
 		return
 	case JSON:
 		WriteEncoded(w, string(v), false)
+		return
+	case Encodable:
+		v.CoolMySQLEncode(w)
 		return
 	case bool:
 		if v {
@@ -184,9 +192,6 @@ func WriteEncoded(w *strings.Builder, x interface{}, possiblyNull bool) {
 		return
 	case decimal.Decimal:
 		w.WriteString(v.String())
-		return
-	case fmt.Stringer:
-		WriteEncoded(w, v.String(), false)
 		return
 	}
 

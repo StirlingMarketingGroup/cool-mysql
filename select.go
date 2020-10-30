@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,32 @@ import (
 	"github.com/golang/groupcache"
 )
 
+// ErrDestInvalidType is an error about what types are allowed
+var ErrDestInvalidType = errors.New("dest must be a channel of structs")
+
+func checkDest(dest interface{}) (reflect.Value, reflect.Type, error) {
+	ref := reflect.ValueOf(dest)
+	kind := ref.Kind()
+	if kind == reflect.Struct {
+		return ref, ref.Type(), nil
+	}
+
+	if kind != reflect.Chan && kind != reflect.Slice {
+		return reflect.Value{}, nil, ErrDestInvalidType
+	}
+
+	strct := ref.Type().Elem()
+	if strct.Kind() != reflect.Struct {
+		if kind == reflect.Chan {
+			ref.Close()
+		}
+
+		return reflect.Value{}, nil, ErrDestInvalidType
+	}
+
+	return ref, strct, nil
+}
+
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
@@ -20,11 +47,11 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	fmt.Println(query)
 	os.Exit(0)
 
-	if cache == 0 {
-		return db.selectRows(dest, query)
-	}
+	// if cache == 0 {
+	return db.selectRows(dest, query)
+	// }
 
-	ch, strct, err := checkChanOfStruct(dest)
+	ch, strct, err := checkDest(dest)
 	if err != nil {
 		return err
 	}
@@ -64,7 +91,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 // selectRows is the real function responsible for
 // writing the rows as structs to the given channel
 func (db *Database) selectRows(dest interface{}, query string) error {
-	ch, strct, err := checkChanOfStruct(dest)
+	ch, strct, err := checkDest(dest)
 	if err != nil {
 		return err
 	}
