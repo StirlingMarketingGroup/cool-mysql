@@ -3,39 +3,54 @@ package mysql
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"errors"
 	"io"
 	"reflect"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/golang/groupcache"
 )
 
 // ErrDestInvalidType is an error about what types are allowed
-var ErrDestInvalidType = errors.New("dest must be a channel of structs")
+var ErrDestInvalidType = errors.New("dest must be a channel of structs, ptr to a slice of structs, or a pointer to a single struct")
 
-func checkDest(dest interface{}) (reflect.Value, reflect.Type, error) {
+func checkDest(dest interface{}) (reflect.Value, reflect.Kind, reflect.Type, error) {
 	ref := reflect.ValueOf(dest)
 	kind := ref.Kind()
-	if kind == reflect.Struct {
-		return ref, ref.Type(), nil
-	}
 
-	if kind != reflect.Chan && kind != reflect.Slice {
-		return reflect.Value{}, nil, ErrDestInvalidType
-	}
+	if kind == reflect.Ptr {
+		elem := ref.Elem()
+		kind = elem.Kind()
 
-	strct := ref.Type().Elem()
-	if strct.Kind() != reflect.Struct {
-		if kind == reflect.Chan {
-			ref.Close()
+		switch kind {
+		case reflect.Struct:
+			// if dest is a single struct
+			return ref, kind, elem.Type(), nil
+		case reflect.Slice:
+			// if dest is a pointer to a slice of structs
+			strct := elem.Type().Elem()
+			if strct.Kind() == reflect.Struct {
+				return ref, kind, strct, nil
+			}
 		}
 
-		return reflect.Value{}, nil, ErrDestInvalidType
+		goto Err
 	}
 
-	return ref, strct, nil
+	// if dest is a pointer to a slice of structs
+	if kind == reflect.Chan {
+		strct := ref.Type().Elem()
+		if strct.Kind() == reflect.Struct {
+			return ref, kind, strct, nil
+		}
+	}
+
+Err:
+	spew.Dump(kind)
+	return reflect.Value{}, 0, nil, ErrDestInvalidType
 }
 
 // Select selects one or more rows into the
@@ -47,7 +62,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	return db.selectRows(dest, query)
 	// }
 
-	ch, strct, err := checkDest(dest)
+	refDest, _, strct, err := checkDest(dest)
 	if err != nil {
 		return err
 	}
@@ -59,12 +74,12 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	var buf []byte
 	err = selectGroup.Get(ctx, getCacheKey(query, cache), groupcache.AllocatingByteSliceSink(&buf))
 	if err != nil {
-		ch.Close()
+		refDest.Close()
 		return err
 	}
 
 	go func() {
-		defer ch.Close()
+		defer refDest.Close()
 
 		dec := gob.NewDecoder(bytes.NewReader(buf))
 		for {
@@ -77,7 +92,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 				panic(err)
 			}
 
-			ch.Send(s)
+			refDest.Send(s)
 		}
 	}()
 
@@ -87,19 +102,23 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 // selectRows is the real function responsible for
 // writing the rows as structs to the given channel
 func (db *Database) selectRows(dest interface{}, query string) error {
-	ch, strct, err := checkDest(dest)
+	refDest, kind, strct, err := checkDest(dest)
 	if err != nil {
 		return err
 	}
 
 	rows, err := db.Reads.Query(query)
 	if err != nil {
-		ch.Close()
+		if kind == reflect.Chan {
+			refDest.Close()
+		}
 		return err
 	}
 
-	go func() {
-		defer ch.Close()
+	fn := func() error {
+		if kind == reflect.Chan {
+			defer refDest.Close()
+		}
 		defer rows.Close()
 
 		cols, _ := rows.Columns()
@@ -120,7 +139,11 @@ func (db *Database) selectRows(dest interface{}, query string) error {
 
 		var x interface{}
 
+		ran := false
+	Rows:
 		for rows.Next() {
+			ran = true
+
 			s := reflect.New(strct).Elem()
 
 			for i, j := range fieldsPositions {
@@ -134,11 +157,33 @@ func (db *Database) selectRows(dest interface{}, query string) error {
 			if err != nil {
 				panic(err)
 			}
-			ch.Send(s)
+			switch kind {
+			case reflect.Chan:
+				refDest.Send(s)
+			case reflect.Slice:
+				refDest.Set(reflect.Append(refDest, s))
+			case reflect.Struct:
+				refDest.Set(s)
+				break Rows
+			}
 
 			x = nil
 		}
-	}()
+
+		if !ran && kind == reflect.Struct {
+			return sql.ErrNoRows
+		}
+
+		return nil
+	}
+
+	switch kind {
+	case reflect.Chan:
+		go fn()
+	case reflect.Slice, reflect.Struct:
+		refDest = refDest.Elem()
+		return fn()
+	}
 
 	return nil
 }

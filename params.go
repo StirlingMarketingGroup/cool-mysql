@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -168,7 +169,7 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 	kind := ref.Kind()
 	switch kind {
 	case reflect.Bool:
-		v := x.(bool)
+		v := ref.Bool()
 		if v {
 			s.WriteByte('1')
 		} else {
@@ -176,7 +177,7 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 		}
 		return
 	case reflect.String:
-		v := x.(string)
+		v := ref.String()
 		if len(v) != 0 {
 			s.WriteString("_utf8mb4 0x")
 			h.Write([]byte(v))
@@ -185,11 +186,17 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 			s.WriteString("''")
 		}
 		return
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64,
-		reflect.Complex64, reflect.Complex128:
-		fmt.Fprintf(s, "%v", x)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		s.WriteString(strconv.FormatInt(ref.Int(), 10))
+		return
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		s.WriteString(strconv.FormatUint(ref.Uint(), 10))
+		return
+	case reflect.Complex64, reflect.Complex128:
+		s.WriteString(strconv.FormatComplex(ref.Complex(), 'E', -1, 64))
+		return
+	case reflect.Float32, reflect.Float64:
+		s.WriteString(strconv.FormatFloat(ref.Float(), 'E', -1, 64))
 		return
 	case reflect.Slice:
 		switch subKind := ref.Type().Elem().Kind(); subKind {

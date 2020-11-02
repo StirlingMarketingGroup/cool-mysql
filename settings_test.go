@@ -13,7 +13,7 @@ const host = "mysql-rfam-public.ebi.ac.uk"
 const port = 4497
 const schema = "Rfam"
 
-const cacheTime = time.Minute
+const cacheTime = 1
 
 type genomeRow struct {
 	UpID            string
