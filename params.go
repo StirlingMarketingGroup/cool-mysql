@@ -3,6 +3,7 @@ package mysql
 import (
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -21,7 +22,7 @@ var stringsBuilderPool = sync.Pool{
 
 // ReplaceParams replaces the `@@` parameters in a query
 // with their values from the map(s)
-// Takes multiple "sets" of params for convienece, so we don't
+// Takes multiple "sets" of params for convenience, so we don't
 // have to specify params if there aren't any, but each param will
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
@@ -133,6 +134,8 @@ func ReplaceParams(query string, params ...Params) string {
 	return s.String()
 }
 
+// Encodable is a type with it's own cool mysql
+// encode method for safe replacing
 type Encodable interface {
 	CoolMySQLEncode(*strings.Builder)
 }
@@ -141,64 +144,82 @@ type Encodable interface {
 // safely to the query, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func WriteEncoded(w *strings.Builder, x interface{}, possiblyNull bool) {
+func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 	if possiblyNull && isNil(x) {
-		w.WriteString("null")
+		s.WriteString("null")
 		return
 	}
-
-	h := hex.NewEncoder(w)
 
 	switch v := x.(type) {
-
-	case Literal:
-		w.WriteString(string(v))
-		return
-	case JSON:
-		WriteEncoded(w, string(v), false)
-		return
 	case Encodable:
-		v.CoolMySQLEncode(w)
-		return
-	case bool:
-		if v {
-			w.WriteByte('1')
-		} else {
-			w.WriteByte('0')
-		}
-		return
-	case string:
-		if len(v) != 0 {
-			w.WriteString("_utf8mb4 0x")
-			h.Write([]byte(v))
-			w.WriteString(" collate utf8mb4_unicode_ci")
-		} else {
-			w.WriteString("''")
-		}
-		return
-	case []byte:
-		if len(v) != 0 {
-			w.WriteString("0x")
-			h.Write([]byte(v))
-		} else {
-			w.WriteString("''")
-		}
-		return
-	case int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64,
-		complex64, complex128:
-		fmt.Fprintf(w, "%v", v)
+		v.CoolMySQLEncode(s)
 		return
 	case decimal.Decimal:
-		w.WriteString(v.String())
+		s.WriteString(v.String())
 		return
 	}
 
-	// r := reflect.ValueOf(x)
-	// switch true {
-	// 	case r.Type() == reflect.SliceOf(reflect.)
-	// }
+	h := hex.NewEncoder(s)
+
+	// check the reflect kind, since we want to
+	// deal with underyling value types if they didn't
+	// explicitly set a way to be encoded
+	ref := reflect.ValueOf(x)
+	kind := ref.Kind()
+	switch kind {
+	case reflect.Bool:
+		v := x.(bool)
+		if v {
+			s.WriteByte('1')
+		} else {
+			s.WriteByte('0')
+		}
+		return
+	case reflect.String:
+		v := x.(string)
+		if len(v) != 0 {
+			s.WriteString("_utf8mb4 0x")
+			h.Write([]byte(v))
+			s.WriteString(" collate utf8mb4_unicode_ci")
+		} else {
+			s.WriteString("''")
+		}
+		return
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128:
+		fmt.Fprintf(s, "%v", x)
+		return
+	case reflect.Slice:
+		switch subKind := ref.Type().Elem().Kind(); subKind {
+		case reflect.Uint8:
+			v := ref.Bytes()
+			if len(v) != 0 {
+				s.WriteString("0x")
+				h.Write(v)
+			} else {
+				s.WriteString("''")
+			}
+			return
+		}
+	}
+
+	if kind == reflect.Slice || kind == reflect.Map {
+		refLen := ref.Len()
+		if refLen == 0 {
+			s.WriteString("(null)")
+		}
+		s.WriteByte('(')
+		for i := 0; i < refLen; i++ {
+			if i != 0 {
+				s.WriteByte(',')
+			}
+			WriteEncoded(s, ref.Index(i).Interface(), true)
+		}
+		s.WriteByte(')')
+		return
+	}
 
 	panic(fmt.Errorf("not sure how to interpret %q of type %T", x, x))
 }
