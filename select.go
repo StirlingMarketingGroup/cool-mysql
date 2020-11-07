@@ -1,17 +1,12 @@
 package mysql
 
 import (
-	"bytes"
-	"context"
 	"database/sql"
-	"encoding/gob"
 	"errors"
-	"io"
 	"reflect"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/golang/groupcache"
 )
 
 // ErrDestInvalidType is an error about what types are allowed
@@ -27,7 +22,6 @@ func checkDest(dest interface{}) (reflect.Value, reflect.Kind, reflect.Type, err
 
 		switch kind {
 		case reflect.Struct:
-			// if dest is a single struct
 			return ref, kind, elem.Type(), nil
 		case reflect.Slice:
 			// if dest is a pointer to a slice of structs
@@ -58,50 +52,6 @@ Err:
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
 	query = ReplaceParams(query, params...)
 
-	// if cache == 0 {
-	return db.selectRows(dest, query)
-	// }
-
-	refDest, _, strct, err := checkDest(dest)
-	if err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-	ctx = context.WithValue(ctx, ctxDB, db)
-	ctx = context.WithValue(ctx, ctxStrct, strct)
-
-	var buf []byte
-	err = selectGroup.Get(ctx, getCacheKey(query, cache), groupcache.AllocatingByteSliceSink(&buf))
-	if err != nil {
-		refDest.Close()
-		return err
-	}
-
-	go func() {
-		defer refDest.Close()
-
-		dec := gob.NewDecoder(bytes.NewReader(buf))
-		for {
-			s := reflect.New(strct).Elem()
-			err = dec.Decode(s.Addr().Interface())
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				panic(err)
-			}
-
-			refDest.Send(s)
-		}
-	}()
-
-	return nil
-}
-
-// selectRows is the real function responsible for
-// writing the rows as structs to the given channel
-func (db *Database) selectRows(dest interface{}, query string) error {
 	refDest, kind, strct, err := checkDest(dest)
 	if err != nil {
 		return err
@@ -129,7 +79,7 @@ func (db *Database) selectRows(dest interface{}, query string) error {
 		for i, c := range cols {
 			for j := 0; j < strct.NumField(); j++ {
 				f := strct.Field(j)
-				if f.Tag.Get("mysql") == c || f.Name == c {
+				if f.Name == c || f.Tag.Get("mysql") == c {
 					fieldsPositions[i] = j
 					continue colsLoop
 				}
@@ -148,6 +98,11 @@ func (db *Database) selectRows(dest interface{}, query string) error {
 
 			for i, j := range fieldsPositions {
 				if j != -1 {
+					switch s.FieldByIndex(i).Kind() {
+					case reflect.Array, reflect.Slice, reflect.Map:
+
+					}
+
 					pointers[i] = s.Field(j).Addr().Interface()
 				} else {
 					pointers[i] = &x
