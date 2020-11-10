@@ -16,6 +16,8 @@ type Database struct {
 
 	Logging bool
 	Log     []string
+
+	die bool
 }
 
 // New creates a new Database
