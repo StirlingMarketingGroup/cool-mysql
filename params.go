@@ -160,7 +160,9 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 		s.WriteString(v.String())
 		return
 	case time.Time:
+		s.WriteByte('\'')
 		s.WriteString(v.Format("2006-01-02 15:04:05.000000"))
+		s.WriteByte('\'')
 		return
 	}
 
