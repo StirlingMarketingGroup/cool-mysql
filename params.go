@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -157,6 +158,9 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 		return
 	case decimal.Decimal:
 		s.WriteString(v.String())
+		return
+	case time.Time:
+		s.WriteString(v.Format("2006-01-02 15:04:05.000000"))
 		return
 	}
 
