@@ -65,7 +65,8 @@ type field struct {
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
-	query = ReplaceParams(query, params...)
+	originalQuery := query
+	query, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(query)
 		os.Exit(0)
@@ -81,7 +82,12 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		if kind == reflect.Chan {
 			refDest.Close()
 		}
-		return err
+		return Error{
+			Err:           err,
+			OriginalQuery: originalQuery,
+			ReplacedQuery: query,
+			Params:        mergedParams,
+		}
 	}
 
 	fn := func() error {
