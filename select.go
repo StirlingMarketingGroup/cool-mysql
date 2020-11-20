@@ -113,9 +113,10 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 						name = f.Name
 					}
 					kind := f.Type.Kind()
+					spew.Dump(name, kind)
 					fields[j] = &field{
 						name:     name,
-						jsonable: kind == reflect.Array || (kind == reflect.Slice && f.Type.Elem().Kind() != reflect.Uint8) || kind == reflect.Map,
+						jsonable: kind == reflect.Array || (kind == reflect.Slice && f.Type.Elem().Kind() != reflect.Uint8) || kind == reflect.Map || kind == reflect.Struct,
 					}
 				}
 				if fields[j].taken {
