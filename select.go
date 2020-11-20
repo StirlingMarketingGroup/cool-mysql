@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-
-	"github.com/davecgh/go-spew/spew"
 )
 
 // ErrDestInvalidType is an error about what types are allowed
@@ -47,7 +45,6 @@ func checkDest(dest interface{}) (reflect.Value, reflect.Kind, reflect.Type, err
 	}
 
 Err:
-	spew.Dump(kind)
 	return reflect.Value{}, 0, nil, ErrDestInvalidType
 }
 
@@ -113,7 +110,6 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 						name = f.Name
 					}
 					kind := f.Type.Kind()
-					spew.Dump(name, kind)
 					fields[j] = &field{
 						name:     name,
 						jsonable: kind == reflect.Array || (kind == reflect.Slice && f.Type.Elem().Kind() != reflect.Uint8) || kind == reflect.Map || kind == reflect.Struct,
