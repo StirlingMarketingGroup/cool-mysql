@@ -153,6 +153,72 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 	}
 
 	switch v := x.(type) {
+	case bool:
+		if v {
+			s.WriteByte('1')
+		} else {
+			s.WriteByte('0')
+		}
+		return
+	case string:
+		if len(v) != 0 {
+			s.WriteString("_utf8mb4 0x")
+			hex.NewEncoder(s).Write([]byte(v))
+			s.WriteString(" collate utf8mb4_unicode_ci")
+		} else {
+			s.WriteString("''")
+		}
+		return
+	case []byte:
+		if len(v) != 0 {
+			s.WriteString("0x")
+			hex.NewEncoder(s).Write([]byte(v))
+		} else {
+			s.WriteString("''")
+		}
+		return
+	case int:
+		s.WriteString(strconv.FormatInt(int64(v), 10))
+		return
+	case int8:
+		s.WriteString(strconv.FormatInt(int64(v), 10))
+		return
+	case int16:
+		s.WriteString(strconv.FormatInt(int64(v), 10))
+		return
+	case int32:
+		s.WriteString(strconv.FormatInt(int64(v), 10))
+		return
+	case int64:
+		s.WriteString(strconv.FormatInt(v, 10))
+		return
+	case uint:
+		s.WriteString(strconv.FormatUint(uint64(v), 10))
+		return
+	case uint8:
+		s.WriteString(strconv.FormatUint(uint64(v), 10))
+		return
+	case uint16:
+		s.WriteString(strconv.FormatUint(uint64(v), 10))
+		return
+	case uint32:
+		s.WriteString(strconv.FormatUint(uint64(v), 10))
+		return
+	case uint64:
+		s.WriteString(strconv.FormatUint(uint64(v), 10))
+		return
+	case complex64:
+		s.WriteString(strconv.FormatComplex(complex128(v), 'E', -1, 64))
+		return
+	case complex128:
+		s.WriteString(strconv.FormatComplex(complex128(v), 'E', -1, 64))
+		return
+	case float32:
+		s.WriteString(strconv.FormatFloat(float64(v), 'E', -1, 64))
+		return
+	case float64:
+		s.WriteString(strconv.FormatFloat(float64(v), 'E', -1, 64))
+		return
 	case Encodable:
 		v.CoolMySQLEncode(s)
 		return
@@ -165,8 +231,6 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 		s.WriteByte('\'')
 		return
 	}
-
-	h := hex.NewEncoder(s)
 
 	// check the reflect kind, since we want to
 	// deal with underyling value types if they didn't
@@ -186,7 +250,7 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 		v := ref.String()
 		if len(v) != 0 {
 			s.WriteString("_utf8mb4 0x")
-			h.Write([]byte(v))
+			hex.NewEncoder(s).Write([]byte(v))
 			s.WriteString(" collate utf8mb4_unicode_ci")
 		} else {
 			s.WriteString("''")
@@ -210,7 +274,7 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 			v := ref.Bytes()
 			if len(v) != 0 {
 				s.WriteString("0x")
-				h.Write(v)
+				hex.NewEncoder(s).Write(v)
 			} else {
 				s.WriteString("''")
 			}

@@ -1,11 +1,7 @@
 package mysql
 
 import (
-	"os"
 	"testing"
-
-	"github.com/StirlingMarketingGroup/go-smg/bid2"
-	"github.com/davecgh/go-spew/spew"
 )
 
 func BenchmarkCoolSelectJSONChanNotCached(b *testing.B) {
@@ -22,13 +18,9 @@ func BenchmarkCoolSelectJSONChanNotCached(b *testing.B) {
 		Map     map[string][]string
 		Bytes   []byte
 		Base64  [][]byte
-		Bid2s   map[bid2.String][]bid2.Bid2
 	}
 
-	var test testRow
-
 	var testCh chan testRow
-	var i int
 	for n := 0; n < b.N; n++ {
 		testCh = make(chan testRow)
 		err := db.Select(testCh, "select'[1,2,3]'`Ints`,'[\"Swick\",\"Yeet\",\"swagswag\"]'`Strings`,"+
@@ -37,15 +29,8 @@ func BenchmarkCoolSelectJSONChanNotCached(b *testing.B) {
 		if err != nil {
 			panic(err)
 		}
-
-		for r := range testCh {
-			test = r
-
-			i++
+		for range testCh {
+			// swag
 		}
 	}
-
-	// fmt.Println(i, test)
-	spew.Dump(i, test)
-	os.Exit(0)
 }

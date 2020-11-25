@@ -49,8 +49,9 @@ Err:
 }
 
 type column struct {
-	structIndex int
-	jsonable    bool
+	structIndex   uint16
+	jsonableIndex uint16
+	jsonable      bool
 }
 
 type field struct {
@@ -103,6 +104,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 		strctEx := reflect.New(strct).Elem()
 
+		var jsonablesCount uint16
 		for i, c := range cols {
 			for j := 0; j < fieldsLen; j++ {
 				if fields[j] == nil {
@@ -116,9 +118,9 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 					var jsonable bool
 
 					switch kind {
-					case reflect.Array, reflect.Map, reflect.Struct:
+					case reflect.Map, reflect.Struct:
 						jsonable = true
-					case reflect.Slice:
+					case reflect.Array, reflect.Slice:
 						// if it's a slice, but not a byte slice
 						if f.Type.Elem().Kind() != reflect.Uint8 {
 							jsonable = true
@@ -151,10 +153,15 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				if fields[j].name == c {
 					columns[i] = &column{
-						structIndex: j,
-						jsonable:    fields[j].jsonable,
+						structIndex:   uint16(j),
+						jsonable:      fields[j].jsonable,
+						jsonableIndex: jsonablesCount,
 					}
 					fields[j].taken = true
+
+					if fields[j].jsonable {
+						jsonablesCount++
+					}
 				}
 			}
 		}
@@ -162,20 +169,22 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		var x interface{}
 
 		ran := false
+
+		s := reflect.New(strct).Elem()
+		var jsonables [][]byte
+		if jsonablesCount > 0 {
+			jsonables = make([][]byte, jsonablesCount)
+		}
 	Rows:
 		for rows.Next() {
 			ran = true
 
-			s := reflect.New(strct).Elem()
-
-			jsonables := make([][]byte, len(columns))
-
 			for i, c := range columns {
 				if c != nil {
 					if !c.jsonable {
-						pointers[i] = s.Field(c.structIndex).Addr().Interface()
+						pointers[i] = s.Field(int(c.structIndex)).Addr().Interface()
 					} else {
-						pointers[i] = &jsonables[i]
+						pointers[i] = &jsonables[c.jsonableIndex]
 					}
 				} else {
 					pointers[i] = &x
@@ -191,14 +200,14 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 				}
 			}
 
-			for i, c := range columns {
-				if jsonables[i] == nil {
+			for _, c := range columns {
+				if c == nil || !c.jsonable || jsonables[c.jsonableIndex] == nil {
 					continue
 				}
 
-				err := json.Unmarshal(jsonables[i], s.Field(c.structIndex).Addr().Interface())
+				err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
 				if err != nil {
-					err = errors.Wrapf(err, "failed to marshal %q", jsonables[i])
+					err = errors.Wrapf(err, "failed to marshal %q", jsonables[c.jsonableIndex])
 					if kind == reflect.Chan {
 						panic(err)
 					} else {
