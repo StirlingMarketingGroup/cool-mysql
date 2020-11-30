@@ -1,4 +1,4 @@
-module github.com/BrianLeishman/cool-mysql
+module github.com/StirlingMarketingGroup/cool-mysql
 
 go 1.15
 
