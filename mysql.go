@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -15,9 +16,32 @@ type Database struct {
 	Reads  *sql.DB
 
 	Logging bool
-	Log     []string
+	Log     struct {
+		sync.RWMutex
+		Queries []string
+	}
 
 	die bool
+}
+
+func (db *Database) logQuery(q string) {
+	if !db.Logging {
+		return
+	}
+
+	db.Log.Lock()
+	db.Log.Queries = append(db.Log.Queries, q)
+	db.Log.Unlock()
+}
+
+// Clone returns a copy of the db with the same connections
+// but with an empty query log
+func (db *Database) Clone() *Database {
+	return &Database{
+		Writes:  db.Writes,
+		Reads:   db.Reads,
+		Logging: db.Logging,
+	}
 }
 
 // New creates a new Database

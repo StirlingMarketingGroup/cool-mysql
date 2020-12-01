@@ -75,6 +75,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		return err
 	}
 
+	db.logQuery(query)
 	rows, err := db.Reads.Query(query)
 	if err != nil {
 		if kind == reflect.Chan {

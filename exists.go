@@ -14,6 +14,7 @@ func (db *Database) Exists(query string, cache time.Duration, params ...Params) 
 		os.Exit(0)
 	}
 
+	db.logQuery(replacedQuery)
 	rows, err := db.Reads.Query(replacedQuery)
 	if err != nil {
 		return false, Error{

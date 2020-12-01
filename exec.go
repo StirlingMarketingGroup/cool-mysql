@@ -3,11 +3,10 @@ package mysql
 import (
 	"fmt"
 	"os"
-	"time"
 )
 
-// Count efficiently checks the number of rows a query returns
-func (db *Database) Count(query string, cache time.Duration, params ...Params) (int, error) {
+// Exec executes a query and nothing more
+func (db *Database) Exec(query string, params ...Params) error {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
@@ -15,9 +14,9 @@ func (db *Database) Count(query string, cache time.Duration, params ...Params) (
 	}
 
 	db.logQuery(replacedQuery)
-	rows, err := db.Reads.Query(replacedQuery)
+	_, err := db.Writes.Exec(replacedQuery)
 	if err != nil {
-		return 0, Error{
+		return Error{
 			Err:           err,
 			OriginalQuery: query,
 			ReplacedQuery: replacedQuery,
@@ -25,12 +24,5 @@ func (db *Database) Count(query string, cache time.Duration, params ...Params) (
 		}
 	}
 
-	defer rows.Close()
-
-	count := 0
-	for rows.Next() {
-		count++
-	}
-
-	return count, nil
+	return nil
 }
