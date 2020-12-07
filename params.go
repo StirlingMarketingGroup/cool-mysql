@@ -147,6 +147,7 @@ type Builder interface {
 	Write(p []byte) (n int, err error)
 	WriteByte(c byte) error
 	WriteString(s string) (int, error)
+	Grow(n int)
 }
 
 // WriteEncoded takes a string builder and any value and writes it
