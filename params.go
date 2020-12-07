@@ -139,14 +139,21 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 // Encodable is a type with it's own cool mysql
 // encode method for safe replacing
 type Encodable interface {
-	CoolMySQLEncode(*strings.Builder)
+	CoolMySQLEncode(Builder)
+}
+
+// Builder is a writeable buffer that the encoding will write to
+type Builder interface {
+	Write(p []byte) (n int, err error)
+	WriteByte(c byte) error
+	WriteString(s string) (int, error)
 }
 
 // WriteEncoded takes a string builder and any value and writes it
 // safely to the query, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
+func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 	if possiblyNull && isNil(x) {
 		s.WriteString("null")
 		return
@@ -235,7 +242,7 @@ func WriteEncoded(s *strings.Builder, x interface{}, possiblyNull bool) {
 	// check the reflect kind, since we want to
 	// deal with underyling value types if they didn't
 	// explicitly set a way to be encoded
-	ref := reflect.ValueOf(x)
+	ref := reflect.Indirect(reflect.ValueOf(x))
 	kind := ref.Kind()
 	switch kind {
 	case reflect.Bool:

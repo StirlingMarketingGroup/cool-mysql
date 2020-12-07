@@ -1,15 +1,11 @@
 package mysql
 
-import (
-	"strings"
-)
-
 // Literal is a literal MySQL string,
 // not to be encoded or escaped in any way
 type Literal string
 
 // CoolMySQLEncode writes the literal to the query writer
-func (v Literal) CoolMySQLEncode(s *strings.Builder) {
+func (v Literal) CoolMySQLEncode(s Builder) {
 	s.WriteString(string(v))
 }
 
@@ -19,6 +15,6 @@ func (v Literal) CoolMySQLEncode(s *strings.Builder) {
 type JSON []byte
 
 // CoolMySQLEncode writes the literal to the query writer
-func (v JSON) CoolMySQLEncode(s *strings.Builder) {
+func (v JSON) CoolMySQLEncode(s Builder) {
 	WriteEncoded(s, string(v), false)
 }

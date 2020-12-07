@@ -16,5 +16,5 @@ type Error struct {
 }
 
 func (v Error) Error() string {
-	return fmt.Sprintf("%s\n\nquery:\n%s\n\nparams:\n%s", v.Err.Error(), v.ReplacedQuery, spew.Sdump(v.Params))
+	return fmt.Sprintf("%s\n\nquery len:\n%d\n\nquery:\n%s\n\nparams:\n%s", v.Err.Error(), len(v.ReplacedQuery), v.ReplacedQuery, spew.Sdump(v.Params))
 }

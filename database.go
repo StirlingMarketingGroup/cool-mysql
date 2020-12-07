@@ -22,6 +22,8 @@ type Database struct {
 	}
 
 	die bool
+
+	maxInsertSize int
 }
 
 func (db *Database) logQuery(q string) {
@@ -38,9 +40,10 @@ func (db *Database) logQuery(q string) {
 // but with an empty query log
 func (db *Database) Clone() *Database {
 	return &Database{
-		Writes:  db.Writes,
-		Reads:   db.Reads,
-		Logging: db.Logging,
+		Writes:        db.Writes,
+		Reads:         db.Reads,
+		Logging:       db.Logging,
+		maxInsertSize: db.maxInsertSize,
 	}
 }
 
@@ -85,6 +88,9 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	if err != nil {
 		return nil, err
 	}
+
+	writesDSN, _ := mysql.ParseDSN(writes)
+	db.maxInsertSize = writesDSN.MaxAllowedPacket
 
 	if reads != writes {
 		db.Reads, err = sql.Open("mysql", reads)

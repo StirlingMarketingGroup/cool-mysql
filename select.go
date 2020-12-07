@@ -201,18 +201,20 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 				}
 			}
 
-			for _, c := range columns {
-				if c == nil || !c.jsonable || jsonables[c.jsonableIndex] == nil {
-					continue
-				}
+			if jsonablesCount > 0 {
+				for _, c := range columns {
+					if c == nil || !c.jsonable || jsonables[c.jsonableIndex] == nil {
+						continue
+					}
 
-				err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
-				if err != nil {
-					err = errors.Wrapf(err, "failed to marshal %q", jsonables[c.jsonableIndex])
-					if kind == reflect.Chan {
-						panic(err)
-					} else {
-						return err
+					err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
+					if err != nil {
+						err = errors.Wrapf(err, "failed to marshal %q", jsonables[c.jsonableIndex])
+						if kind == reflect.Chan {
+							panic(err)
+						} else {
+							return err
+						}
 					}
 				}
 			}
