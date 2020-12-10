@@ -18,7 +18,7 @@ type Database struct {
 	Logging bool
 	Log     struct {
 		sync.RWMutex
-		Queries []string
+		Queries []query
 	}
 
 	die bool
@@ -26,13 +26,23 @@ type Database struct {
 	maxInsertSize int
 }
 
-func (db *Database) logQuery(q string) {
+type query struct {
+	Query    string
+	Params   Params
+	Duration time.Duration
+}
+
+func (db *Database) logQuery(q string, p Params, d time.Duration) {
 	if !db.Logging {
 		return
 	}
 
 	db.Log.Lock()
-	db.Log.Queries = append(db.Log.Queries, q)
+	db.Log.Queries = append(db.Log.Queries, query{
+		Query:    q,
+		Params:   p,
+		Duration: d,
+	})
 	db.Log.Unlock()
 }
 

@@ -3,6 +3,7 @@ package mysql
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 // Exec executes a query and nothing more
@@ -13,8 +14,9 @@ func (db *Database) Exec(query string, params ...Params) error {
 		os.Exit(0)
 	}
 
-	db.logQuery(replacedQuery)
+	start := time.Now()
 	_, err := db.Writes.Exec(replacedQuery)
+	db.logQuery(replacedQuery, mergedParams, time.Since(start))
 	if err != nil {
 		return Error{
 			Err:           err,

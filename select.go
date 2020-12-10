@@ -63,10 +63,9 @@ type field struct {
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
-	originalQuery := query
-	query, mergedParams := ReplaceParams(query, params...)
+	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
-		fmt.Println(query)
+		fmt.Println(replacedQuery)
 		os.Exit(0)
 	}
 
@@ -75,16 +74,17 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		return err
 	}
 
-	db.logQuery(query)
-	rows, err := db.Reads.Query(query)
+	start := time.Now()
+	rows, err := db.Reads.Query(replacedQuery)
+	db.logQuery(replacedQuery, mergedParams, time.Since(start))
 	if err != nil {
 		if kind == reflect.Chan {
 			refDest.Close()
 		}
 		return Error{
 			Err:           err,
-			OriginalQuery: originalQuery,
-			ReplacedQuery: query,
+			OriginalQuery: query,
+			ReplacedQuery: replacedQuery,
 			Params:        mergedParams,
 		}
 	}
@@ -171,7 +171,6 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 		ran := false
 
-		s := reflect.New(strct).Elem()
 		var jsonables [][]byte
 		if jsonablesCount > 0 {
 			jsonables = make([][]byte, jsonablesCount)
@@ -179,6 +178,8 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	Rows:
 		for rows.Next() {
 			ran = true
+
+			s := reflect.New(strct).Elem()
 
 			for i, c := range columns {
 				if c != nil {
