@@ -12,6 +12,11 @@ import (
 var ErrSourceInvalidType = errors.New("source must be a channel of structs, a slice of structs, or a single struct")
 
 func checkSource(source interface{}) (reflect.Value, reflect.Kind, reflect.Type, error) {
+	switch source.(type) {
+	case Params:
+		return reflect.Value{}, 0, nil, nil
+	}
+
 	ref := reflect.ValueOf(source)
 	kind := ref.Kind()
 
@@ -34,31 +39,32 @@ func checkSource(source interface{}) (reflect.Value, reflect.Kind, reflect.Type,
 }
 
 // Insert inserts struct rows from the source as a channel, single struct, or slice of structs
-func (db *Database) Insert(insert string, columns []string, src interface{}) error {
-	return db.InsertWithRowComplete(insert, columns, src, nil)
+func (db *Database) Insert(insert string, src interface{}) error {
+	return db.InsertWithRowComplete(insert, src, nil)
 }
 
 // InsertWithRowComplete inserts struct rows from the source as a channel, single struct, or slice of structs
 // rowComplete func is given the start time of processing the row
 // for use of things like progress bars, timing the duration it takes to insert the row(s)
-func (db *Database) InsertWithRowComplete(insert string, columns []string, src interface{}, rowComplete func(start time.Time)) error {
-	_, _, strct, err := checkSource(src)
+func (db *Database) InsertWithRowComplete(insert string, source interface{}, rowComplete func(start time.Time)) error {
+	_, _, _, err := checkSource(source)
 	if err != nil {
 		return err
 	}
 
-	strctNumField := strct.NumField()
-	structFields := make(map[string]int, strctNumField)
-	for i := 0; i < strctNumField; i++ {
-		f := strct.Field(i)
-		name, ok := f.Tag.Lookup("mysql")
-		if !ok {
-			name = f.Name
-		}
-		structFields[name] = i
-	}
+	var columns []string
 
-	structIndexes := make([]int, len(columns))
+	switch src := source.(type) {
+	case Params:
+		columns = make([]string, len(src))
+		i := 0
+		for c := range src {
+			columns[i] = c
+			i++
+		}
+	default:
+		panic("not ready yet!")
+	}
 
 	insertBuf := new(bytes.Buffer)
 	insertBuf.WriteString(insert)
@@ -70,55 +76,68 @@ func (db *Database) InsertWithRowComplete(insert string, columns []string, src i
 		insertBuf.WriteByte('`')
 		insertBuf.WriteString(c)
 		insertBuf.WriteByte('`')
-
-		structIndexes[i] = structFields[c]
 	}
 	insertBuf.WriteString(")values")
 	baseLen := insertBuf.Len()
 
 	curRows := 0
-	ch := reflect.ValueOf(src)
-	var r reflect.Value
+	// ch := reflect.ValueOf(source)
+	// var r reflect.Value
 	for ok := true; ok; {
-		if r, ok = ch.Recv(); ok {
-			var start time.Time
-			if rowComplete != nil {
-				start = time.Now()
+		switch source.(type) {
+		case Params:
+			if curRows > 0 {
+				ok = false
 			}
+		default:
+			// TODO add other types
+		}
+		if !ok {
+			break
+		}
 
-			preRowLen := insertBuf.Len()
+		var start time.Time
+		if rowComplete != nil {
+			start = time.Now()
+		}
 
-			if curRows != 0 {
+		preRowLen := insertBuf.Len()
+
+		if curRows != 0 {
+			insertBuf.WriteByte(',')
+		}
+		insertBuf.WriteByte('(')
+		for i := 0; i < len(columns); i++ {
+			if i != 0 {
 				insertBuf.WriteByte(',')
 			}
-			insertBuf.WriteByte('(')
-			for i := 0; i < len(structIndexes); i++ {
-				if i != 0 {
-					insertBuf.WriteByte(',')
-				}
-				WriteEncoded(insertBuf, r.Field(structIndexes[i]).Interface(), true)
+			switch src := source.(type) {
+			case Params:
+				WriteEncoded(insertBuf, src[columns[i]], true)
+			default:
+				// TODO add other types
 			}
-			insertBuf.WriteByte(')')
+		}
+		insertBuf.WriteByte(')')
 
-			if insertBuf.Len() > int(float64(db.maxInsertSize)*0.80) && curRows > 1 {
-				buf := insertBuf.Bytes()[preRowLen+1:]
-				insertBuf.Truncate(preRowLen)
-				err := db.Exec(insertBuf.String())
-				if err != nil {
-					return err
-				}
-
-				insertBuf.Truncate(baseLen)
-				curRows = 0
-
-				insertBuf.Write(buf)
+		if insertBuf.Len() > int(float64(db.maxInsertSize)*0.80) && curRows > 1 {
+			buf := insertBuf.Bytes()[preRowLen+1:]
+			insertBuf.Truncate(preRowLen)
+			err := db.Exec(insertBuf.String())
+			if err != nil {
+				return err
 			}
 
-			curRows++
+			insertBuf.Truncate(baseLen)
+			curRows = 0
 
-			if rowComplete != nil {
-				rowComplete(start)
-			}
+			insertBuf.Write(buf)
+		}
+
+		curRows++
+
+		if rowComplete != nil {
+			rowComplete(start)
 		}
 	}
 
