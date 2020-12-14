@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"net"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -15,46 +14,18 @@ type Database struct {
 	Writes *sql.DB
 	Reads  *sql.DB
 
-	Logging bool
-	Log     struct {
-		sync.RWMutex
-		Queries []query
-	}
+	Log func(query string, params Params, duration time.Duration)
 
 	die bool
 
 	maxInsertSize int
 }
 
-type query struct {
-	Query    string
-	Params   Params
-	Duration time.Duration
-}
-
-func (db *Database) logQuery(q string, p Params, d time.Duration) {
-	if !db.Logging {
-		return
-	}
-
-	db.Log.Lock()
-	db.Log.Queries = append(db.Log.Queries, query{
-		Query:    q,
-		Params:   p,
-		Duration: d,
-	})
-	db.Log.Unlock()
-}
-
 // Clone returns a copy of the db with the same connections
 // but with an empty query log
 func (db *Database) Clone() *Database {
-	return &Database{
-		Writes:        db.Writes,
-		Reads:         db.Reads,
-		Logging:       db.Logging,
-		maxInsertSize: db.maxInsertSize,
-	}
+	clone := *db
+	return &clone
 }
 
 // New creates a new Database
@@ -88,6 +59,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 // DSN strings for both connections
 func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db = new(Database)
+	db.Log = func(string, Params, time.Duration) {}
 
 	db.Writes, err = sql.Open("mysql", writes)
 	if err != nil {

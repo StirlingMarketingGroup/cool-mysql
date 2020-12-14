@@ -76,7 +76,8 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 	start := time.Now()
 	rows, err := db.Reads.Query(replacedQuery)
-	db.logQuery(replacedQuery, mergedParams, time.Since(start))
+	db.Log(replacedQuery, mergedParams, time.Since(start))
+
 	if err != nil {
 		if kind == reflect.Chan {
 			refDest.Close()

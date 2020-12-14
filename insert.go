@@ -47,7 +47,7 @@ func (db *Database) Insert(insert string, src interface{}) error {
 // rowComplete func is given the start time of processing the row
 // for use of things like progress bars, timing the duration it takes to insert the row(s)
 func (db *Database) InsertWithRowComplete(insert string, source interface{}, rowComplete func(start time.Time)) error {
-	_, _, _, err := checkSource(source)
+	reflectValue, reflectKind, reflectStruct, err := checkSource(source)
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,20 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 			i++
 		}
 	default:
-		panic("not ready yet!")
+		switch reflectKind {
+		case reflect.Chan:
+			columns = make([]string, reflectStruct.NumField())
+			for i := 0; i < len(columns); i++ {
+				f := reflectStruct.Field(i)
+				if t, ok := f.Tag.Lookup("mysql"); ok {
+					columns[i] = t
+				} else {
+					columns[i] = f.Name
+				}
+			}
+		default:
+			panic("not ready yet!")
+		}
 	}
 
 	insertBuf := new(bytes.Buffer)
@@ -81,8 +94,7 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 	baseLen := insertBuf.Len()
 
 	curRows := 0
-	// ch := reflect.ValueOf(source)
-	// var r reflect.Value
+	var r reflect.Value
 	for ok := true; ok; {
 		switch source.(type) {
 		case Params:
@@ -90,7 +102,12 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 				ok = false
 			}
 		default:
-			// TODO add other types
+			switch reflectKind {
+			case reflect.Chan:
+				r, ok = reflectValue.Recv()
+			default:
+				panic("not ready yet!")
+			}
 		}
 		if !ok {
 			break
@@ -115,7 +132,12 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 			case Params:
 				WriteEncoded(insertBuf, src[columns[i]], true)
 			default:
-				// TODO add other types
+				switch reflectKind {
+				case reflect.Chan:
+					WriteEncoded(insertBuf, r.Field(i).Interface(), true)
+				default:
+					panic("not ready yet!")
+				}
 			}
 		}
 		insertBuf.WriteByte(')')

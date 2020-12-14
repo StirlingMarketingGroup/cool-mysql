@@ -43,6 +43,10 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 		}
 	}
 
+	if len(params[0]) == 0 {
+		return query, nil
+	}
+
 	i := 0
 	start := 0
 	l := len(query)
