@@ -1,7 +1,13 @@
+github.com/Ompluscator/dynamic-struct v1.2.0 h1:6SXShNbjuMKeBIy5LUVx4BI3WKoyugRMchJWC2yjtZA=
+github.com/Ompluscator/dynamic-struct v1.2.0/go.mod h1:01g22H1GC9IFcrpQ4JQBkzynp8RoT0wmUMx/OvXNnw8=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/fatih/structs v1.1.0 h1:Q7juDM0QtcnhCpeyLGQKyg4TOIghuNXrkL32pHAUMxo=
+github.com/fatih/structs v1.1.0/go.mod h1:9NiDSp5zOcgEDl+j00MP/WkGVPOlPRLejGD8Ga6PJ7M=
 github.com/go-sql-driver/mysql v1.5.0 h1:ozyZYNQW3x3HtqT1jira07DN2PArx2v7/mN66gGcHOs=
 github.com/go-sql-driver/mysql v1.5.0/go.mod h1:DCzpHaOWr8IXmIStZouvnhqoel9Qv2LBy8hT2VhHyBg=
+github.com/jinzhu/copier v0.1.0 h1:Vh8xALtH3rrKGB/XIRe5d0yCTHPZFauWPLvdpDAbi88=
+github.com/jinzhu/copier v0.1.0/go.mod h1:24xnZezI2Yqac9J61UC6/dG/k76ttpq0DdJI3QmUvro=
 github.com/jmoiron/sqlx v1.2.1-0.20200615141059-0794cb1f47ee h1:59lyMGvZusByi7Rvctn8cxdVAjhiOnqCv3G5DrYApYQ=
 github.com/jmoiron/sqlx v1.2.1-0.20200615141059-0794cb1f47ee/go.mod h1:ClpsPFzLpSBl7MvJ+BhV0JHz4vmKRBarpvZ9644v9Oo=
 github.com/lib/pq v1.2.0 h1:LXpIM/LZ5xGFhOpXAQUIMM1HdyqzVYM13zNdjCEEcA0=
