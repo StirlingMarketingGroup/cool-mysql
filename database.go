@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -19,6 +20,8 @@ type Database struct {
 	die bool
 
 	maxInsertSize int
+
+	redis *redis.Client
 }
 
 // Clone returns a copy of the db with the same connections
@@ -26,6 +29,16 @@ type Database struct {
 func (db *Database) Clone() *Database {
 	clone := *db
 	return &clone
+}
+
+// EnableRedis enables redis cache for select queries with cache times
+// with the given connection information
+func (db *Database) EnableRedis(address string, password string, redisDB int) {
+	db.redis = redis.NewClient(&redis.Options{
+		Addr:     address,
+		Password: password, // no password set
+		DB:       redisDB,  // use default DB
+	})
 }
 
 // New creates a new Database

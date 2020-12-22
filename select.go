@@ -1,14 +1,22 @@
 package mysql
 
 import (
+	"bytes"
+	"context"
+	"crypto/md5"
 	"database/sql"
+	"encoding/base64"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
+	"golang.org/x/sync/singleflight"
 )
 
 // ErrDestInvalidType is an error about what types are allowed
@@ -60,6 +68,10 @@ type field struct {
 	taken    bool
 }
 
+var rCtx = context.Background()
+
+var selectSinglelight = new(singleflight.Group)
+
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
@@ -74,180 +86,292 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		return err
 	}
 
-	start := time.Now()
-	rows, err := db.Reads.Query(replacedQuery)
-	db.Log(replacedQuery, mergedParams, time.Since(start))
+	var cacheEncoder *gob.Encoder
 
-	if err != nil {
-		if kind == reflect.Chan {
-			refDest.Close()
+	liveGet := func() error {
+		start := time.Now()
+		rows, err := db.Reads.Query(replacedQuery)
+		db.Log(replacedQuery, mergedParams, time.Since(start))
+
+		if err != nil {
+			if kind == reflect.Chan {
+				refDest.Close()
+			}
+			return Error{
+				Err:           err,
+				OriginalQuery: query,
+				ReplacedQuery: replacedQuery,
+				Params:        mergedParams,
+			}
 		}
-		return Error{
-			Err:           err,
-			OriginalQuery: query,
-			ReplacedQuery: replacedQuery,
-			Params:        mergedParams,
-		}
-	}
 
-	fn := func() error {
-		if kind == reflect.Chan {
-			defer refDest.Close()
-		}
-		defer rows.Close()
+		main := func() error {
+			if kind == reflect.Chan {
+				defer refDest.Close()
+			}
+			defer rows.Close()
 
-		cols, _ := rows.Columns()
-		pointers := make([]interface{}, len(cols))
+			cols, _ := rows.Columns()
+			pointers := make([]interface{}, len(cols))
 
-		columns := make([]*column, len(cols))
+			columns := make([]*column, len(cols))
 
-		fieldsLen := strct.NumField()
-		fields := make([]*field, fieldsLen)
+			fieldsLen := strct.NumField()
+			fields := make([]*field, fieldsLen)
 
-		strctEx := reflect.New(strct).Elem()
+			strctEx := reflect.New(strct).Elem()
 
-		var jsonablesCount uint16
-		for i, c := range cols {
-			for j := 0; j < fieldsLen; j++ {
-				if fields[j] == nil {
-					f := strct.Field(j)
-					name, ok := f.Tag.Lookup("mysql")
-					if !ok {
-						name = f.Name
-					}
-					kind := f.Type.Kind()
+			var jsonablesCount uint16
+			for i, c := range cols {
+				for j := 0; j < fieldsLen; j++ {
+					if fields[j] == nil {
+						f := strct.Field(j)
+						name, ok := f.Tag.Lookup("mysql")
+						if !ok {
+							name = f.Name
+						}
+						kind := f.Type.Kind()
 
-					var jsonable bool
+						var jsonable bool
 
-					switch kind {
-					case reflect.Map, reflect.Struct:
-						jsonable = true
-					case reflect.Array, reflect.Slice:
-						// if it's a slice, but not a byte slice
-						if f.Type.Elem().Kind() != reflect.Uint8 {
+						switch kind {
+						case reflect.Map, reflect.Struct:
 							jsonable = true
-						}
-					}
-
-					if jsonable {
-						prop := strctEx.Field(j)
-
-						// don't let things that already handle themselves get json unmarshalled
-						if _, ok := prop.Addr().Interface().(sql.Scanner); ok {
-							jsonable = false
+						case reflect.Array, reflect.Slice:
+							// if it's a slice, but not a byte slice
+							if f.Type.Elem().Kind() != reflect.Uint8 {
+								jsonable = true
+							}
 						}
 
-						// we also have to ignore times specifically, because sql scanning
-						// implements them literally, instead of the time.Time implementing sql.Scanner
-						if _, ok := prop.Interface().(time.Time); ok {
-							jsonable = false
+						if jsonable {
+							prop := strctEx.Field(j)
+
+							// don't let things that already handle themselves get json unmarshalled
+							if _, ok := prop.Addr().Interface().(sql.Scanner); ok {
+								jsonable = false
+							}
+
+							// we also have to ignore times specifically, because sql scanning
+							// implements them literally, instead of the time.Time implementing sql.Scanner
+							if _, ok := prop.Interface().(time.Time); ok {
+								jsonable = false
+							}
+						}
+
+						fields[j] = &field{
+							name:     name,
+							jsonable: jsonable,
 						}
 					}
-
-					fields[j] = &field{
-						name:     name,
-						jsonable: jsonable,
-					}
-				}
-				if fields[j].taken {
-					continue
-				}
-
-				if fields[j].name == c {
-					columns[i] = &column{
-						structIndex:   uint16(j),
-						jsonable:      fields[j].jsonable,
-						jsonableIndex: jsonablesCount,
-					}
-					fields[j].taken = true
-
-					if fields[j].jsonable {
-						jsonablesCount++
-					}
-				}
-			}
-		}
-
-		var x interface{}
-
-		ran := false
-
-		var jsonables [][]byte
-		if jsonablesCount > 0 {
-			jsonables = make([][]byte, jsonablesCount)
-		}
-	Rows:
-		for rows.Next() {
-			ran = true
-
-			s := reflect.New(strct).Elem()
-
-			for i, c := range columns {
-				if c != nil {
-					if !c.jsonable {
-						pointers[i] = s.Field(int(c.structIndex)).Addr().Interface()
-					} else {
-						pointers[i] = &jsonables[c.jsonableIndex]
-					}
-				} else {
-					pointers[i] = &x
-				}
-			}
-			err = rows.Scan(pointers...)
-			if err != nil {
-				err = errors.Wrapf(err, "failed to scan rows")
-				if kind == reflect.Chan {
-					panic(err)
-				} else {
-					return err
-				}
-			}
-
-			if jsonablesCount > 0 {
-				for _, c := range columns {
-					if c == nil || !c.jsonable || jsonables[c.jsonableIndex] == nil {
+					if fields[j].taken {
 						continue
 					}
 
-					err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
-					if err != nil {
-						err = errors.Wrapf(err, "failed to marshal %q", jsonables[c.jsonableIndex])
-						if kind == reflect.Chan {
-							panic(err)
-						} else {
-							return err
+					if fields[j].name == c {
+						columns[i] = &column{
+							structIndex:   uint16(j),
+							jsonable:      fields[j].jsonable,
+							jsonableIndex: jsonablesCount,
+						}
+						fields[j].taken = true
+
+						if fields[j].jsonable {
+							jsonablesCount++
 						}
 					}
 				}
 			}
 
-			switch kind {
-			case reflect.Chan:
-				refDest.Send(s)
-			case reflect.Slice:
-				refDest.Set(reflect.Append(refDest, s))
-			case reflect.Struct:
-				refDest.Set(s)
-				break Rows
+			var x interface{}
+
+			ran := false
+
+			var jsonables [][]byte
+			if jsonablesCount > 0 {
+				jsonables = make([][]byte, jsonablesCount)
+			}
+		Rows:
+			for rows.Next() {
+				ran = true
+
+				s := reflect.New(strct).Elem()
+
+				for i, c := range columns {
+					if c != nil {
+						if !c.jsonable {
+							pointers[i] = s.Field(int(c.structIndex)).Addr().Interface()
+						} else {
+							pointers[i] = &jsonables[c.jsonableIndex]
+						}
+					} else {
+						pointers[i] = &x
+					}
+				}
+				err = rows.Scan(pointers...)
+				if err != nil {
+					return errors.Wrapf(err, "failed to scan rows")
+				}
+
+				if jsonablesCount > 0 {
+					for _, c := range columns {
+						if c == nil || !c.jsonable || jsonables[c.jsonableIndex] == nil {
+							continue
+						}
+
+						err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
+						if err != nil {
+							return errors.Wrapf(err, "failed to marshal %q", jsonables[c.jsonableIndex])
+						}
+					}
+				}
+
+				if cacheEncoder != nil {
+					cacheEncoder.EncodeValue(s)
+				}
+
+				switch kind {
+				case reflect.Chan:
+					refDest.Send(s)
+				case reflect.Slice:
+					refDest.Set(reflect.Append(refDest, s))
+				case reflect.Struct:
+					refDest.Set(s)
+					break Rows
+				}
+
+				x = nil
 			}
 
-			x = nil
+			if !ran && kind == reflect.Struct {
+				return sql.ErrNoRows
+			}
+
+			return nil
 		}
 
-		if !ran && kind == reflect.Struct {
-			return sql.ErrNoRows
+		switch kind {
+		case reflect.Chan:
+			if cache == 0 {
+				go func() {
+					if err := main(); err != nil {
+						panic(err)
+					}
+				}()
+			} else {
+				return main()
+			}
+		case reflect.Slice, reflect.Struct:
+			refDest = refDest.Elem()
+			return main()
 		}
-
 		return nil
 	}
 
-	switch kind {
-	case reflect.Chan:
-		go fn()
-	case reflect.Slice, reflect.Struct:
-		refDest = refDest.Elem()
-		return fn()
+	cacheGet := func(buffer []byte) error {
+		main := func() error {
+			if kind == reflect.Chan {
+				defer refDest.Close()
+			}
+
+			decoder := gob.NewDecoder(bytes.NewReader(buffer))
+
+		Rows:
+			for {
+				s := reflect.New(strct).Elem()
+				err := decoder.DecodeValue(s)
+				if err == io.EOF {
+					break
+				} else if err != nil {
+					return errors.Wrapf(err, "cool-mysql select: failed to decode cached struct value")
+				}
+
+				switch kind {
+				case reflect.Chan:
+					refDest.Send(s)
+				case reflect.Slice:
+					refDest.Set(reflect.Append(refDest, s))
+				case reflect.Struct:
+					refDest.Set(s)
+					break Rows
+				}
+			}
+
+			return nil
+		}
+
+		switch kind {
+		case reflect.Chan:
+			go main()
+		case reflect.Slice, reflect.Struct:
+			refDest = refDest.Elem()
+			return main()
+		}
+		return nil
 	}
+
+	if cache != 0 {
+		if db.redis == nil {
+			return errors.New("cool-mysql select: cache time given without redis connection for query")
+		}
+
+		main := func() error {
+			hasher := md5.New()
+			gob.NewEncoder(hasher).EncodeValue(reflect.New(strct))
+			hasher.Write([]byte(replacedQuery))
+			h := base64.RawStdEncoding.EncodeToString(hasher.Sum(nil))
+
+			destFilled := false
+			cache, err, _ := selectSinglelight.Do(h, func() (interface{}, error) {
+				b, err := db.redis.Get(rCtx, h).Bytes()
+				if err == redis.Nil {
+					cacheBuf := new(bytes.Buffer)
+					cacheEncoder = gob.NewEncoder(cacheBuf)
+
+					err = liveGet()
+					if err != nil {
+						return nil, err
+					}
+					destFilled = true
+
+					err = db.redis.Set(rCtx, h, cacheBuf.Bytes(), cache).Err()
+					if err != nil {
+						return nil, errors.Wrapf(err, "cool-mysql select: failed to set query cache to redis")
+					}
+
+					return cacheBuf.Bytes(), nil
+				}
+				if err != nil {
+					return nil, errors.Wrapf(err, "cool-mysql select: failed to get query cache from redis")
+				}
+
+				return b, nil
+			})
+			if err != nil {
+				return err
+			}
+
+			if !destFilled {
+				return cacheGet(cache.([]byte))
+			}
+
+			return nil
+		}
+
+		if kind == reflect.Chan {
+			go func() {
+				if err := main(); err != nil {
+					panic(err)
+				}
+			}()
+			return nil
+		}
+
+		return main()
+	}
+
+	// we got this far, so just fill the dest with a normal live get
+	liveGet()
 
 	return nil
 }
