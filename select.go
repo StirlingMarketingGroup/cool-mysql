@@ -221,7 +221,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 						err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
 						if err != nil {
-							return errors.Wrapf(err, "failed to marshal %q", jsonables[c.jsonableIndex])
+							return errors.Wrapf(err, "failed to unmarshal %q", jsonables[c.jsonableIndex])
 						}
 					}
 				}
@@ -371,7 +371,5 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	}
 
 	// we got this far, so just fill the dest with a normal live get
-	liveGet()
-
-	return nil
+	return liveGet()
 }
