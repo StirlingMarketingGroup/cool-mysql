@@ -269,6 +269,8 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	}
 
 	cacheGet := func(buffer []byte) error {
+		db.Log("/* cached! */ "+replacedQuery, mergedParams, 0)
+
 		main := func() error {
 			if kind == reflect.Chan {
 				defer refDest.Close()
