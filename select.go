@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"reflect"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/singleflight"
@@ -324,7 +326,12 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 			h := base64.RawStdEncoding.EncodeToString(hasher.Sum(nil))
 
 			destFilled := false
+			var rec interface{}
 			cache, err, _ := selectSinglelight.Do(h, func() (interface{}, error) {
+				defer func() {
+					rec = recover()
+				}()
+
 				b, err := db.redis.Get(rCtx, h).Bytes()
 				if err == redis.Nil {
 					cacheBuf := new(bytes.Buffer)
@@ -349,6 +356,10 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				return b, nil
 			})
+			if rec != nil {
+				//Recoverd panic
+				log.Println(color.RedString("Recoverd panic in callback"))
+			}
 			if err != nil {
 				return err
 			}

@@ -5,6 +5,7 @@ go 1.15
 require (
 	github.com/Ompluscator/dynamic-struct v1.2.0
 	github.com/davecgh/go-spew v1.1.1
+	github.com/fatih/color v1.10.0
 	github.com/fatih/structs v1.1.0
 	github.com/go-redis/redis/v8 v8.4.4
 	github.com/go-sql-driver/mysql v1.5.0
