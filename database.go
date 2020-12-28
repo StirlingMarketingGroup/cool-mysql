@@ -22,6 +22,8 @@ type Database struct {
 	maxInsertSize int
 
 	redis *redis.Client
+
+	ChannelNotReadAfterWarn time.Duration
 }
 
 // Clone returns a copy of the db with the same connections

@@ -107,6 +107,8 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 			}
 		}
 
+		var sentCounter int
+
 		main := func() error {
 			if kind == reflect.Chan {
 				defer refDest.Close()
@@ -234,7 +236,17 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				switch kind {
 				case reflect.Chan:
+					if db.ChannelNotReadAfterWarn != 0 && sentCounter == 0 {
+						go func() {
+							time.Sleep(10 * db.ChannelNotReadAfterWarn)
+
+							if sentCounter == 0 {
+								log.Println(color.HiYellowString("channel not read from after sending\n"), replacedQuery)
+							}
+						}()
+					}
 					refDest.Send(s)
+					sentCounter++
 				case reflect.Slice:
 					refDest.Set(reflect.Append(refDest, s))
 				case reflect.Struct:
@@ -357,8 +369,8 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 				return b, nil
 			})
 			if rec != nil {
-				//Recoverd panic
-				log.Println(color.RedString("Recoverd panic in callback"))
+				// Recovered panic
+				log.Println(color.RedString("Recovered panic in callback"))
 			}
 			if err != nil {
 				return err
