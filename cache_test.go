@@ -29,7 +29,7 @@ func Benchmark_Genome_Cool_Select_Chan_IsCached(b *testing.B) {
 	var genomeCh chan genomeRow
 	for n := 0; n < b.N; n++ {
 		genomeCh = make(chan genomeRow)
-		err := db.Select(genomeCh, "select`upid`,`assembly_acc`,`assembly_version`,`total_length`,`created`from`genome`where`total_length`>@@TotalLength limit 1000", time.Millisecond, Params{
+		err := db.Select(genomeCh, "select`upid`,`assembly_acc`,`assembly_version`,`total_length`,`created`from`genome`where`total_length`>@@TotalLength limit 1000", 10*time.Second, Params{
 			"TotalLength": 28111,
 		})
 		if err != nil {

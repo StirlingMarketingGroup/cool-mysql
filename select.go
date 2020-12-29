@@ -13,11 +13,13 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
+	"github.com/tinylib/msgp/msgp"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -74,6 +76,12 @@ var rCtx = context.Background()
 
 var selectSinglelight = new(singleflight.Group)
 
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
@@ -88,7 +96,15 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		return err
 	}
 
-	var cacheEncoder *gob.Encoder
+	// var cacheEncoder *msgpack.Encoder
+	// var cacheSlice reflect.Value
+	var msgpWriter *msgp.Writer
+	var gobEncoder *gob.Encoder
+
+	var msgpEncodable bool
+	if cache != 0 {
+		_, msgpEncodable = reflect.New(strct).Interface().(msgp.Encodable)
+	}
 
 	liveGet := func() error {
 		start := time.Now()
@@ -230,8 +246,20 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 					}
 				}
 
-				if cacheEncoder != nil {
-					cacheEncoder.EncodeValue(s)
+				if cache != 0 {
+					// cacheSlice = reflect.Append(cacheSlice, s)
+					switch {
+					case msgpEncodable:
+						err := s.Addr().Interface().(msgp.Encodable).EncodeMsg(msgpWriter)
+						if err != nil {
+							return errors.Wrapf(err, "failed to write struct to cache with msgp")
+						}
+					default:
+						err := gobEncoder.EncodeValue(s)
+						if err != nil {
+							return errors.Wrapf(err, "failed to write struct to cache with gob")
+						}
+					}
 				}
 
 				switch kind {
@@ -282,7 +310,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		return nil
 	}
 
-	cacheGet := func(buffer []byte) error {
+	cacheGet := func(b []byte) error {
 		db.Log("/* cached! */ "+replacedQuery, mergedParams, 0)
 
 		main := func() error {
@@ -290,16 +318,52 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 				defer refDest.Close()
 			}
 
-			decoder := gob.NewDecoder(bytes.NewReader(buffer))
+			// 	cacheSlicePtr := reflect.New(reflect.SliceOf(strct))
+
+			// 	dec := msgpack.NewDecoder(bytes.NewReader(buf))
+			// 	err := dec.Decode(cacheSlicePtr.Interface())
+			// 	if err != nil {
+			// 		spew.Dump(buf)
+			// 		return errors.Wrapf(err, "failed to unmarshal cache")
+			// 	}
+
+			// 	cacheSlice := cacheSlicePtr.Elem()
+			var msgpReader *msgp.Reader
+			var gobDecoder *gob.Decoder
+
+			switch {
+			case msgpEncodable:
+				msgpReader = msgp.NewReader(bytes.NewReader(b))
+			default:
+				gobDecoder = gob.NewDecoder(bytes.NewReader(b))
+			}
 
 		Rows:
+			// for i := 0; i < cacheSlice.Len(); i++ {
 			for {
-				s := reflect.New(strct).Elem()
-				err := decoder.DecodeValue(s)
-				if err == io.EOF {
-					break
-				} else if err != nil {
-					return errors.Wrapf(err, "cool-mysql select: failed to decode cached struct value")
+				// s := cacheSlice.Index(i)
+
+				var s reflect.Value
+
+				switch {
+				case msgpEncodable:
+					s = reflect.New(strct)
+					err := s.Interface().(msgp.Decodable).DecodeMsg(msgpReader)
+					if err != nil && err.Error() == "EOF" {
+						break Rows
+					} else if err != nil {
+						return errors.Wrapf(err, "failed to decode cached struct with msgp")
+					}
+					s = s.Elem()
+				default:
+					s = reflect.New(strct).Elem()
+					err := gobDecoder.DecodeValue(s)
+					if err == io.EOF {
+						break Rows
+					} else if err != nil {
+						return errors.Wrapf(err, "failed to decode cached struct with gob")
+					}
+					log.Fatal(replacedQuery)
 				}
 
 				switch kind {
@@ -318,7 +382,11 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 		switch kind {
 		case reflect.Chan:
-			go main()
+			go func() {
+				if err := main(); err != nil {
+					panic(err)
+				}
+			}()
 		case reflect.Slice, reflect.Struct:
 			refDest = refDest.Elem()
 			return main()
@@ -338,16 +406,17 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 			h := base64.RawStdEncoding.EncodeToString(hasher.Sum(nil))
 
 			destFilled := false
-			var rec interface{}
 			cache, err, _ := selectSinglelight.Do(h, func() (interface{}, error) {
-				defer func() {
-					rec = recover()
-				}()
-
 				b, err := db.redis.Get(rCtx, h).Bytes()
 				if err == redis.Nil {
-					cacheBuf := new(bytes.Buffer)
-					cacheEncoder = gob.NewEncoder(cacheBuf)
+					// cacheSlice = reflect.MakeSlice(reflect.SliceOf(strct), 0, 0)
+					var buf bytes.Buffer
+					switch {
+					case msgpEncodable:
+						msgpWriter = msgp.NewWriter(&buf)
+					default:
+						gobEncoder = gob.NewEncoder(&buf)
+					}
 
 					err = liveGet()
 					if err != nil {
@@ -355,12 +424,24 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 					}
 					destFilled = true
 
-					err = db.redis.Set(rCtx, h, cacheBuf.Bytes(), cache).Err()
+					if msgpEncodable {
+						msgpWriter.Flush()
+					}
+
+					// var buf bytes.Buffer
+					// enc := msgpack.NewEncoder(&buf)
+					// enc.UseArrayEncodedStructs(true)
+					// err := enc.Encode(cacheSlice.Interface())
+					// if err != nil {
+					// 	return nil, errors.Wrapf(err, "failed to create cache bytes")
+					// }
+
+					err = db.redis.Set(rCtx, h, buf.Bytes(), cache).Err()
 					if err != nil {
 						return nil, errors.Wrapf(err, "cool-mysql select: failed to set query cache to redis")
 					}
 
-					return cacheBuf.Bytes(), nil
+					return buf.Bytes(), nil
 				}
 				if err != nil {
 					return nil, errors.Wrapf(err, "cool-mysql select: failed to get query cache from redis")
@@ -368,10 +449,6 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				return b, nil
 			})
-			if rec != nil {
-				// Recovered panic
-				log.Println(color.RedString("Recovered panic in callback"))
-			}
 			if err != nil {
 				return err
 			}
