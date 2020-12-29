@@ -363,7 +363,6 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 					} else if err != nil {
 						return errors.Wrapf(err, "failed to decode cached struct with gob")
 					}
-					log.Fatal(replacedQuery)
 				}
 
 				switch kind {

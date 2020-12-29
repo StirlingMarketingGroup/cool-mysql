@@ -14,5 +14,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/shopspring/decimal v1.2.0
 	github.com/tinylib/msgp v1.1.5
+	golang.org/x/mod v0.4.0 // indirect
 	golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
+	golang.org/x/tools v0.0.0-20201229013931-929a8494cf60 // indirect
 )
