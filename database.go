@@ -15,15 +15,14 @@ type Database struct {
 	Writes *sql.DB
 	Reads  *sql.DB
 
-	Log func(query string, params Params, duration time.Duration)
+	Log      LogFunc
+	Finished FinishedFunc
 
 	die bool
 
 	maxInsertSize int
 
 	redis *redis.Client
-
-	ChannelNotReadAfterWarn time.Duration
 }
 
 // Clone returns a copy of the db with the same connections
@@ -41,6 +40,19 @@ func (db *Database) EnableRedis(address string, password string, redisDB int) {
 		Password: password, // no password set
 		DB:       redisDB,  // use default DB
 	})
+}
+
+// LogFunc is called after the query executes
+type LogFunc func(query string, params Params, duration time.Duration)
+
+// FinishedFunc executes after all rows have been processed,
+// including being read from the channel if used
+type FinishedFunc func(cached bool, replacedQuery string, mergedParams Params, execDuration time.Duration, fetchDuration time.Duration)
+
+func (db *Database) callLog(query string, params Params, duration time.Duration) {
+	if db.Log != nil {
+		db.Log(query, params, duration)
+	}
 }
 
 // New creates a new Database
@@ -74,7 +86,6 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 // DSN strings for both connections
 func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db = new(Database)
-	db.Log = func(string, Params, time.Duration) {}
 
 	db.Writes, err = sql.Open("mysql", writes)
 	if err != nil {

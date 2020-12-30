@@ -10,13 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"reflect"
 	"sync"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
 	"github.com/tinylib/msgp/msgp"
@@ -96,8 +94,6 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		return err
 	}
 
-	// var cacheEncoder *msgpack.Encoder
-	// var cacheSlice reflect.Value
 	var msgpWriter *msgp.Writer
 	var gobEncoder *gob.Encoder
 
@@ -106,10 +102,14 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		_, msgpEncodable = reflect.New(strct).Interface().(msgp.Encodable)
 	}
 
+	var start time.Time
+
 	liveGet := func() error {
-		start := time.Now()
+		start = time.Now()
 		rows, err := db.Reads.Query(replacedQuery)
-		db.Log(replacedQuery, mergedParams, time.Since(start))
+		execDuration := time.Since(start)
+		start = time.Now()
+		db.callLog(replacedQuery, mergedParams, execDuration)
 
 		if err != nil {
 			if kind == reflect.Chan {
@@ -123,9 +123,11 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 			}
 		}
 
-		var sentCounter int
-
 		main := func() error {
+			if db.Finished != nil {
+				defer func() { db.Finished(false, replacedQuery, mergedParams, execDuration, time.Since(start)) }()
+			}
+
 			if kind == reflect.Chan {
 				defer refDest.Close()
 			}
@@ -247,7 +249,6 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 				}
 
 				if cache != 0 {
-					// cacheSlice = reflect.Append(cacheSlice, s)
 					switch {
 					case msgpEncodable:
 						err := s.Addr().Interface().(msgp.Encodable).EncodeMsg(msgpWriter)
@@ -264,17 +265,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				switch kind {
 				case reflect.Chan:
-					if db.ChannelNotReadAfterWarn != 0 && sentCounter == 0 {
-						go func() {
-							time.Sleep(10 * db.ChannelNotReadAfterWarn)
-
-							if sentCounter == 0 {
-								log.Println(color.HiYellowString("channel not read from after sending\n"), replacedQuery)
-							}
-						}()
-					}
 					refDest.Send(s)
-					sentCounter++
 				case reflect.Slice:
 					refDest.Set(reflect.Append(refDest, s))
 				case reflect.Struct:
@@ -311,23 +302,19 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 	}
 
 	cacheGet := func(b []byte) error {
-		db.Log("/* cached! */ "+replacedQuery, mergedParams, 0)
+		execDuration := time.Since(start)
+		start = time.Now()
+		db.callLog("/* cached! */ "+replacedQuery, mergedParams, execDuration)
 
 		main := func() error {
+			if db.Finished != nil {
+				defer func() { db.Finished(true, replacedQuery, mergedParams, execDuration, time.Since(start)) }()
+			}
+
 			if kind == reflect.Chan {
 				defer refDest.Close()
 			}
 
-			// 	cacheSlicePtr := reflect.New(reflect.SliceOf(strct))
-
-			// 	dec := msgpack.NewDecoder(bytes.NewReader(buf))
-			// 	err := dec.Decode(cacheSlicePtr.Interface())
-			// 	if err != nil {
-			// 		spew.Dump(buf)
-			// 		return errors.Wrapf(err, "failed to unmarshal cache")
-			// 	}
-
-			// 	cacheSlice := cacheSlicePtr.Elem()
 			var msgpReader *msgp.Reader
 			var gobDecoder *gob.Decoder
 
@@ -339,10 +326,7 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 			}
 
 		Rows:
-			// for i := 0; i < cacheSlice.Len(); i++ {
 			for {
-				// s := cacheSlice.Index(i)
-
 				var s reflect.Value
 
 				switch {
@@ -406,9 +390,9 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 			destFilled := false
 			cache, err, _ := selectSinglelight.Do(h, func() (interface{}, error) {
+				start = time.Now()
 				b, err := db.redis.Get(rCtx, h).Bytes()
 				if err == redis.Nil {
-					// cacheSlice = reflect.MakeSlice(reflect.SliceOf(strct), 0, 0)
 					var buf bytes.Buffer
 					switch {
 					case msgpEncodable:
@@ -427,18 +411,12 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 						msgpWriter.Flush()
 					}
 
-					// var buf bytes.Buffer
-					// enc := msgpack.NewEncoder(&buf)
-					// enc.UseArrayEncodedStructs(true)
-					// err := enc.Encode(cacheSlice.Interface())
-					// if err != nil {
-					// 	return nil, errors.Wrapf(err, "failed to create cache bytes")
-					// }
-
 					err = db.redis.Set(rCtx, h, buf.Bytes(), cache).Err()
 					if err != nil {
 						return nil, errors.Wrapf(err, "cool-mysql select: failed to set query cache to redis")
 					}
+
+					start = time.Now()
 
 					return buf.Bytes(), nil
 				}

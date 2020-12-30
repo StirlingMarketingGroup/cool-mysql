@@ -16,7 +16,7 @@ func (db *Database) Exec(query string, params ...Params) error {
 
 	start := time.Now()
 	_, err := db.Writes.Exec(replacedQuery)
-	db.Log(replacedQuery, mergedParams, time.Since(start))
+	db.callLog(replacedQuery, mergedParams, time.Since(start))
 
 	if err != nil {
 		return Error{
