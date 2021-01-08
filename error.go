@@ -17,7 +17,7 @@ type Error struct {
 
 // QueryErrorLoggingLength is the size of the query
 // characters that are logged when an error occurs
-var QueryErrorLoggingLength = 1 << 11 // 2kB
+var QueryErrorLoggingLength = 1 << 12 // 4kB
 
 func (v Error) Error() string {
 	if len(v.ReplacedQuery) > QueryErrorLoggingLength {
