@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	dynamicstruct "github.com/Ompluscator/dynamic-struct"
 	"github.com/fatih/structs"
@@ -50,6 +51,11 @@ func (db *Database) Insert(insert string, src interface{}) error {
 	return db.InsertWithRowComplete(insert, src, nil)
 }
 
+type insertColumn struct {
+	name             string
+	structFieldIndex int
+}
+
 // InsertWithRowComplete inserts struct rows from the source as a channel, single struct, or slice of structs
 // rowComplete func is given the start time of processing the row
 // for use of things like progress bars, timing the duration it takes to insert the row(s)
@@ -59,26 +65,32 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 		return err
 	}
 
-	var columns []string
+	var columns []insertColumn
 
 	switch src := source.(type) {
 	case Params:
-		columns = make([]string, len(src))
+		columns = make([]insertColumn, len(src))
 		i := 0
 		for c := range src {
-			columns[i] = c
+			columns[i] = insertColumn{name: c}
 			i++
 		}
 	default:
 		switch reflectKind {
 		case reflect.Chan, reflect.Slice:
-			columns = make([]string, reflectStruct.NumField())
-			for i := 0; i < len(columns); i++ {
+			structFieldCount := reflectStruct.NumField()
+			columns = make([]insertColumn, 0, structFieldCount)
+			for i := 0; i < structFieldCount; i++ {
 				f := reflectStruct.Field(i)
+
+				if !unicode.IsUpper([]rune(f.Name)[0]) {
+					continue
+				}
+
 				if t, ok := f.Tag.Lookup("mysql"); ok {
-					columns[i] = t
+					columns = append(columns, insertColumn{t, i})
 				} else {
-					columns[i] = f.Name
+					columns = append(columns, insertColumn{f.Name, i})
 				}
 			}
 		default:
@@ -101,7 +113,7 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 			insertBuf.WriteByte(',')
 		}
 		insertBuf.WriteByte('`')
-		insertBuf.WriteString(c)
+		insertBuf.WriteString(c.name)
 		insertBuf.WriteByte('`')
 	}
 	insertBuf.WriteString(")values")
@@ -153,11 +165,11 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 			}
 			switch src := source.(type) {
 			case Params:
-				WriteEncoded(insertBuf, src[columns[i]], true)
+				WriteEncoded(insertBuf, src[columns[i].name], true)
 			default:
 				switch reflectKind {
 				case reflect.Chan, reflect.Slice:
-					WriteEncoded(insertBuf, r.Field(i).Interface(), true)
+					WriteEncoded(insertBuf, r.Field(columns[i].structFieldIndex).Interface(), true)
 				default:
 					panic("cool-mysql insert: unhandled source type - how did you get here?")
 				}
