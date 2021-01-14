@@ -83,6 +83,12 @@ var bufPool = sync.Pool{
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
+	return db.SelectWithCtx(context.Background(), dest, query, cache, params...)
+}
+
+// SelectWithCtx selects one or more rows into the
+// chan of structs in the destination
+func (db *Database) SelectWithCtx(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
@@ -123,7 +129,10 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 			}
 		}
 
-		main := func() error {
+		main := func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			if db.Finished != nil {
 				defer func() { db.Finished(false, replacedQuery, mergedParams, execDuration, time.Since(start)) }()
 			}
@@ -265,7 +274,23 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				switch kind {
 				case reflect.Chan:
-					refDest.Send(s)
+					cases := []reflect.SelectCase{
+						{
+							Dir:  reflect.SelectRecv,
+							Chan: reflect.ValueOf(ctx.Done()),
+						},
+						{
+							Dir:  reflect.SelectSend,
+							Chan: refDest,
+							Send: s,
+						},
+					}
+					switch index, _, _ := reflect.Select(cases); index {
+					case 0:
+						cancel()
+						return nil
+					case 1:
+					}
 				case reflect.Slice:
 					refDest.Set(reflect.Append(refDest, s))
 				case reflect.Struct:
@@ -287,16 +312,16 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		case reflect.Chan:
 			if cache == 0 {
 				go func() {
-					if err := main(); err != nil {
+					if err := main(ctx); err != nil {
 						panic(err)
 					}
 				}()
 			} else {
-				return main()
+				return main(ctx)
 			}
 		case reflect.Slice, reflect.Struct:
 			refDest = refDest.Elem()
-			return main()
+			return main(ctx)
 		}
 		return nil
 	}
@@ -306,7 +331,10 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		start = time.Now()
 		db.callLog("/* cached! */ "+replacedQuery, mergedParams, execDuration)
 
-		main := func() error {
+		main := func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			if db.Finished != nil {
 				defer func() { db.Finished(true, replacedQuery, mergedParams, execDuration, time.Since(start)) }()
 			}
@@ -351,7 +379,23 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 				switch kind {
 				case reflect.Chan:
-					refDest.Send(s)
+					cases := []reflect.SelectCase{
+						{
+							Dir:  reflect.SelectRecv,
+							Chan: reflect.ValueOf(ctx.Done()),
+						},
+						{
+							Dir:  reflect.SelectSend,
+							Chan: refDest,
+							Send: s,
+						},
+					}
+					switch index, _, _ := reflect.Select(cases); index {
+					case 0:
+						cancel()
+						return nil
+					case 1:
+					}
 				case reflect.Slice:
 					refDest.Set(reflect.Append(refDest, s))
 				case reflect.Struct:
@@ -366,13 +410,13 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 		switch kind {
 		case reflect.Chan:
 			go func() {
-				if err := main(); err != nil {
+				if err := main(ctx); err != nil {
 					panic(err)
 				}
 			}()
 		case reflect.Slice, reflect.Struct:
 			refDest = refDest.Elem()
-			return main()
+			return main(ctx)
 		}
 		return nil
 	}

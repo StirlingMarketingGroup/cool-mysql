@@ -247,9 +247,12 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 	// check the reflect kind, since we want to
 	// deal with underyling value types if they didn't
 	// explicitly set a way to be encoded
-	ref := reflect.Indirect(reflect.ValueOf(x))
+	ref := reflect.ValueOf(x)
 	kind := ref.Kind()
 	switch kind {
+	case reflect.Ptr:
+		WriteEncoded(s, ref.Elem().Interface(), true)
+		return
 	case reflect.Bool:
 		v := ref.Bool()
 		if v {
