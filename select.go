@@ -83,12 +83,12 @@ var bufPool = sync.Pool{
 // Select selects one or more rows into the
 // chan of structs in the destination
 func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
-	return db.SelectWithCtx(context.Background(), dest, query, cache, params...)
+	return db.SelectContext(context.Background(), dest, query, cache, params...)
 }
 
-// SelectWithCtx selects one or more rows into the
+// SelectContext selects one or more rows into the
 // chan of structs in the destination
-func (db *Database) SelectWithCtx(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
