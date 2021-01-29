@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // ExecContextResult executes a query and nothing more
@@ -57,9 +59,23 @@ func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Par
 		os.Exit(0)
 	}
 
+	if tx.Database.DisableForeignKeyChecks {
+		_, err := tx.Tx.ExecContext(ctx, "set`FOREIGN_KEY_CHECKS`=0")
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to disable foreign key checks")
+		}
+	}
+
 	start := time.Now()
 	res, err := tx.Tx.ExecContext(ctx, replacedQuery)
 	tx.Database.callLog(replacedQuery, mergedParams, time.Since(start))
+
+	if tx.Database.DisableForeignKeyChecks {
+		_, err := tx.Tx.ExecContext(ctx, "set`FOREIGN_KEY_CHECKS`=1")
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to re-enable foreign key checks")
+		}
+	}
 
 	if err != nil {
 		return nil, Error{

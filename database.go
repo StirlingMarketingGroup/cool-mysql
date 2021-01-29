@@ -23,6 +23,9 @@ type Database struct {
 	maxInsertSize int
 
 	redis *redis.Client
+
+	// DisableForeignKeyChecks only affects foreign keys for transactions
+	DisableForeignKeyChecks bool
 }
 
 // Clone returns a copy of the db with the same connections
