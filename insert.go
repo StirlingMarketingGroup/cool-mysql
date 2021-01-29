@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"fmt"
 	"reflect"
@@ -48,7 +49,12 @@ func checkSource(source interface{}) (reflect.Value, reflect.Kind, reflect.Type,
 
 // Insert inserts struct rows from the source as a channel, single struct, or slice of structs
 func (db *Database) Insert(insert string, src interface{}) error {
-	return db.InsertWithRowComplete(insert, src, nil)
+	return db.InsertContextRowComplete(context.Background(), insert, src, nil)
+}
+
+// InsertContext inserts struct rows from the source as a channel, single struct, or slice of structs
+func (db *Database) InsertContext(ctx context.Context, insert string, src interface{}) error {
+	return db.InsertContextRowComplete(ctx, insert, src, nil)
 }
 
 type insertColumn struct {
@@ -56,10 +62,10 @@ type insertColumn struct {
 	structFieldIndex int
 }
 
-// InsertWithRowComplete inserts struct rows from the source as a channel, single struct, or slice of structs
+// InsertContextRowComplete inserts struct rows from the source as a channel, single struct, or slice of structs
 // rowComplete func is given the start time of processing the row
 // for use of things like progress bars, timing the duration it takes to insert the row(s)
-func (db *Database) InsertWithRowComplete(insert string, source interface{}, rowComplete func(start time.Time)) error {
+func (db *Database) InsertContextRowComplete(ctx context.Context, insert string, source interface{}, rowComplete func(start time.Time)) error {
 	reflectValue, reflectKind, reflectStruct, err := checkSource(source)
 	if err != nil {
 		return err
@@ -118,6 +124,14 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 	}
 	insertBuf.WriteString(")values")
 	baseLen := insertBuf.Len()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	tx, err := db.BeginWritesTx(ctx)
+	if err != nil {
+		return errors.Wrapf(err, "cool-mysql insert: failed to create transaction")
+	}
 
 	curRows := 0
 	i := 0
@@ -183,7 +197,7 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 			if onDuplicateKeyUpdateI != -1 {
 				insertBuf.WriteString(onDuplicateKeyUpdate)
 			}
-			err := db.Exec(insertBuf.String())
+			err := tx.Exec(insertBuf.String())
 			if err != nil {
 				return err
 			}
@@ -211,7 +225,7 @@ func (db *Database) InsertWithRowComplete(insert string, source interface{}, row
 		}
 	}
 
-	return nil
+	return errors.Wrapf(tx.Commit(), "cool-mysql insert: failed to commit transaction")
 }
 
 var insertUniquelyTableRegexp = regexp.MustCompile("`.+?`")
