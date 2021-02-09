@@ -1,11 +1,13 @@
-package mysql
+package mysql_test
 
 import (
 	"testing"
+
+	mysql "github.com/StirlingMarketingGroup/cool-mysql"
 )
 
 func BenchmarkCoolSelectJSONChanNotCached(b *testing.B) {
-	db, err := New(user, pass, schema, host, port,
+	db, err := mysql.New(user, pass, schema, host, port,
 		user, pass, schema, host, port,
 		nil)
 	if err != nil {

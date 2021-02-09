@@ -219,7 +219,7 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 		if onDuplicateKeyUpdateI != -1 {
 			insertBuf.WriteString(onDuplicateKeyUpdate)
 		}
-		err := db.Exec(insertBuf.String())
+		err := tx.Exec(insertBuf.String())
 		if err != nil {
 			return err
 		}
