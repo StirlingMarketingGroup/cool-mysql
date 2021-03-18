@@ -49,7 +49,7 @@ func checkSource(source interface{}) (reflect.Value, reflect.Kind, reflect.Type,
 
 // Insert inserts struct rows from the source as a channel, single struct, or slice of structs
 func (db *Database) Insert(insert string, src interface{}) error {
-	return db.InsertContextRowComplete(context.Background(), insert, src, nil)
+	return db.InsertContextRowComplete(nil, insert, src, nil)
 }
 
 // InsertContext inserts struct rows from the source as a channel, single struct, or slice of structs
@@ -125,12 +125,21 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 	insertBuf.WriteString(")values")
 	baseLen := insertBuf.Len()
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var conn interface {
+		Exec(query string, params ...Params) error
+	}
 
-	tx, err := db.BeginWritesTx(ctx)
-	if err != nil {
-		return errors.Wrapf(err, "cool-mysql insert: failed to create transaction")
+	var cancel context.CancelFunc
+	if ctx != nil {
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+
+		conn, err = db.BeginWritesTx(ctx)
+		if err != nil {
+			return errors.Wrapf(err, "cool-mysql insert: failed to create transaction")
+		}
+	} else {
+		conn = db
 	}
 
 	curRows := 0
@@ -197,7 +206,7 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 			if onDuplicateKeyUpdateI != -1 {
 				insertBuf.WriteString(onDuplicateKeyUpdate)
 			}
-			err := tx.Exec(insertBuf.String())
+			err := conn.Exec(insertBuf.String())
 			if err != nil {
 				return err
 			}
@@ -219,13 +228,17 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 		if onDuplicateKeyUpdateI != -1 {
 			insertBuf.WriteString(onDuplicateKeyUpdate)
 		}
-		err := tx.Exec(insertBuf.String())
+		err := conn.Exec(insertBuf.String())
 		if err != nil {
 			return err
 		}
 	}
 
-	return errors.Wrapf(tx.Commit(), "cool-mysql insert: failed to commit transaction")
+	if ctx != nil {
+		return errors.Wrapf(conn.(*Tx).Commit(), "cool-mysql insert: failed to commit transaction")
+	}
+
+	return nil
 }
 
 var insertUniquelyTableRegexp = regexp.MustCompile("`.+?`")
