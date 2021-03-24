@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"github.com/fatih/structs"
 	"github.com/jinzhu/copier"
 	"github.com/pkg/errors"
+	"github.com/shopspring/decimal"
 )
 
 // ErrSourceInvalidType is an error about what types are allowed
@@ -60,6 +62,37 @@ func (db *Database) InsertContext(ctx context.Context, insert string, src interf
 type insertColumn struct {
 	name             string
 	structFieldIndex int
+}
+
+func paramToJSON(v interface{}) (interface{}, error) {
+	if _, ok := v.(Encodable); ok {
+		return v, nil
+	}
+	if _, ok := v.(time.Time); ok {
+		return v, nil
+	}
+	if _, ok := v.(decimal.Decimal); ok {
+		return v, nil
+	}
+
+	r := reflect.ValueOf(v)
+
+	switch k := r.Kind(); k {
+	case reflect.Ptr:
+		return paramToJSON(r.Elem().Interface())
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.Struct:
+		if k == reflect.Slice && r.Type().Elem().Kind() == reflect.Uint8 {
+			return v, nil
+		}
+
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		return JSON(b), nil
+	}
+
+	return v, nil
 }
 
 // InsertContextRowComplete inserts struct rows from the source as a channel, single struct, or slice of structs
@@ -186,17 +219,27 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 			if i != 0 {
 				insertBuf.WriteByte(',')
 			}
+
+			var p interface{}
+
 			switch src := source.(type) {
 			case Params:
-				WriteEncoded(insertBuf, src[columns[i].name], true)
+				p = src[columns[i].name]
 			default:
 				switch reflectKind {
 				case reflect.Chan, reflect.Slice:
-					WriteEncoded(insertBuf, r.Field(columns[i].structFieldIndex).Interface(), true)
+					p = r.Field(columns[i].structFieldIndex).Interface()
 				default:
 					panic("cool-mysql insert: unhandled source type - how did you get here?")
 				}
 			}
+
+			p, err = paramToJSON(p)
+			if err != nil {
+				return errors.Wrapf(err, "failed to convert param to json for value", columns[i].name)
+			}
+
+			WriteEncoded(insertBuf, p, true)
 		}
 		insertBuf.WriteByte(')')
 
