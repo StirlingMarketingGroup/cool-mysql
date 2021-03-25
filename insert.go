@@ -116,7 +116,7 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 		}
 	default:
 		switch reflectKind {
-		case reflect.Chan, reflect.Slice:
+		case reflect.Chan, reflect.Slice, reflect.Struct:
 			structFieldCount := reflectStruct.NumField()
 			columns = make([]insertColumn, 0, structFieldCount)
 			for i := 0; i < structFieldCount; i++ {
@@ -196,6 +196,14 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 
 				r, ok = reflectValue.Index(i), true
 				i++
+			case reflect.Struct:
+				if i != 0 {
+					ok = false
+					break
+				}
+
+				r, ok = reflectValue, true
+				i++
 			default:
 				panic("cool-mysql insert: unhandled source type - how did you get here?")
 			}
@@ -227,7 +235,7 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 				p = src[columns[i].name]
 			default:
 				switch reflectKind {
-				case reflect.Chan, reflect.Slice:
+				case reflect.Chan, reflect.Slice, reflect.Struct:
 					p = r.Field(columns[i].structFieldIndex).Interface()
 				default:
 					panic("cool-mysql insert: unhandled source type - how did you get here?")
