@@ -79,7 +79,9 @@ func paramToJSON(v interface{}) (interface{}, error) {
 
 	switch k := r.Kind(); k {
 	case reflect.Ptr:
-		return paramToJSON(r.Elem().Interface())
+		if r.Elem().IsValid() {
+			return paramToJSON(r.Elem().Interface())
+		}
 	case reflect.Array, reflect.Map, reflect.Slice, reflect.Struct:
 		if k == reflect.Slice && r.Type().Elem().Kind() == reflect.Uint8 {
 			return v, nil
