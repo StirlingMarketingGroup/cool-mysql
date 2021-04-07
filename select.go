@@ -157,6 +157,12 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 				for j := 0; j < fieldsLen; j++ {
 					if fields[j] == nil {
 						f := strct.Field(j)
+
+						// check if field is exported
+						if len(f.PkgPath) != 0 {
+							continue
+						}
+
 						name, ok := f.Tag.Lookup("mysql")
 						if !ok {
 							name = f.Name
