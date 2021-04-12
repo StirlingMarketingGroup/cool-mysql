@@ -308,7 +308,12 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 			}
 
 			if !ran && kind == reflect.Struct {
-				return sql.ErrNoRows
+				return Error{
+					Err:           sql.ErrNoRows,
+					OriginalQuery: query,
+					ReplacedQuery: replacedQuery,
+					Params:        mergedParams,
+				}
 			}
 
 			return nil
