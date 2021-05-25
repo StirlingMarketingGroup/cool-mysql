@@ -181,8 +181,13 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 							}
 						case reflect.Ptr:
 							switch f.Type.Elem().Kind() {
-							case reflect.Map, reflect.Struct, reflect.Array, reflect.Slice:
+							case reflect.Map, reflect.Struct:
 								jsonable = true
+							case reflect.Array, reflect.Slice:
+								// if it's a slice, but not a byte slice
+								if f.Type.Elem().Elem().Kind() != reflect.Uint8 {
+									jsonable = true
+								}
 							}
 						}
 
