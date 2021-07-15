@@ -350,13 +350,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	s := structs.New(iface)
 
 	for _, c := range s.Fields() {
-		t := c.Tag("mysql")
-
-		// skip anything that has a dash in it
-		if t == "-" || t == "" {
-			continue
-		}
-		fieldsMap[t] = c.Name()
+		fieldsMap[c.Tag("mysql")] = c.Name()
 	}
 
 	var structName string
@@ -391,6 +385,9 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 
 			var f *structs.Field
 			if tag, ok := fieldsMap[c]; !ok || tag == "" {
+				if tag == "-" {
+					continue
+				}
 				f = s.Field(c)
 			} else {
 				f = s.Field(tag)
@@ -412,6 +409,9 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		if _, ok := colsMap[name]; ok {
 			var tag string
 			if len(f.Tag("mysql")) != 0 {
+				if f.Tag("mysql") == "-" {
+					continue
+				}
 				tag = f.Tag("mysql")
 			} else {
 				tag = name
@@ -422,7 +422,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()
 
-	err := db.Select(uniqueStructs, q.String(), 0) //, ...params )
+	err := db.Select(uniqueStructs, q.String(), 0)
 	if err != nil {
 		return errors.Wrapf(err, "failed to execute InsertUniquely's initial select query")
 	}
