@@ -149,6 +149,9 @@ func Benchmark_Genome_MySQL_Select_NotCached(b *testing.B) {
 				&genome.TotalLength,
 				&genome.Created,
 			)
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 }

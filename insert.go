@@ -369,7 +369,17 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 				q.WriteByte(',')
 			}
 
-			WriteEncoded(q, s.Field(c).Value(), true)
+			f, ok := s.FieldOk(c)
+			if !ok {
+				for _, field := range s.Fields() {
+					tag := field.Tag("mysql")
+					if tag == c {
+						f = field
+						break
+					}
+				}
+			}
+			WriteEncoded(q, f.Value(), true)
 			// params[k] = s.Field(c).Value()
 			k++
 		}
