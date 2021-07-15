@@ -379,10 +379,6 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		q.WriteByte('(')
 		var j int
 		for _, c := range uniqueColumns {
-			if j != 0 {
-				q.WriteByte(',')
-			}
-
 			var f *structs.Field
 			if tag, ok := fieldsMap[c]; !ok || tag == "" {
 				if tag == "-" {
@@ -391,6 +387,10 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 				f = s.Field(c)
 			} else {
 				f = s.Field(tag)
+			}
+
+			if j != 0 {
+				q.WriteByte(',')
 			}
 
 			WriteEncoded(q, f.Value(), true)
