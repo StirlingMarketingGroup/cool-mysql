@@ -129,6 +129,9 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 				}
 
 				if t, ok := f.Tag.Lookup("mysql"); ok {
+					if t == "-" {
+						continue
+					}
 					columns = append(columns, insertColumn{t, i})
 				} else {
 					columns = append(columns, insertColumn{f.Name, i})
@@ -339,9 +342,19 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	q.WriteString(c)
 	q.WriteString(")in(")
 
+	fieldsMap := make(map[string]string)
+	iface := slice.Index(0).Interface()
+	if !structs.IsStruct(iface) {
+		return structsErr
+	}
+	s := structs.New(iface)
+
+	for _, c := range s.Fields() {
+		fieldsMap[c.Tag("mysql")] = c.Name()
+	}
+
 	var structName string
 	var fields []*structs.Field
-	// params := make([]interface{}, len(uniqueColumns)*sliceLen)
 	var k int
 	for i := 0; i < sliceLen; i++ {
 		iface := slice.Index(i).Interface()
@@ -364,14 +377,25 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 			q.WriteByte(',')
 		}
 		q.WriteByte('(')
-		for j, c := range uniqueColumns {
+		var j int
+		for _, c := range uniqueColumns {
+			var f *structs.Field
+			if tag, ok := fieldsMap[c]; !ok || tag == "" {
+				if tag == "-" {
+					continue
+				}
+				f = s.Field(c)
+			} else {
+				f = s.Field(tag)
+			}
+
 			if j != 0 {
 				q.WriteByte(',')
 			}
 
-			WriteEncoded(q, s.Field(c).Value(), true)
-			// params[k] = s.Field(c).Value()
+			WriteEncoded(q, f.Value(), true)
 			k++
+			j++
 		}
 		q.WriteByte(')')
 	}
@@ -385,6 +409,9 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		if _, ok := colsMap[name]; ok {
 			var tag string
 			if len(f.Tag("mysql")) != 0 {
+				if f.Tag("mysql") == "-" {
+					continue
+				}
 				tag = f.Tag("mysql")
 			} else {
 				tag = name
@@ -395,7 +422,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()
 
-	err := db.Select(uniqueStructs, q.String(), 0) //, ...params )
+	err := db.Select(uniqueStructs, q.String(), 0)
 	if err != nil {
 		return errors.Wrapf(err, "failed to execute InsertUniquely's initial select query")
 	}
