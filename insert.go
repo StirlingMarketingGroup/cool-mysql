@@ -129,6 +129,9 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 				}
 
 				if t, ok := f.Tag.Lookup("mysql"); ok {
+					if t == "-" {
+						continue
+					}
 					columns = append(columns, insertColumn{t, i})
 				} else {
 					columns = append(columns, insertColumn{f.Name, i})
@@ -339,9 +342,25 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	q.WriteString(c)
 	q.WriteString(")in(")
 
+	fieldsMap := make(map[string]string)
+	iface := slice.Index(0).Interface()
+	if !structs.IsStruct(iface) {
+		return structsErr
+	}
+	s := structs.New(iface)
+
+	for _, c := range s.Fields() {
+		t := c.Tag("mysql")
+
+		// skip anything that has a dash in it
+		if t == "-" || t == "" {
+			continue
+		}
+		fieldsMap[t] = c.Name()
+	}
+
 	var structName string
 	var fields []*structs.Field
-	// params := make([]interface{}, len(uniqueColumns)*sliceLen)
 	var k int
 	for i := 0; i < sliceLen; i++ {
 		iface := slice.Index(i).Interface()
@@ -364,24 +383,22 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 			q.WriteByte(',')
 		}
 		q.WriteByte('(')
-		for j, c := range uniqueColumns {
+		var j int
+		for _, c := range uniqueColumns {
 			if j != 0 {
 				q.WriteByte(',')
 			}
 
-			f, ok := s.FieldOk(c)
-			if !ok {
-				for _, field := range s.Fields() {
-					tag := field.Tag("mysql")
-					if tag == c {
-						f = field
-						break
-					}
-				}
+			var f *structs.Field
+			if tag, ok := fieldsMap[c]; !ok || tag == "" {
+				f = s.Field(c)
+			} else {
+				f = s.Field(tag)
 			}
+
 			WriteEncoded(q, f.Value(), true)
-			// params[k] = s.Field(c).Value()
 			k++
+			j++
 		}
 		q.WriteByte(')')
 	}
