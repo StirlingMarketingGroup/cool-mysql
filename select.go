@@ -112,7 +112,12 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 
 	liveGet := func() error {
 		start = time.Now()
-		rows, err := db.Reads.Query(replacedQuery)
+		stmt, err := db.Reads.Prepare(replacedQuery)
+		if err != nil {
+			return errors.Wrapf(err, "failed to prepare query")
+		}
+		defer stmt.Close()
+		rows, err := stmt.Query()
 		execDuration := time.Since(start)
 		start = time.Now()
 		db.callLog(replacedQuery, mergedParams, execDuration)
