@@ -154,11 +154,20 @@ type Builder interface {
 	Grow(n int)
 }
 
+type nestedValue struct {
+	x interface{}
+}
+
 // WriteEncoded takes a string builder and any value and writes it
 // safely to the query, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
 func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
+	nested, _ := x.(*nestedValue)
+	if nested != nil {
+		x = nested.x
+	}
+
 	if possiblyNull && isNil(x) {
 		s.WriteString("null")
 		return
@@ -298,6 +307,10 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 	}
 
 	if kind == reflect.Slice || kind == reflect.Map {
+		if nested != nil {
+			s.WriteByte('(')
+		}
+
 		refLen := ref.Len()
 		if refLen == 0 {
 			s.WriteString("null")
@@ -306,8 +319,14 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 			if i != 0 {
 				s.WriteByte(',')
 			}
-			WriteEncoded(s, ref.Index(i).Interface(), true)
+
+			WriteEncoded(s, &nestedValue{ref.Index(i).Interface()}, true)
 		}
+
+		if nested != nil {
+			s.WriteByte(')')
+		}
+
 		return
 	}
 

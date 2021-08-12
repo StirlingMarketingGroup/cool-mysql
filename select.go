@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
 	"github.com/tinylib/msgp/msgp"
@@ -112,12 +113,27 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 
 	liveGet := func() error {
 		start = time.Now()
-		stmt, err := db.Reads.Prepare(replacedQuery)
+		var rows *sql.Rows
+
+		b := backoff.NewExponentialBackOff()
+		b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+		err := backoff.Retry(func() error {
+			var err error
+			rows, err = db.Reads.QueryContext(ctx, replacedQuery)
+			if err != nil {
+				if checkRetryError(err) {
+					return err
+				} else {
+					return backoff.Permanent(err)
+				}
+			}
+
+			return nil
+		}, backoff.WithContext(b, ctx))
 		if err != nil {
-			return errors.Wrapf(err, "failed to prepare query")
+			return err
 		}
-		defer stmt.Close()
-		rows, err := stmt.Query()
+
 		execDuration := time.Since(start)
 		start = time.Now()
 		db.callLog(replacedQuery, mergedParams, execDuration)

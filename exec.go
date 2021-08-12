@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 )
 
@@ -19,7 +20,24 @@ func (db *Database) ExecContextResult(ctx context.Context, query string, params 
 	}
 
 	start := time.Now()
-	res, err := db.Writes.ExecContext(ctx, replacedQuery)
+	var res sql.Result
+
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+	err := backoff.Retry(func() error {
+		var err error
+		res, err = db.Writes.ExecContext(ctx, replacedQuery)
+		if err != nil {
+			if checkRetryError(err) {
+				return err
+			} else {
+				return backoff.Permanent(err)
+			}
+		}
+
+		return nil
+	}, backoff.WithContext(b, ctx))
+
 	db.callLog(replacedQuery, mergedParams, time.Since(start))
 
 	if err != nil {
@@ -67,7 +85,24 @@ func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Par
 	}
 
 	start := time.Now()
-	res, err := tx.Tx.ExecContext(ctx, replacedQuery)
+	var res sql.Result
+
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+	err := backoff.Retry(func() error {
+		var err error
+		res, err = tx.Tx.ExecContext(ctx, replacedQuery)
+		if err != nil {
+			if checkRetryError(err) {
+				return err
+			} else {
+				return backoff.Permanent(err)
+			}
+		}
+
+		return nil
+	}, backoff.WithContext(b, ctx))
+
 	tx.Database.callLog(replacedQuery, mergedParams, time.Since(start))
 
 	if tx.Database.DisableForeignKeyChecks {

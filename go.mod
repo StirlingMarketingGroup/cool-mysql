@@ -4,6 +4,7 @@ go 1.16
 
 require (
 	github.com/Ompluscator/dynamic-struct v1.3.0
+	github.com/cenkalti/backoff/v4 v4.1.1
 	github.com/davecgh/go-spew v1.1.1
 	github.com/fatih/structs v1.1.0
 	github.com/go-redis/redis/v8 v8.8.0
