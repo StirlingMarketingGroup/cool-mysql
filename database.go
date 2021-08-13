@@ -117,5 +117,8 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		db.Reads = db.Writes
 	}
 
+	db.Writes.SetConnMaxLifetime(MaxConnectionTime)
+	db.Reads.SetConnMaxLifetime(MaxConnectionTime)
+
 	return
 }
