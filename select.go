@@ -17,6 +17,7 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-redis/redis/v8"
+	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 	"github.com/tinylib/msgp/msgp"
 	"golang.org/x/sync/singleflight"
@@ -122,6 +123,11 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 			rows, err = db.Reads.QueryContext(ctx, replacedQuery)
 			if err != nil {
 				if checkRetryError(err) {
+					return err
+				} else if err == mysql.ErrInvalidConn {
+					if err := db.Test(); err != nil {
+						return err
+					}
 					return err
 				} else {
 					return backoff.Permanent(err)
