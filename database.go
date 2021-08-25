@@ -4,16 +4,21 @@ import (
 	"database/sql"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/go-sql-driver/mysql"
+	"github.com/pkg/errors"
 )
 
 // Database is a cool MySQL connection
 type Database struct {
 	Writes *sql.DB
 	Reads  *sql.DB
+
+	WritesDSN string
+	ReadsDSN  string
 
 	Log      LogFunc
 	Finished FinishedFunc
@@ -26,6 +31,8 @@ type Database struct {
 
 	// DisableForeignKeyChecks only affects foreign keys for transactions
 	DisableForeignKeyChecks bool
+
+	testMx *sync.Mutex
 }
 
 // Clone returns a copy of the db with the same connections
@@ -90,6 +97,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db = new(Database)
 
+	db.WritesDSN = writes
 	db.Writes, err = sql.Open("mysql", writes)
 	if err != nil {
 		return nil, err
@@ -103,7 +111,10 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	writesDSN, _ := mysql.ParseDSN(writes)
 	db.maxInsertSize = writesDSN.MaxAllowedPacket
 
+	db.Writes.SetConnMaxLifetime(MaxConnectionTime)
+
 	if reads != writes {
+		db.ReadsDSN = reads
 		db.Reads, err = sql.Open("mysql", reads)
 		if err != nil {
 			return nil, err
@@ -113,12 +124,39 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		if err != nil {
 			return nil, err
 		}
+
+		db.Reads.SetConnMaxLifetime(MaxConnectionTime)
 	} else {
+		db.ReadsDSN = writes
 		db.Reads = db.Writes
 	}
 
-	db.Writes.SetConnMaxLifetime(MaxConnectionTime)
-	db.Reads.SetConnMaxLifetime(MaxConnectionTime)
-
 	return
+}
+
+// Reconnect creates new connection(s) for writes and reads
+// and replaces the existing connections with the new ones
+func (db *Database) Reconnect() error {
+	new, err := NewFromDSN(db.WritesDSN, db.ReadsDSN)
+	if err != nil {
+		return errors.Wrapf(err, "failed to reconnect")
+	}
+
+	*db.Writes = *new.Writes
+	*db.Reads = *new.Reads
+
+	return nil
+}
+
+// Test pings both writes and reads connection and if either fail
+// reconnects both connections
+func (db *Database) Test() error {
+	db.testMx.Lock()
+	defer db.testMx.Unlock()
+
+	if db.Writes.Ping() != nil || db.Reads.Ping() != nil {
+		return db.Reconnect()
+	}
+
+	return nil
 }

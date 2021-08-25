@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 )
 
@@ -29,6 +30,11 @@ func (db *Database) ExecContextResult(ctx context.Context, query string, params 
 		res, err = db.Writes.ExecContext(ctx, replacedQuery)
 		if err != nil {
 			if checkRetryError(err) {
+				return err
+			} else if err == mysql.ErrInvalidConn {
+				if err := db.Test(); err != nil {
+					return err
+				}
 				return err
 			} else {
 				return backoff.Permanent(err)
@@ -89,11 +95,18 @@ func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Par
 
 	b := backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+	// TODO: no way any of this code is going to work.
+	// Individual commands in a tx simply being retried makes no sense
 	err := backoff.Retry(func() error {
 		var err error
 		res, err = tx.Tx.ExecContext(ctx, replacedQuery)
 		if err != nil {
 			if checkRetryError(err) {
+				return err
+			} else if err == mysql.ErrInvalidConn {
+				if err := tx.Database.Test(); err != nil {
+					return err
+				}
 				return err
 			} else {
 				return backoff.Permanent(err)
