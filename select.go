@@ -549,3 +549,25 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 	// we got this far, so just fill the dest with a normal live get
 	return liveGet()
 }
+
+func (db *Database) SelectJSONContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
+	var store struct {
+		JSON []byte
+	}
+
+	err := db.SelectContext(ctx, &store, query, cache, params...)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(store.JSON, dest)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (db *Database) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
+	return db.SelectJSONContext(context.Background(), dest, query, cache, params...)
+}
