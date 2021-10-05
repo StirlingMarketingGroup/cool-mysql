@@ -10,10 +10,10 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
 	dynamicstruct "github.com/Ompluscator/dynamic-struct"
 	"github.com/fatih/structs"
+	"github.com/fatih/structtag"
 	"github.com/jinzhu/copier"
 	"github.com/pkg/errors"
 	"github.com/shopspring/decimal"
@@ -62,6 +62,7 @@ func (db *Database) InsertContext(ctx context.Context, insert string, src interf
 type insertColumn struct {
 	name             string
 	structFieldIndex int
+	omitempty        bool
 }
 
 func paramToJSON(v interface{}) (interface{}, error) {
@@ -124,17 +125,23 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 			for i := 0; i < structFieldCount; i++ {
 				f := reflectStruct.Field(i)
 
-				if !unicode.IsUpper([]rune(f.Name)[0]) {
+				if f.PkgPath != "" {
 					continue
 				}
 
-				if t, ok := f.Tag.Lookup("mysql"); ok {
-					if t == "-" {
+				var t *structtag.Tag
+				tag, err := structtag.Parse(string(f.Tag))
+				if err == nil {
+					t, _ = tag.Get("mysql")
+				}
+
+				if t != nil {
+					if t.Name == "-" {
 						continue
 					}
-					columns = append(columns, insertColumn{t, i})
+					columns = append(columns, insertColumn{t.Name, i, t.HasOption("omitempty")})
 				} else {
-					columns = append(columns, insertColumn{f.Name, i})
+					columns = append(columns, insertColumn{f.Name, i, false})
 				}
 			}
 		default:
@@ -142,7 +149,7 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 		}
 	}
 
-	onDuplicateKeyUpdateI := strings.Index(insert, "on duplicate key update")
+	onDuplicateKeyUpdateI := strings.Index(strings.ToLower(insert), "on duplicate key update")
 	var onDuplicateKeyUpdate string
 	if onDuplicateKeyUpdateI != -1 {
 		onDuplicateKeyUpdate = insert[onDuplicateKeyUpdateI:]
@@ -247,6 +254,11 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 				}
 			}
 
+			if columns[i].omitempty && isZero(p) {
+				WriteEncoded(insertBuf, Literal("default"), false)
+				continue
+			}
+
 			p, err = paramToJSON(p)
 			if err != nil {
 				return errors.Wrapf(err, "failed to convert param to json for value", columns[i].name)
@@ -342,15 +354,53 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	q.WriteString(c)
 	q.WriteString(")in(")
 
-	fieldsMap := make(map[string]string)
 	iface := slice.Index(0).Interface()
 	if !structs.IsStruct(iface) {
 		return structsErr
 	}
-	s := structs.New(iface)
 
-	for _, c := range s.Fields() {
-		fieldsMap[c.Tag("mysql")] = c.Name()
+	reflectStruct := reflect.TypeOf(iface)
+	structFieldCount := reflectStruct.NumField()
+
+	type fieldDetail struct {
+		name      string
+		skip      bool
+		omitempty bool
+	}
+	fieldDetails := make([]fieldDetail, structFieldCount)
+	fieldDetailsMap := make(map[string]*fieldDetail)
+
+	for i := 0; i < structFieldCount; i++ {
+		f := reflectStruct.Field(i)
+
+		if f.PkgPath != "" {
+			fieldDetails[i].skip = true
+			continue
+		}
+
+		var t *structtag.Tag
+		tag, err := structtag.Parse(string(f.Tag))
+		if err == nil {
+			t, _ = tag.Get("mysql")
+		}
+
+		if t != nil {
+			if t.Name == "-" {
+				fieldDetails[i].skip = true
+				continue
+			}
+
+			fieldDetails[i].omitempty = t.HasOption("omitempty")
+
+			fieldDetails[i].name = t.Name
+			continue
+		}
+
+		fieldDetails[i].name = f.Name
+	}
+
+	for i := range fieldDetails {
+		fieldDetailsMap[fieldDetails[i].name] = &fieldDetails[i]
 	}
 
 	var structName string
@@ -378,16 +428,15 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		}
 		q.WriteByte('(')
 		var j int
-		for _, c := range uniqueColumns {
+		for _, u := range uniqueColumns {
 			var f *structs.Field
-			if tag, ok := fieldsMap[c]; !ok || tag == "" {
-				if tag == "-" {
-					continue
-				}
-				f = s.Field(c)
-			} else {
-				f = s.Field(tag)
+
+			d, ok := fieldDetailsMap[u]
+			if !ok || d.skip {
+				return errors.Errorf("column %q doesn't exist in struct or isn't exported or was ignored", c)
 			}
+
+			f = s.Field(d.name)
 
 			if j != 0 {
 				q.WriteByte(',')
@@ -405,19 +454,19 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 
 	uniqueStructBuilder := dynamicstruct.NewStruct()
 	for _, f := range fields {
-		name := f.Name()
-		if _, ok := colsMap[name]; ok {
-			var tag string
-			if len(f.Tag("mysql")) != 0 {
-				if f.Tag("mysql") == "-" {
-					continue
-				}
-				tag = f.Tag("mysql")
-			} else {
-				tag = name
-			}
-			uniqueStructBuilder.AddField(name, f.Value(), `mysql:"`+tag+`"`)
+		fieldName := f.Name()
+
+		fd := fieldDetailsMap[fieldName]
+		if fd.skip {
+			continue
 		}
+
+		tag := fd.name
+		if fd.omitempty {
+			tag += ",omitempty"
+		}
+
+		uniqueStructBuilder.AddField(fieldName, f.Value(), `mysql:"`+tag+`"`)
 	}
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()

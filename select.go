@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"github.com/fatih/structtag"
 	"github.com/go-redis/redis/v8"
 	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
@@ -190,9 +191,11 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 							continue
 						}
 
-						name, ok := f.Tag.Lookup("mysql")
-						if !ok {
-							name = f.Name
+						name := f.Name
+						if tag, err := structtag.Parse(string(f.Tag)); err == nil {
+							if t, err := tag.Get("mysql"); err == nil {
+								name = t.Name
+							}
 						}
 						kind := f.Type.Kind()
 
