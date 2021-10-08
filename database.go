@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"net"
 	"strconv"
@@ -28,9 +29,6 @@ type Database struct {
 	maxInsertSize int
 
 	redis *redis.Client
-
-	// DisableForeignKeyChecks only affects foreign keys for transactions
-	DisableForeignKeyChecks bool
 
 	testMx *sync.Mutex
 }
@@ -159,4 +157,36 @@ func (db *Database) Test() error {
 	}
 
 	return nil
+}
+
+func (db *Database) Select(dest interface{}, query string, cache time.Time, args ...Params) error {
+	return _select(context.Background(), db, db.Reads, dest, query, cache, args...)
+}
+
+func (db *Database) SelectContext(ctx context.Context, dest interface{}, query string, cache time.Time, args ...Params) error {
+	return _select(ctx, db, db.Reads, dest, query, cache, args...)
+}
+
+func (db *Database) SelectWrites(dest interface{}, query string, cache time.Time, args ...Params) error {
+	return _select(context.Background(), db, db.Writes, dest, query, cache, args...)
+}
+
+func (db *Database) SelectContextWrites(ctx context.Context, dest interface{}, query string, cache time.Time, args ...Params) error {
+	return _select(ctx, db, db.Writes, dest, query, cache, args...)
+}
+
+func (db *Database) Exec(dest interface{}, query string, args ...Params) (sql.Result, error) {
+	return exec(context.Background(), db, db.Reads, query, args...)
+}
+
+func (db *Database) ExecContext(ctx context.Context, dest interface{}, query string, args ...Params) (sql.Result, error) {
+	return exec(ctx, db, db.Reads, query, args...)
+}
+
+func (db *Database) ExecReads(dest interface{}, query string, args ...Params) (sql.Result, error) {
+	return exec(context.Background(), db, db.Writes, query, args...)
+}
+
+func (db *Database) ExecContextReads(ctx context.Context, dest interface{}, query string, args ...Params) (sql.Result, error) {
+	return exec(ctx, db, db.Writes, query, args...)
 }
