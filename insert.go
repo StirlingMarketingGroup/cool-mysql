@@ -364,6 +364,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 
 	type fieldDetail struct {
 		name      string
+		fieldName string
 		skip      bool
 		omitempty bool
 	}
@@ -383,6 +384,8 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		if err == nil {
 			t, _ = tag.Get("mysql")
 		}
+
+		fieldDetails[i].fieldName = f.Name
 
 		if t != nil {
 			if t.Name == "-" {
@@ -436,7 +439,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 				return errors.Errorf("column %q doesn't exist in struct or isn't exported or was ignored", c)
 			}
 
-			f = s.Field(d.name)
+			f = s.Field(d.fieldName)
 
 			if j != 0 {
 				q.WriteByte(',')
@@ -457,7 +460,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		fieldName := f.Name()
 
 		fd := fieldDetailsMap[fieldName]
-		if fd.skip {
+		if fd == nil || fd.skip {
 			continue
 		}
 
