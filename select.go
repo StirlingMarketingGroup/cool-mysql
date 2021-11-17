@@ -193,7 +193,7 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 
 						name := f.Name
 						if tag, err := structtag.Parse(string(f.Tag)); err == nil {
-							if t, err := tag.Get("mysql"); err == nil {
+							if t, err := tag.Get("mysql"); err == nil && len(t.Name) != 0 && t.Name != "-" {
 								name = t.Name
 							}
 						}
