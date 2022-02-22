@@ -29,6 +29,10 @@ func (v Error) Error() string {
 	return fmt.Sprintf("%s\n\nquery len:\n%d\n\nquery:\n%s\n\nparams:\n%s", v.Err.Error(), len(v.ReplacedQuery), v.ReplacedQuery, spew.Sdump(v.Params))
 }
 
+func (v Error) Unwrap() error {
+	return v.Err
+}
+
 func checkRetryError(err error) (ok bool) {
 	switch err := err.(type) {
 	case *stdMysql.MySQLError:
