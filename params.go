@@ -255,7 +255,7 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 	case json.RawMessage:
 		if len(v) != 0 {
 			s.WriteString("_utf8mb4 0x")
-			hex.NewEncoder(s).Write([]byte(v))
+			hex.NewEncoder(s).Write(v)
 			s.WriteString(" collate utf8mb4_unicode_ci")
 		} else {
 			s.WriteString("''")
