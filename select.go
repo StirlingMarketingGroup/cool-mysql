@@ -91,12 +91,23 @@ func (db *Database) Select(dest interface{}, query string, cache time.Duration, 
 
 // SelectContext selects one or more rows into the
 // chan of structs in the destination
-func (db *Database) SelectContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) (err error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)
 	}
+
+	defer func() {
+		if err != nil {
+			err = Error{
+				Err:           err,
+				OriginalQuery: query,
+				ReplacedQuery: replacedQuery,
+				Params:        mergedParams,
+			}
+		}
+	}()
 
 	refDest, kind, strct, err := checkDest(dest)
 	if err != nil {
@@ -149,12 +160,7 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 			if kind == reflect.Chan {
 				refDest.Close()
 			}
-			return Error{
-				Err:           err,
-				OriginalQuery: query,
-				ReplacedQuery: replacedQuery,
-				Params:        mergedParams,
-			}
+			return err
 		}
 
 		main := func(ctx context.Context) error {
