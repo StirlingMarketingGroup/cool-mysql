@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -140,6 +141,16 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 	return s.String(), params[0]
 }
 
+func utf8encode(s Builder, v []byte) {
+	if len(v) != 0 {
+		s.WriteString("_utf8mb4 0x")
+		hex.NewEncoder(s).Write(v)
+		s.WriteString(" collate utf8mb4_unicode_ci")
+	} else {
+		s.WriteString("''")
+	}
+}
+
 // Encodable is a type with it's own cool mysql
 // encode method for safe replacing
 type Encodable interface {
@@ -182,13 +193,7 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 		}
 		return
 	case string:
-		if len(v) != 0 {
-			s.WriteString("_utf8mb4 0x")
-			hex.NewEncoder(s).Write([]byte(v))
-			s.WriteString(" collate utf8mb4_unicode_ci")
-		} else {
-			s.WriteString("''")
-		}
+		utf8encode(s, []byte(v))
 		return
 	case []byte:
 		if len(v) != 0 {
@@ -250,6 +255,9 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 		s.WriteByte('\'')
 		s.WriteString(v.Format("2006-01-02 15:04:05.000000"))
 		s.WriteByte('\'')
+		return
+	case json.RawMessage:
+		utf8encode(s, v)
 		return
 	}
 
