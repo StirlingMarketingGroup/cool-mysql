@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -250,6 +251,15 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 		s.WriteByte('\'')
 		s.WriteString(v.Format("2006-01-02 15:04:05.000000"))
 		s.WriteByte('\'')
+		return
+	case json.RawMessage:
+		if len(v) != 0 {
+			s.WriteString("_utf8mb4 0x")
+			hex.NewEncoder(s).Write(v)
+			s.WriteString(" collate utf8mb4_unicode_ci")
+		} else {
+			s.WriteString("''")
+		}
 		return
 	}
 
