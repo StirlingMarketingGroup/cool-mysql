@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"net"
 	"strconv"
@@ -159,4 +160,30 @@ func (db *Database) Test() error {
 	}
 
 	return nil
+}
+
+func (db *Database) DefaultInsertOptions() *Inserter {
+	return &Inserter{
+		db: db,
+	}
+}
+
+func (db *Database) I() *Inserter {
+	return db.DefaultInsertOptions()
+}
+
+func (db *Database) Insert(insert string, source any) error {
+	return db.I().insert(db.Writes, context.Background(), insert, source)
+}
+
+func (db *Database) InsertContext(ctx context.Context, insert string, source any) error {
+	return db.I().insert(db.Writes, ctx, insert, source)
+}
+
+func (db *Database) InsertReads(insert string, source any) error {
+	return db.I().insert(db.Reads, context.Background(), insert, source)
+}
+
+func (db *Database) InsertReadsContext(ctx context.Context, insert string, source any) error {
+	return db.I().insert(db.Reads, ctx, insert, source)
 }
