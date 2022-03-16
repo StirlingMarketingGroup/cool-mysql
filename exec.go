@@ -79,6 +79,10 @@ func (db *Database) Exec(query string, params ...Params) error {
 	return err
 }
 
+// TODO: Apparently I thought it was a good idea to
+// just straight up clone the exec functions for the tx type
+// the todo is to fix that and redo this to match the way the insert functions work
+
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
