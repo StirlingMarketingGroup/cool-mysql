@@ -3,6 +3,7 @@ package mysql
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -49,16 +50,6 @@ func checkSource(source interface{}) (reflect.Value, reflect.Kind, reflect.Type,
 	return reflect.Value{}, 0, nil, ErrSourceInvalidType
 }
 
-// Insert inserts struct rows from the source as a channel, single struct, or slice of structs
-func (db *Database) Insert(insert string, src interface{}) error {
-	return db.InsertContextRowComplete(nil, insert, src, nil)
-}
-
-// InsertContext inserts struct rows from the source as a channel, single struct, or slice of structs
-func (db *Database) InsertContext(ctx context.Context, insert string, src interface{}) error {
-	return db.InsertContextRowComplete(ctx, insert, src, nil)
-}
-
 type insertColumn struct {
 	name             string
 	structFieldIndex int
@@ -98,10 +89,43 @@ func paramToJSON(v interface{}) (interface{}, error) {
 	return v, nil
 }
 
-// InsertContextRowComplete inserts struct rows from the source as a channel, single struct, or slice of structs
-// rowComplete func is given the start time of processing the row
-// for use of things like progress bars, timing the duration it takes to insert the row(s)
-func (db *Database) InsertContextRowComplete(ctx context.Context, insert string, source interface{}, rowComplete func(start time.Time)) error {
+type Inserter struct {
+	db *Database
+
+	AfterChunkExec func(start time.Time)
+	HandleResult   func(sql.Result)
+}
+
+func (in *Inserter) SetAfterChunkExec(fn func(start time.Time)) *Inserter {
+	in.AfterChunkExec = fn
+
+	return in
+}
+
+func (in *Inserter) SetResultHandler(fn func(sql.Result)) *Inserter {
+	in.HandleResult = fn
+
+	return in
+}
+
+func (in *Inserter) Insert(insert string, source any) error {
+	return in.insert(in.db.Writes, context.Background(), insert, source)
+}
+
+func (in *Inserter) InsertContext(ctx context.Context, insert string, source any) error {
+	return in.insert(in.db.Writes, ctx, insert, source)
+}
+
+func (in *Inserter) InsertReads(insert string, source any) error {
+	return in.insert(in.db.Reads, context.Background(), insert, source)
+}
+
+func (in *Inserter) InsertReadsContext(ctx context.Context, insert string, source any) error {
+	return in.insert(in.db.Reads, ctx, insert, source)
+}
+
+// insert inserts struct rows from the source as a channel, single struct, or slice of structs
+func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, source any) error {
 	reflectValue, reflectKind, reflectStruct, err := checkSource(source)
 	if err != nil {
 		return err
@@ -170,23 +194,6 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 	insertBuf.WriteString(")values")
 	baseLen := insertBuf.Len()
 
-	var conn interface {
-		Exec(query string, params ...Params) error
-	}
-
-	var cancel context.CancelFunc
-	if ctx != nil {
-		ctx, cancel = context.WithCancel(ctx)
-		defer cancel()
-
-		conn, err = db.BeginWritesTx(ctx)
-		if err != nil {
-			return errors.Wrapf(err, "cool-mysql insert: failed to create transaction")
-		}
-	} else {
-		conn = db
-	}
-
 	curRows := 0
 	i := 0
 	var r reflect.Value
@@ -224,10 +231,7 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 			break
 		}
 
-		var start time.Time
-		if rowComplete != nil {
-			start = time.Now()
-		}
+		start := time.Now()
 
 		preRowLen := insertBuf.Len()
 
@@ -268,15 +272,19 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 		}
 		insertBuf.WriteByte(')')
 
-		if insertBuf.Len() > int(float64(db.maxInsertSize+len(onDuplicateKeyUpdate))*0.80) && curRows > 1 {
+		if insertBuf.Len() > int(float64(in.db.maxInsertSize+len(onDuplicateKeyUpdate))*0.80) && curRows > 1 {
 			buf := insertBuf.Bytes()[preRowLen+1:]
 			insertBuf.Truncate(preRowLen)
 			if onDuplicateKeyUpdateI != -1 {
 				insertBuf.WriteString(onDuplicateKeyUpdate)
 			}
-			err := conn.Exec(insertBuf.String())
+			result, err := ex.ExecContext(ctx, insertBuf.String())
 			if err != nil {
 				return err
+			}
+
+			if in.HandleResult != nil {
+				in.HandleResult(result)
 			}
 
 			insertBuf.Truncate(baseLen)
@@ -287,8 +295,8 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 
 		curRows++
 
-		if rowComplete != nil {
-			rowComplete(start)
+		if in.AfterChunkExec != nil {
+			in.AfterChunkExec(start)
 		}
 	}
 
@@ -296,14 +304,14 @@ func (db *Database) InsertContextRowComplete(ctx context.Context, insert string,
 		if onDuplicateKeyUpdateI != -1 {
 			insertBuf.WriteString(onDuplicateKeyUpdate)
 		}
-		err := conn.Exec(insertBuf.String())
+		result, err := ex.ExecContext(ctx, insertBuf.String())
 		if err != nil {
 			return err
 		}
-	}
 
-	if ctx != nil {
-		return errors.Wrapf(conn.(*Tx).Commit(), "cool-mysql insert: failed to commit transaction")
+		if in.HandleResult != nil {
+			in.HandleResult(result)
+		}
 	}
 
 	return nil

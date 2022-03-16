@@ -7,7 +7,7 @@ import (
 
 // Tx is a cool MySQL transaction
 type Tx struct {
-	Database *Database
+	db *Database
 
 	Tx *sql.Tx
 }
@@ -20,12 +20,20 @@ func (db *Database) BeginWritesTx(ctx context.Context) (*Tx, error) {
 	}
 
 	return &Tx{
-		Database: db,
-		Tx:       tx,
+		db: db,
+		Tx: tx,
 	}, nil
 }
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
 	return tx.Tx.Commit()
+}
+
+func (tx *Tx) Insert(insert string, source any) error {
+	return tx.db.I().insert(tx.Tx, context.Background(), insert, source)
+}
+
+func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) error {
+	return tx.db.I().insert(tx.Tx, ctx, insert, source)
 }

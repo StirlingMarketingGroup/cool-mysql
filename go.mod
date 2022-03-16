@@ -1,6 +1,6 @@
 module github.com/StirlingMarketingGroup/cool-mysql
 
-go 1.17
+go 1.18
 
 require (
 	github.com/Ompluscator/dynamic-struct v1.3.0

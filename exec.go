@@ -12,6 +12,10 @@ import (
 	"github.com/pkg/errors"
 )
 
+type Executor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // ExecContextResult executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
@@ -78,12 +82,12 @@ func (db *Database) Exec(query string, params ...Params) error {
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
-	if tx.Database.die {
+	if tx.db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)
 	}
 
-	if tx.Database.DisableForeignKeyChecks {
+	if tx.db.DisableForeignKeyChecks {
 		_, err := tx.Tx.ExecContext(ctx, "set`FOREIGN_KEY_CHECKS`=0")
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to disable foreign key checks")
@@ -104,7 +108,7 @@ func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Par
 			if checkRetryError(err) {
 				return err
 			} else if err == mysql.ErrInvalidConn {
-				if err := tx.Database.Test(); err != nil {
+				if err := tx.db.Test(); err != nil {
 					return err
 				}
 				return err
@@ -116,9 +120,9 @@ func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Par
 		return nil
 	}, backoff.WithContext(b, ctx))
 
-	tx.Database.callLog(replacedQuery, mergedParams, time.Since(start))
+	tx.db.callLog(replacedQuery, mergedParams, time.Since(start))
 
-	if tx.Database.DisableForeignKeyChecks {
+	if tx.db.DisableForeignKeyChecks {
 		_, err := tx.Tx.ExecContext(ctx, "set`FOREIGN_KEY_CHECKS`=1")
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to re-enable foreign key checks")
