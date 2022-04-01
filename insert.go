@@ -159,14 +159,18 @@ func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, sour
 					t, _ = tag.Get("mysql")
 				}
 
+				newCol := insertColumn{f.Name, i, false}
 				if t != nil {
 					if t.Name == "-" {
 						continue
 					}
-					columns = append(columns, insertColumn{t.Name, i, t.HasOption("omitempty")})
-				} else {
-					columns = append(columns, insertColumn{f.Name, i, false})
+					if len(t.Name) != 0 {
+						newCol.name = t.Name
+					}
+					newCol.omitempty = t.HasOption("omitempty")
 				}
+
+				columns = append(columns, newCol)
 			}
 		default:
 			panic("cool-mysql insert: unhandled source type - how did you get here?")
@@ -278,7 +282,7 @@ func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, sour
 			if onDuplicateKeyUpdateI != -1 {
 				insertBuf.WriteString(onDuplicateKeyUpdate)
 			}
-			result, err := ex.ExecContext(ctx, insertBuf.String())
+			result, err := in.db.exec(ex, ctx, insertBuf.String())
 			if err != nil {
 				return err
 			}
@@ -304,7 +308,7 @@ func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, sour
 		if onDuplicateKeyUpdateI != -1 {
 			insertBuf.WriteString(onDuplicateKeyUpdate)
 		}
-		result, err := ex.ExecContext(ctx, insertBuf.String())
+		result, err := in.db.exec(ex, ctx, insertBuf.String())
 		if err != nil {
 			return err
 		}
@@ -403,11 +407,14 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 
 			fieldDetails[i].omitempty = t.HasOption("omitempty")
 
-			fieldDetails[i].name = t.Name
-			continue
+			if len(t.Name) != 0 {
+				fieldDetails[i].name = t.Name
+			}
 		}
 
-		fieldDetails[i].name = f.Name
+		if len(fieldDetails[i].name) == 0 {
+			fieldDetails[i].name = f.Name
+		}
 	}
 
 	for i := range fieldDetails {

@@ -187,3 +187,25 @@ func (db *Database) InsertReads(insert string, source any) error {
 func (db *Database) InsertReadsContext(ctx context.Context, insert string, source any) error {
 	return db.I().insert(db.Reads, ctx, insert, source)
 }
+
+// ExecContext executes a query and nothing more
+func (db *Database) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
+	return db.exec(db.Writes, ctx, query, params...)
+}
+
+// ExecContext executes a query and nothing more
+func (db *Database) ExecContext(ctx context.Context, query string, params ...Params) error {
+	_, err := db.ExecContextResult(ctx, query, params...)
+	return err
+}
+
+// ExecResult executes a query and nothing more
+func (db *Database) ExecResult(query string, params ...Params) (sql.Result, error) {
+	return db.ExecContextResult(context.Background(), query, params...)
+}
+
+// Exec executes a query and nothing more
+func (db *Database) Exec(query string, params ...Params) error {
+	_, err := db.ExecContextResult(context.Background(), query, params...)
+	return err
+}
