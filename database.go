@@ -97,6 +97,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 // DSN strings for both connections
 func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db = new(Database)
+	db.testMx = new(sync.Mutex)
 
 	db.WritesDSN = writes
 	db.Writes, err = sql.Open("mysql", writes)
