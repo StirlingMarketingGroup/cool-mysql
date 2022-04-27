@@ -489,7 +489,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()
 
-	err := db.Select(uniqueStructs, q.String(), 0)
+	err := db.SelectWrites(uniqueStructs, q.String(), 0)
 	if err != nil {
 		return errors.Wrapf(err, "failed to execute InsertUniquely's initial select query")
 	}
