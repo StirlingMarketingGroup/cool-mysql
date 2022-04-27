@@ -83,15 +83,13 @@ var bufPool = sync.Pool{
 	},
 }
 
-// Select selects one or more rows into the
-// chan of structs in the destination
-func (db *Database) Select(dest interface{}, query string, cache time.Duration, params ...Params) error {
-	return db.SelectContext(context.Background(), dest, query, cache, params...)
+type selector interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // SelectContext selects one or more rows into the
 // chan of structs in the destination
-func (db *Database) SelectContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) (err error) {
+func _select(db *Database, conn selector, ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) (err error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
@@ -132,7 +130,7 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 		b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
 		err := backoff.Retry(func() error {
 			var err error
-			rows, err = db.Reads.QueryContext(ctx, replacedQuery)
+			rows, err = conn.QueryContext(ctx, replacedQuery)
 			if err != nil {
 				if checkRetryError(err) {
 					return err
@@ -557,26 +555,4 @@ func (db *Database) SelectContext(ctx context.Context, dest interface{}, query s
 
 	// we got this far, so just fill the dest with a normal live get
 	return liveGet()
-}
-
-func (db *Database) SelectJSONContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
-	var store struct {
-		JSON []byte
-	}
-
-	err := db.SelectContext(ctx, &store, query, cache, params...)
-	if err != nil {
-		return err
-	}
-
-	err = json.Unmarshal(store.JSON, dest)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (db *Database) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
-	return db.SelectJSONContext(context.Background(), dest, query, cache, params...)
 }
