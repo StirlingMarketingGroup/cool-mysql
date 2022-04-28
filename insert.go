@@ -90,7 +90,8 @@ func paramToJSON(v interface{}) (interface{}, error) {
 }
 
 type Inserter struct {
-	db *Database
+	db   *Database
+	conn Executor
 
 	AfterChunkExec func(start time.Time)
 	HandleResult   func(sql.Result)
@@ -108,20 +109,18 @@ func (in *Inserter) SetResultHandler(fn func(sql.Result)) *Inserter {
 	return in
 }
 
+func (in *Inserter) SetExecutor(conn Executor) *Inserter {
+	in.conn = conn
+
+	return in
+}
+
 func (in *Inserter) Insert(insert string, source any) error {
-	return in.insert(in.db.Writes, context.Background(), insert, source)
+	return in.insert(in.conn, context.Background(), insert, source)
 }
 
 func (in *Inserter) InsertContext(ctx context.Context, insert string, source any) error {
-	return in.insert(in.db.Writes, ctx, insert, source)
-}
-
-func (in *Inserter) InsertReads(insert string, source any) error {
-	return in.insert(in.db.Reads, context.Background(), insert, source)
-}
-
-func (in *Inserter) InsertReadsContext(ctx context.Context, insert string, source any) error {
-	return in.insert(in.db.Reads, ctx, insert, source)
+	return in.insert(in.conn, ctx, insert, source)
 }
 
 // insert inserts struct rows from the source as a channel, single struct, or slice of structs

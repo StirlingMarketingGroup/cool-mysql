@@ -166,7 +166,8 @@ func (db *Database) Test() error {
 
 func (db *Database) DefaultInsertOptions() *Inserter {
 	return &Inserter{
-		db: db,
+		db:   db,
+		conn: db.Writes,
 	}
 }
 
@@ -175,19 +176,19 @@ func (db *Database) I() *Inserter {
 }
 
 func (db *Database) Insert(insert string, source any) error {
-	return db.I().insert(db.Writes, context.Background(), insert, source)
+	return db.I().Insert(insert, source)
 }
 
 func (db *Database) InsertContext(ctx context.Context, insert string, source any) error {
-	return db.I().insert(db.Writes, ctx, insert, source)
+	return db.I().InsertContext(ctx, insert, source)
 }
 
 func (db *Database) InsertReads(insert string, source any) error {
-	return db.I().insert(db.Reads, context.Background(), insert, source)
+	return db.I().SetExecutor(db.Reads).Insert(insert, source)
 }
 
 func (db *Database) InsertReadsContext(ctx context.Context, insert string, source any) error {
-	return db.I().insert(db.Reads, ctx, insert, source)
+	return db.I().SetExecutor(db.Reads).InsertContext(ctx, insert, source)
 }
 
 // ExecContext executes a query and nothing more
