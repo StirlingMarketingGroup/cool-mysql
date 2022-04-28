@@ -12,8 +12,21 @@ type Tx struct {
 	Tx *sql.Tx
 }
 
-// BeginWritesTx begins and returns a new transaction on the writes conneciton
-func (db *Database) BeginWritesTx(ctx context.Context) (*Tx, error) {
+// BeginTx begins and returns a new transaction on the writes connection
+func (db *Database) BeginTx(ctx context.Context) (*Tx, error) {
+	tx, err := db.Writes.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Tx{
+		db: db,
+		Tx: tx,
+	}, nil
+}
+
+// BeginReadsTx begins and returns a new transaction on the reads connection
+func (db *Database) BeginReadsTx(ctx context.Context) (*Tx, error) {
 	tx, err := db.Writes.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -30,12 +43,23 @@ func (tx *Tx) Commit() error {
 	return tx.Tx.Commit()
 }
 
+func (tx *Tx) DefaultInsertOptions() *Inserter {
+	return &Inserter{
+		db:   tx.db,
+		conn: tx.Tx,
+	}
+}
+
+func (tx *Tx) I() *Inserter {
+	return tx.DefaultInsertOptions()
+}
+
 func (tx *Tx) Insert(insert string, source any) error {
-	return tx.db.I().insert(tx.Tx, context.Background(), insert, source)
+	return tx.I().Insert(insert, source)
 }
 
 func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) error {
-	return tx.db.I().insert(tx.Tx, ctx, insert, source)
+	return tx.I().InsertContext(ctx, insert, source)
 }
 
 // ExecContextResult executes a query and nothing more
