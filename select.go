@@ -146,18 +146,12 @@ func _select(db *Database, conn selector, ctx context.Context, dest interface{},
 
 			return nil
 		}, backoff.WithContext(b, ctx))
-		if err != nil {
-			return err
-		}
 
 		execDuration := time.Since(start)
 		start = time.Now()
 		db.callLog(replacedQuery, mergedParams, execDuration)
 
 		if err != nil {
-			if kind == reflect.Chan {
-				refDest.Close()
-			}
 			return err
 		}
 
