@@ -213,20 +213,20 @@ func (db *Database) Exec(query string, params ...Params) error {
 	return err
 }
 
-func (db *Database) Select(dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Reads, context.Background(), dest, query, cache, params...)
+func (db *Database) Select(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Reads, context.Background(), dest, q, cache, params...)
 }
 
-func (db *Database) SelectContext(ctx context.Context, dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Reads, ctx, dest, query, cache, params...)
+func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Reads, ctx, dest, q, cache, params...)
 }
 
-func (db *Database) SelectWrites(dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Writes, context.Background(), dest, query, cache, params...)
+func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Writes, context.Background(), dest, q, cache, params...)
 }
 
-func (db *Database) SelectWritesContext(ctx context.Context, dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Writes, ctx, dest, query, cache, params...)
+func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Writes, ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
