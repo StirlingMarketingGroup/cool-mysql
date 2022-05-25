@@ -19,14 +19,27 @@ type Querier interface {
 
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
-func query(db *Database, conn Querier, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) error {
-	replacedQuery, _ := ReplaceParams(query, params...)
+func query(db *Database, conn Querier, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
+	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)
 	}
 
+	defer func() {
+		if err != nil {
+			err = Error{
+				Err:           err,
+				OriginalQuery: query,
+				ReplacedQuery: replacedQuery,
+				Params:        mergedParams,
+			}
+		}
+	}()
+
+	start := time.Now()
 	rows, err := conn.QueryContext(ctx, replacedQuery)
+	db.callLog(replacedQuery, mergedParams, time.Since(start))
 	if err != nil {
 		return err
 	}
@@ -48,7 +61,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		columns[i] = strings.ToLower(columns[i])
 	}
 
-	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPts(t, columns)
+	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPts(db, t, columns)
 	if err != nil {
 		return err
 	}
@@ -70,7 +83,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 					return fmt.Errorf("failed to unmarshal json into dest: %w", err)
 				}
 			} else {
-				f := el.FieldByIndex(jsonField.index)
+				f := el.Elem().FieldByIndex(jsonField.index)
 				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
 				if err != nil {
 					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", f.Type().Name(), err)
@@ -142,7 +155,7 @@ type jsonField struct {
 	j     json.RawMessage
 }
 
-func setupElementPts(t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
+func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
 	isStruct = !t.Implements(scannerType) && t.Kind() == reflect.Struct
 	if !isStruct {
 		if isMultiValueElement(t) {
@@ -178,6 +191,7 @@ func setupElementPts(t reflect.Type, columns []string) (ptrs []any, jsonFields [
 	for _, c := range columns {
 		fieldIndex, ok := fieldsMap[c]
 		if !ok {
+			db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
 			continue
 		}
 
@@ -206,7 +220,7 @@ func updateElementPts(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, co
 		return
 	}
 
-	x := (*any)(nil)
+	x := new(any)
 	jsonIndex := 0
 	for i, c := range columns {
 		fieldIndex, ok := fieldsMap[c]

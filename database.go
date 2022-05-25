@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Database is a cool MySQL connection
@@ -35,6 +38,8 @@ type Database struct {
 	DisableForeignKeyChecks bool
 
 	testMx *sync.Mutex
+
+	Logger *zap.Logger
 }
 
 // Clone returns a copy of the db with the same connections
@@ -133,6 +138,14 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		db.ReadsDSN = writes
 		db.Reads = db.Writes
 	}
+
+	config := zap.NewDevelopmentConfig()
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	l, err := config.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+	db.Logger = l.Named("cool-mysql")
 
 	return
 }
