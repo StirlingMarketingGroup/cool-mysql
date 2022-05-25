@@ -77,6 +77,10 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		}
 
 		for _, jsonField := range jsonFields {
+			if len(jsonField.j) == 0 {
+				continue
+			}
+
 			if !isStruct {
 				err = json.Unmarshal(jsonField.j, el.Interface())
 				if err != nil {
@@ -155,14 +159,14 @@ func isMultiValueElement(t reflect.Type) bool {
 
 type jsonField struct {
 	index []int
-	j     json.RawMessage
+	j     []byte
 }
 
 func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
 	isStruct = !t.Implements(scannerType) && t.Kind() == reflect.Struct
 	if !isStruct {
 		if isMultiValueElement(t) {
-			return make([]any, 1), []jsonField{{j: make(json.RawMessage, 0)}}, nil, isStruct, nil
+			return make([]any, 1), make([]jsonField, 1), nil, isStruct, nil
 		}
 		return make([]any, 1), nil, nil, isStruct, nil
 	}
@@ -202,7 +206,6 @@ func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any
 		if isMultiValueElement(f.Type) {
 			jsonFields = append(jsonFields, jsonField{
 				index: f.Index,
-				j:     make(json.RawMessage, 0),
 			})
 		}
 	}
