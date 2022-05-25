@@ -118,14 +118,17 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 }
 
 var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
-var bytesType = reflect.TypeOf((*[]byte)(nil)).Elem()
+var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
 
 func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow bool) {
-	if !destRef.Type().Implements(scannerType) {
-		switch k := reflect.Indirect(destRef).Kind(); k {
+	indirectDestRef := reflect.Indirect(destRef)
+	indirectDestRefType := indirectDestRef.Type()
+
+	if !destRef.Type().Implements(scannerType) && indirectDestRefType != timeType {
+		switch k := indirectDestRef.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice:
-			if destRef.Type() != bytesType {
-				return reflect.Indirect(destRef).Type().Elem(), true
+			if !((k == reflect.Array || k == reflect.Slice) && indirectDestRefType.Elem().Kind() == reflect.Uint8) {
+				return indirectDestRefType.Elem(), true
 			}
 		}
 	}
@@ -138,10 +141,10 @@ func isMultiValueElement(t reflect.Type) bool {
 		t = t.Elem()
 	}
 
-	if !t.Implements(scannerType) {
-		switch t.Kind() {
+	if !t.Implements(scannerType) && t != timeType {
+		switch k := t.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Slice, reflect.Struct:
-			if t != bytesType {
+			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
 				return true
 			}
 		}
