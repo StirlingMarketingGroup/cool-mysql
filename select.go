@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
+	"github.com/go-sql-driver/mysql"
 )
 
 type Querier interface {
@@ -37,9 +39,30 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		}
 	}()
 
+	var rows *sql.Rows
 	start := time.Now()
-	rows, err := conn.QueryContext(ctx, replacedQuery)
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+	err = backoff.Retry(func() error {
+		var err error
+		rows, err = conn.QueryContext(ctx, replacedQuery)
+		if err != nil {
+			if checkRetryError(err) {
+				return err
+			} else if err == mysql.ErrInvalidConn {
+				if err := db.Test(); err != nil {
+					return err
+				}
+				return err
+			} else {
+				return backoff.Permanent(err)
+			}
+		}
+
+		return nil
+	}, backoff.WithContext(b, ctx))
 	db.callLog(replacedQuery, mergedParams, time.Since(start))
+	defer rows.Close()
 	if err != nil {
 		return err
 	}
@@ -171,11 +194,11 @@ func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any
 		return make([]any, 1), nil, nil, isStruct, nil
 	}
 
-	numField := t.NumField()
+	structFieldIndexes := StructFieldIndexes(t)
 
-	fieldsMap = make(map[string][]int, numField)
-	for i := 0; i < numField; i++ {
-		f := t.Field(i)
+	fieldsMap = make(map[string][]int, len(structFieldIndexes))
+	for _, i := range structFieldIndexes {
+		f := t.FieldByIndex(i)
 
 		if !f.IsExported() {
 			continue
@@ -192,7 +215,7 @@ func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any
 			name = mysqlTag.Name
 		}
 
-		fieldsMap[strings.ToLower(name)] = f.Index
+		fieldsMap[strings.ToLower(name)] = i
 	}
 
 	for _, c := range columns {
@@ -205,7 +228,7 @@ func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any
 		f := t.FieldByIndex(fieldIndex)
 		if isMultiValueElement(f.Type) {
 			jsonFields = append(jsonFields, jsonField{
-				index: f.Index,
+				index: fieldIndex,
 			})
 		}
 	}

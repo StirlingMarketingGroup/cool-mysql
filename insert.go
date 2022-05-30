@@ -143,10 +143,11 @@ func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, sour
 	default:
 		switch reflectKind {
 		case reflect.Chan, reflect.Slice, reflect.Struct:
-			structFieldCount := reflectStruct.NumField()
-			columns = make([]insertColumn, 0, structFieldCount)
-			for i := 0; i < structFieldCount; i++ {
-				f := reflectStruct.Field(i)
+			structFieldIndexes := StructFieldIndexes(reflectStruct)
+			columns = make([]insertColumn, 0, len(structFieldIndexes))
+			j := 0
+			for _, i := range structFieldIndexes {
+				f := reflectStruct.FieldByIndex(i)
 
 				if f.PkgPath != "" {
 					continue
@@ -158,7 +159,8 @@ func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, sour
 					t, _ = tag.Get("mysql")
 				}
 
-				newCol := insertColumn{f.Name, i, false}
+				newCol := insertColumn{f.Name, j, false}
+				j++
 				if t != nil {
 					if t.Name == "-" {
 						continue
@@ -371,7 +373,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	}
 
 	reflectStruct := reflect.TypeOf(iface)
-	structFieldCount := reflectStruct.NumField()
+	structFieldIndexes := StructFieldIndexes(reflectStruct)
 
 	type fieldDetail struct {
 		name      string
@@ -379,14 +381,15 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 		skip      bool
 		omitempty bool
 	}
-	fieldDetails := make([]fieldDetail, structFieldCount)
+	fieldDetails := make([]fieldDetail, len(structFieldIndexes))
 	fieldDetailsMap := make(map[string]*fieldDetail)
 
-	for i := 0; i < structFieldCount; i++ {
-		f := reflectStruct.Field(i)
+	j := 0
+	for _, i := range structFieldIndexes {
+		f := reflectStruct.FieldByIndex(i)
 
 		if f.PkgPath != "" {
-			fieldDetails[i].skip = true
+			fieldDetails[j].skip = true
 			continue
 		}
 
@@ -396,24 +399,26 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 			t, _ = tag.Get("mysql")
 		}
 
-		fieldDetails[i].fieldName = f.Name
+		fieldDetails[j].fieldName = f.Name
 
 		if t != nil {
 			if t.Name == "-" {
-				fieldDetails[i].skip = true
+				fieldDetails[j].skip = true
 				continue
 			}
 
-			fieldDetails[i].omitempty = t.HasOption("omitempty")
+			fieldDetails[j].omitempty = t.HasOption("omitempty")
 
 			if len(t.Name) != 0 {
-				fieldDetails[i].name = t.Name
+				fieldDetails[j].name = t.Name
 			}
 		}
 
-		if len(fieldDetails[i].name) == 0 {
-			fieldDetails[i].name = f.Name
+		if len(fieldDetails[j].name) == 0 {
+			fieldDetails[j].name = f.Name
 		}
+
+		j++
 	}
 
 	for i := range fieldDetails {
