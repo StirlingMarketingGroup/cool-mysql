@@ -1,95 +1,27 @@
 package mysql
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
 	"database/sql"
-	"encoding/base64"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"reflect"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
-	"github.com/go-redis/redis/v8"
 	"github.com/go-sql-driver/mysql"
-	"github.com/pkg/errors"
-	"github.com/tinylib/msgp/msgp"
-	"golang.org/x/sync/singleflight"
 )
 
-// ErrDestInvalidType is an error about what types are allowed
-var ErrDestInvalidType = errors.New("dest must be a channel of structs, ptr to a slice of structs, or a pointer to a single struct")
-
-func checkDest(dest interface{}) (reflect.Value, reflect.Kind, reflect.Type, error) {
-	ref := reflect.ValueOf(dest)
-	kind := ref.Kind()
-
-	if kind == reflect.Ptr {
-		elem := ref.Elem()
-		kind = elem.Kind()
-
-		switch kind {
-		case reflect.Struct:
-			return ref, kind, elem.Type(), nil
-		case reflect.Slice:
-			// if dest is a pointer to a slice of structs
-			strct := elem.Type().Elem()
-			if strct.Kind() == reflect.Struct {
-				return ref, kind, strct, nil
-			}
-		}
-
-		goto Err
-	}
-
-	// if dest is a pointer to a slice of structs
-	if kind == reflect.Chan {
-		strct := ref.Type().Elem()
-		if strct.Kind() == reflect.Struct {
-			return ref, kind, strct, nil
-		}
-	}
-
-Err:
-	return reflect.Value{}, 0, nil, ErrDestInvalidType
-}
-
-type column struct {
-	structIndex   uint16
-	jsonableIndex uint16
-	jsonable      bool
-}
-
-type field struct {
-	name     string
-	jsonable bool
-	taken    bool
-}
-
-var rCtx = context.Background()
-
-var selectSinglelight = new(singleflight.Group)
-
-var bufPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
-
-type selector interface {
+type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// SelectContext selects one or more rows into the
-// chan of structs in the destination
-func _select(db *Database, conn selector, ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) (err error) {
+var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
+
+func query(db *Database, conn Querier, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
@@ -107,446 +39,236 @@ func _select(db *Database, conn selector, ctx context.Context, dest interface{},
 		}
 	}()
 
-	refDest, kind, strct, err := checkDest(dest)
+	var rows *sql.Rows
+	start := time.Now()
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+	err = backoff.Retry(func() error {
+		var err error
+		rows, err = conn.QueryContext(ctx, replacedQuery)
+		if err != nil {
+			if checkRetryError(err) {
+				return err
+			} else if err == mysql.ErrInvalidConn {
+				if err := db.Test(); err != nil {
+					return err
+				}
+				return err
+			} else {
+				return backoff.Permanent(err)
+			}
+		}
+
+		return nil
+	}, backoff.WithContext(b, ctx))
+	db.callLog(replacedQuery, mergedParams, time.Since(start))
+	defer func() {
+		if rows != nil {
+			rows.Close()
+		}
+	}()
 	if err != nil {
 		return err
 	}
 
-	var msgpWriter *msgp.Writer
-	var gobEncoder *gob.Encoder
+	destRef := reflect.ValueOf(dest)
+	destKind := reflect.Indirect(destRef).Kind()
 
-	var msgpEncodable bool
-	if cache != 0 {
-		_, msgpEncodable = reflect.New(strct).Interface().(msgp.Encodable)
+	t, multiRow := getElementTypeFromDest(destRef)
+	ptrElements := t.Kind() == reflect.Pointer
+	if ptrElements {
+		t = t.Elem()
 	}
 
-	var start time.Time
+	columns, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+	for i := range columns {
+		columns[i] = strings.ToLower(columns[i])
+	}
 
-	liveGet := func() error {
-		start = time.Now()
-		var rows *sql.Rows
+	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns)
+	if err != nil {
+		return err
+	}
 
-		b := backoff.NewExponentialBackOff()
-		b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
-		err := backoff.Retry(func() error {
-			var err error
-			rows, err = conn.QueryContext(ctx, replacedQuery)
-			if err != nil {
-				if checkRetryError(err) {
-					return err
-				} else if err == mysql.ErrInvalidConn {
-					if err := db.Test(); err != nil {
-						return err
-					}
-					return err
-				} else {
-					return backoff.Permanent(err)
-				}
-			}
+	i := 0
+	for rows.Next() {
+		el := reflect.New(t)
+		updateElementPtrs(el.Elem(), &ptrs, jsonFields, columns, fieldsMap)
 
-			return nil
-		}, backoff.WithContext(b, ctx))
-
-		execDuration := time.Since(start)
-		start = time.Now()
-		db.callLog(replacedQuery, mergedParams, execDuration)
-
+		err = rows.Scan(ptrs...)
 		if err != nil {
 			return err
 		}
 
-		main := func(ctx context.Context) error {
-			ctx, cancel := context.WithCancel(ctx)
-			defer cancel()
-
-			if db.Finished != nil {
-				defer func() { db.Finished(false, replacedQuery, mergedParams, execDuration, time.Since(start)) }()
+		for _, jsonField := range jsonFields {
+			if len(jsonField.j) == 0 {
+				continue
 			}
 
-			if kind == reflect.Chan {
-				defer refDest.Close()
-			}
-			defer rows.Close()
-
-			cols, _ := rows.Columns()
-			pointers := make([]interface{}, len(cols))
-
-			columns := make([]*column, len(cols))
-
-			fieldsLen := strct.NumField()
-			fields := make([]*field, fieldsLen)
-
-			strctEx := reflect.New(strct).Elem()
-
-			var jsonablesCount uint16
-			for i, c := range cols {
-				for j := 0; j < fieldsLen; j++ {
-					if fields[j] == nil {
-						f := strct.Field(j)
-
-						// check if field is exported
-						if len(f.PkgPath) != 0 {
-							continue
-						}
-
-						name := f.Name
-						if tag, err := structtag.Parse(string(f.Tag)); err == nil {
-							if t, err := tag.Get("mysql"); err == nil && len(t.Name) != 0 && t.Name != "-" {
-								name = t.Name
-							}
-						}
-						kind := f.Type.Kind()
-
-						var jsonable bool
-
-						switch kind {
-						case reflect.Map, reflect.Struct:
-							jsonable = true
-						case reflect.Array, reflect.Slice:
-							// if it's a slice, but not a byte slice
-							if f.Type.Elem().Kind() != reflect.Uint8 {
-								jsonable = true
-							}
-						case reflect.Ptr:
-							switch f.Type.Elem().Kind() {
-							case reflect.Map:
-								jsonable = true
-							case reflect.Struct:
-								if f.Type.Elem() == reflect.TypeOf(time.Time{}) {
-									break
-								}
-
-								if f.Type.Elem().Implements(reflect.Indirect(reflect.ValueOf(new(sql.Scanner))).Type()) {
-									break
-								}
-
-								jsonable = true
-							case reflect.Array, reflect.Slice:
-								// if it's a slice, but not a byte slice
-								if f.Type.Elem().Elem().Kind() != reflect.Uint8 {
-									jsonable = true
-								}
-							}
-						}
-
-						if jsonable {
-							prop := strctEx.Field(j)
-
-							// don't let things that already handle themselves get json unmarshalled
-							if _, ok := prop.Addr().Interface().(sql.Scanner); ok {
-								jsonable = false
-							}
-
-							// we also have to ignore times specifically, because sql scanning
-							// implements them literally, instead of the time.Time implementing sql.Scanner
-							if _, ok := prop.Interface().(time.Time); ok {
-								jsonable = false
-							}
-						}
-
-						fields[j] = &field{
-							name:     name,
-							jsonable: jsonable,
-						}
-					}
-					if fields[j].taken {
-						continue
-					}
-
-					if fields[j].name == c {
-						columns[i] = &column{
-							structIndex:   uint16(j),
-							jsonable:      fields[j].jsonable,
-							jsonableIndex: jsonablesCount,
-						}
-						fields[j].taken = true
-
-						if fields[j].jsonable {
-							jsonablesCount++
-						}
-					}
-				}
-			}
-
-			var x interface{}
-
-			ran := false
-
-			var jsonables [][]byte
-			if jsonablesCount > 0 {
-				jsonables = make([][]byte, jsonablesCount)
-			}
-		Rows:
-			for rows.Next() {
-				ran = true
-
-				s := reflect.New(strct).Elem()
-
-				for i, c := range columns {
-					if c != nil {
-						if !c.jsonable {
-							pointers[i] = s.Field(int(c.structIndex)).Addr().Interface()
-						} else {
-							pointers[i] = &jsonables[c.jsonableIndex]
-						}
-					} else {
-						pointers[i] = &x
-					}
-				}
-				err = rows.Scan(pointers...)
+			if !isStruct {
+				err = json.Unmarshal(jsonField.j, el.Interface())
 				if err != nil {
-					return errors.Wrapf(err, "failed to scan rows")
+					return fmt.Errorf("failed to unmarshal json into dest: %w", err)
 				}
-
-				if jsonablesCount > 0 {
-					for _, c := range columns {
-						if c == nil || !c.jsonable || jsonables[c.jsonableIndex] == nil {
-							continue
-						}
-
-						err := json.Unmarshal(jsonables[c.jsonableIndex], s.Field(int(c.structIndex)).Addr().Interface())
-						if err != nil {
-							return errors.Wrapf(err, "failed to unmarshal %q", jsonables[c.jsonableIndex])
-						}
-					}
-				}
-
-				if cache != 0 {
-					switch {
-					case msgpEncodable:
-						err := s.Addr().Interface().(msgp.Encodable).EncodeMsg(msgpWriter)
-						if err != nil {
-							return errors.Wrapf(err, "failed to write struct to cache with msgp")
-						}
-					default:
-						err := gobEncoder.EncodeValue(s)
-						if err != nil {
-							return errors.Wrapf(err, "failed to write struct to cache with gob")
-						}
-					}
-				}
-
-				switch kind {
-				case reflect.Chan:
-					cases := []reflect.SelectCase{
-						{
-							Dir:  reflect.SelectRecv,
-							Chan: reflect.ValueOf(ctx.Done()),
-						},
-						{
-							Dir:  reflect.SelectSend,
-							Chan: refDest,
-							Send: s,
-						},
-					}
-					switch index, _, _ := reflect.Select(cases); index {
-					case 0:
-						cancel()
-						return nil
-					case 1:
-					}
-				case reflect.Slice:
-					refDest.Set(reflect.Append(refDest, s))
-				case reflect.Struct:
-					refDest.Set(s)
-					break Rows
-				}
-
-				x = nil
-			}
-
-			if !ran && kind == reflect.Struct {
-				return sql.ErrNoRows
-			}
-
-			return nil
-		}
-
-		switch kind {
-		case reflect.Chan:
-			if cache == 0 {
-				go func() {
-					if err := main(ctx); err != nil {
-						panic(err)
-					}
-				}()
 			} else {
-				return main(ctx)
-			}
-		case reflect.Slice, reflect.Struct:
-			refDest = refDest.Elem()
-			return main(ctx)
-		}
-		return nil
-	}
-
-	cacheGet := func(b []byte) error {
-		execDuration := time.Since(start)
-		start = time.Now()
-		db.callLog("/* cached! */ "+replacedQuery, mergedParams, execDuration)
-
-		main := func(ctx context.Context) error {
-			ctx, cancel := context.WithCancel(ctx)
-			defer cancel()
-
-			if db.Finished != nil {
-				defer func() { db.Finished(true, replacedQuery, mergedParams, execDuration, time.Since(start)) }()
-			}
-
-			if kind == reflect.Chan {
-				defer refDest.Close()
-			}
-
-			var msgpReader *msgp.Reader
-			var gobDecoder *gob.Decoder
-
-			switch {
-			case msgpEncodable:
-				msgpReader = msgp.NewReader(bytes.NewReader(b))
-			default:
-				gobDecoder = gob.NewDecoder(bytes.NewReader(b))
-			}
-
-		Rows:
-			for {
-				var s reflect.Value
-
-				switch {
-				case msgpEncodable:
-					s = reflect.New(strct)
-					err := s.Interface().(msgp.Decodable).DecodeMsg(msgpReader)
-					if err != nil && err.Error() == "EOF" {
-						break Rows
-					} else if err != nil {
-						return errors.Wrapf(err, "failed to decode cached struct with msgp")
-					}
-					s = s.Elem()
-				default:
-					s = reflect.New(strct).Elem()
-					err := gobDecoder.DecodeValue(s)
-					if err == io.EOF {
-						break Rows
-					} else if err != nil {
-						return errors.Wrapf(err, "failed to decode cached struct with gob")
-					}
-				}
-
-				switch kind {
-				case reflect.Chan:
-					cases := []reflect.SelectCase{
-						{
-							Dir:  reflect.SelectRecv,
-							Chan: reflect.ValueOf(ctx.Done()),
-						},
-						{
-							Dir:  reflect.SelectSend,
-							Chan: refDest,
-							Send: s,
-						},
-					}
-					switch index, _, _ := reflect.Select(cases); index {
-					case 0:
-						cancel()
-						return nil
-					case 1:
-					}
-				case reflect.Slice:
-					refDest.Set(reflect.Append(refDest, s))
-				case reflect.Struct:
-					refDest.Set(s)
-					break Rows
-				}
-			}
-
-			return nil
-		}
-
-		switch kind {
-		case reflect.Chan:
-			go func() {
-				if err := main(ctx); err != nil {
-					panic(err)
-				}
-			}()
-		case reflect.Slice, reflect.Struct:
-			refDest = refDest.Elem()
-			return main(ctx)
-		}
-		return nil
-	}
-
-	if cache != 0 {
-		if db.redis == nil {
-			return errors.New("cool-mysql select: cache time given without redis connection for query")
-		}
-
-		main := func() error {
-			hasher := md5.New()
-			gob.NewEncoder(hasher).EncodeValue(reflect.New(strct))
-			hasher.Write([]byte(replacedQuery))
-			h := base64.RawStdEncoding.EncodeToString(hasher.Sum(nil))
-
-			destFilled := false
-			cache, err, _ := selectSinglelight.Do(h, func() (interface{}, error) {
-				start = time.Now()
-				b, err := db.redis.Get(rCtx, h).Bytes()
-				if err == redis.Nil {
-					var buf bytes.Buffer
-					switch {
-					case msgpEncodable:
-						msgpWriter = msgp.NewWriter(&buf)
-					default:
-						gobEncoder = gob.NewEncoder(&buf)
-					}
-
-					err = liveGet()
-					if err != nil {
-						return nil, err
-					}
-					destFilled = true
-
-					if msgpEncodable {
-						msgpWriter.Flush()
-					}
-
-					err = db.redis.Set(rCtx, h, buf.Bytes(), cache).Err()
-					if err != nil {
-						return nil, errors.Wrapf(err, "cool-mysql select: failed to set query cache to redis")
-					}
-
-					start = time.Now()
-
-					return buf.Bytes(), nil
-				}
+				f := el.Elem().FieldByIndex(jsonField.index)
+				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
 				if err != nil {
-					return nil, errors.Wrapf(err, "cool-mysql select: failed to get query cache from redis")
+					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", f.Type().Name(), err)
 				}
-
-				return b, nil
-			})
-			if err != nil {
-				return err
 			}
-
-			if !destFilled {
-				return cacheGet(cache.([]byte))
-			}
-
-			return nil
 		}
 
-		if kind == reflect.Chan {
-			go func() {
-				if err := main(); err != nil {
-					panic(err)
-				}
-			}()
-			return nil
+		if !ptrElements {
+			el = reflect.Indirect(el)
 		}
 
-		return main()
+		i++
+
+		if multiRow {
+			switch destKind {
+			case reflect.Chan:
+				destRef.Send(el)
+			case reflect.Slice:
+				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
+			}
+		} else {
+			destRef.Elem().Set(el)
+			break
+		}
 	}
 
-	// we got this far, so just fill the dest with a normal live get
-	return liveGet()
+	if !multiRow && i == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
+var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
+
+func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow bool) {
+	indirectDestRef := reflect.Indirect(destRef)
+	indirectDestRefType := indirectDestRef.Type()
+
+	if !destRef.Type().Implements(scannerType) && indirectDestRefType != timeType {
+		switch k := indirectDestRef.Kind(); k {
+		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice:
+			if !((k == reflect.Array || k == reflect.Slice) && indirectDestRefType.Elem().Kind() == reflect.Uint8) {
+				return indirectDestRefType.Elem(), true
+			}
+		}
+	}
+
+	return destRef.Type().Elem(), false
+}
+
+func isMultiValueElement(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	if !t.Implements(scannerType) && t != timeType {
+		switch k := t.Kind(); k {
+		case reflect.Array, reflect.Chan, reflect.Slice, reflect.Struct:
+			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+type jsonField struct {
+	index []int
+	j     []byte
+}
+
+func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
+	isStruct = !t.Implements(scannerType) && t.Kind() == reflect.Struct
+	if !isStruct {
+		if isMultiValueElement(t) {
+			return make([]any, 1), make([]jsonField, 1), nil, isStruct, nil
+		}
+		return make([]any, 1), nil, nil, isStruct, nil
+	}
+
+	structFieldIndexes := StructFieldIndexes(t)
+
+	fieldsMap = make(map[string][]int, len(structFieldIndexes))
+	for _, i := range structFieldIndexes {
+		f := t.FieldByIndex(i)
+
+		if !f.IsExported() {
+			continue
+		}
+
+		tags, err := structtag.Parse(string(f.Tag))
+		if err != nil {
+			return nil, nil, nil, isStruct, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
+		}
+
+		name := f.Name
+		mysqlTag, _ := tags.Get("mysql")
+		if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
+			name = mysqlTag.Name
+		}
+
+		fieldsMap[strings.ToLower(name)] = i
+	}
+
+	for _, c := range columns {
+		fieldIndex, ok := fieldsMap[c]
+		if !ok {
+			db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
+			continue
+		}
+
+		f := t.FieldByIndex(fieldIndex)
+		if isMultiValueElement(f.Type) {
+			jsonFields = append(jsonFields, jsonField{
+				index: fieldIndex,
+			})
+		}
+	}
+
+	return make([]any, len(columns)), jsonFields, fieldsMap, isStruct, nil
+}
+
+func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
+	t := ref.Type()
+
+	isStruct := !t.Implements(scannerType) && t.Kind() == reflect.Struct
+	if !isStruct {
+		if isMultiValueElement(t) {
+			(*ptrs)[0] = &jsonFields[0].j
+		}
+
+		(*ptrs)[0] = ref.Addr().Interface()
+		return
+	}
+
+	x := new(any)
+	jsonIndex := 0
+	for i, c := range columns {
+		fieldIndex, ok := fieldsMap[c]
+		if !ok {
+			(*ptrs)[i] = x
+			continue
+		}
+
+		f := t.FieldByIndex(fieldIndex)
+		if isMultiValueElement(f.Type) {
+			jsonFields[jsonIndex].j = jsonFields[jsonIndex].j[:0]
+			(*ptrs)[i] = &jsonFields[jsonIndex].j
+			jsonIndex++
+		} else {
+			(*ptrs)[i] = ref.FieldByIndex(fieldIndex).Addr().Interface()
+		}
+	}
 }

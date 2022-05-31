@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Database is a cool MySQL connection
@@ -35,6 +38,8 @@ type Database struct {
 	DisableForeignKeyChecks bool
 
 	testMx *sync.Mutex
+
+	Logger *zap.Logger
 }
 
 // Clone returns a copy of the db with the same connections
@@ -134,6 +139,14 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		db.Reads = db.Writes
 	}
 
+	config := zap.NewDevelopmentConfig()
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	l, err := config.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+	db.Logger = l.Named("cool-mysql")
+
 	return
 }
 
@@ -213,20 +226,20 @@ func (db *Database) Exec(query string, params ...Params) error {
 	return err
 }
 
-func (db *Database) Select(dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Reads, context.Background(), dest, query, cache, params...)
+func (db *Database) Select(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Reads, context.Background(), dest, q, cache, params...)
 }
 
-func (db *Database) SelectContext(ctx context.Context, dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Reads, ctx, dest, query, cache, params...)
+func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Reads, ctx, dest, q, cache, params...)
 }
 
-func (db *Database) SelectWrites(dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Writes, context.Background(), dest, query, cache, params...)
+func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Writes, context.Background(), dest, q, cache, params...)
 }
 
-func (db *Database) SelectWritesContext(ctx context.Context, dest any, query string, cache time.Duration, params ...Params) error {
-	return _select(db, db.Writes, ctx, dest, query, cache, params...)
+func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(db, db.Writes, ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
