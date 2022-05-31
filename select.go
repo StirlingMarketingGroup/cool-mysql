@@ -22,6 +22,9 @@ type Querier interface {
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
 func query(db *Database, conn Querier, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
@@ -131,7 +134,22 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		if multiRow {
 			switch destKind {
 			case reflect.Chan:
-				destRef.Send(el)
+				cases := []reflect.SelectCase{
+					{
+						Dir:  reflect.SelectRecv,
+						Chan: reflect.ValueOf(ctx.Done()),
+					},
+					{
+						Dir:  reflect.SelectSend,
+						Chan: destRef,
+						Send: el,
+					},
+				}
+				switch index, _, _ := reflect.Select(cases); index {
+				case 0:
+					cancel()
+					return nil
+				}
 			case reflect.Slice:
 				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
 			}
