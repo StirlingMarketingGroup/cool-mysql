@@ -149,7 +149,6 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 				case 0:
 					cancel()
 					return nil
-				case 1:
 				}
 			case reflect.Slice:
 				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
