@@ -84,7 +84,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		columns[i] = strings.ToLower(columns[i])
 	}
 
-	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPts(db, t, columns)
+	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 	i := 0
 	for rows.Next() {
 		el := reflect.New(t)
-		updateElementPts(el.Elem(), &ptrs, jsonFields, columns, fieldsMap)
+		updateElementPtrs(el.Elem(), &ptrs, jsonFields, columns, fieldsMap)
 
 		err = rows.Scan(ptrs...)
 		if err != nil {
@@ -185,7 +185,7 @@ type jsonField struct {
 	j     []byte
 }
 
-func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
+func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
 	isStruct = !t.Implements(scannerType) && t.Kind() == reflect.Struct
 	if !isStruct {
 		if isMultiValueElement(t) {
@@ -236,7 +236,7 @@ func setupElementPts(db *Database, t reflect.Type, columns []string) (ptrs []any
 	return make([]any, len(columns)), jsonFields, fieldsMap, isStruct, nil
 }
 
-func updateElementPts(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
+func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
 	t := ref.Type()
 
 	isStruct := !t.Implements(scannerType) && t.Kind() == reflect.Struct
