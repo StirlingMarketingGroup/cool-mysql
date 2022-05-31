@@ -174,7 +174,7 @@ func isMultiValueElement(t reflect.Type) bool {
 
 	if !t.Implements(scannerType) && t != timeType {
 		switch k := t.Kind(); k {
-		case reflect.Array, reflect.Chan, reflect.Slice, reflect.Struct:
+		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.Struct:
 			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
 				return true
 			}
