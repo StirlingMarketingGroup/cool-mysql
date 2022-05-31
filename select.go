@@ -148,7 +148,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 				switch index, _, _ := reflect.Select(cases); index {
 				case 0:
 					cancel()
-					return nil
+					return context.Canceled
 				}
 			case reflect.Slice:
 				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
@@ -173,7 +173,7 @@ func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow boo
 	indirectDestRef := reflect.Indirect(destRef)
 	indirectDestRefType := indirectDestRef.Type()
 
-	if !destRef.Type().Implements(scannerType) && indirectDestRefType != timeType {
+	if !reflect.New(indirectDestRefType).Type().Implements(scannerType) && indirectDestRefType != timeType {
 		switch k := indirectDestRef.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice:
 			if !((k == reflect.Array || k == reflect.Slice) && indirectDestRefType.Elem().Kind() == reflect.Uint8) {
@@ -190,7 +190,7 @@ func isMultiValueElement(t reflect.Type) bool {
 		t = t.Elem()
 	}
 
-	if !t.Implements(scannerType) && t != timeType {
+	if !reflect.New(t).Type().Implements(scannerType) && t != timeType {
 		switch k := t.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.Struct:
 			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
