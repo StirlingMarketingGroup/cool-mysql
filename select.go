@@ -62,7 +62,11 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		return nil
 	}, backoff.WithContext(b, ctx))
 	db.callLog(replacedQuery, mergedParams, time.Since(start))
-	defer rows.Close()
+	defer func() {
+		if rows != nil {
+			rows.Close()
+		}
+	}()
 	if err != nil {
 		return err
 	}
