@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4"
+	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
 	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
@@ -33,6 +35,7 @@ type Database struct {
 	maxInsertSize int
 
 	redis *redis.Client
+	rs    *redsync.Redsync
 
 	// DisableForeignKeyChecks only affects foreign keys for transactions
 	DisableForeignKeyChecks bool
@@ -57,18 +60,20 @@ func (db *Database) EnableRedis(address string, password string, redisDB int) {
 		Password: password, // no password set
 		DB:       redisDB,  // use default DB
 	})
+
+	db.rs = redsync.New(goredis.NewPool(db.redis))
 }
 
 // LogFunc is called after the query executes
-type LogFunc func(query string, params Params, duration time.Duration)
+type LogFunc func(query string, params Params, duration time.Duration, cacheHit bool)
 
 // FinishedFunc executes after all rows have been processed,
 // including being read from the channel if used
 type FinishedFunc func(cached bool, replacedQuery string, mergedParams Params, execDuration time.Duration, fetchDuration time.Duration)
 
-func (db *Database) callLog(query string, params Params, duration time.Duration) {
+func (db *Database) callLog(query string, params Params, duration time.Duration, cacheHit bool) {
 	if db.Log != nil {
-		db.Log(query, params, duration)
+		db.Log(query, params, duration, cacheHit)
 	}
 }
 
