@@ -2,8 +2,6 @@ package mysql
 
 import (
 	"time"
-
-	"github.com/cenkalti/backoff/v4"
 )
 
 // MaxExecutionTime is the total time we would like our queries to be able to execute.
@@ -11,11 +9,5 @@ import (
 // 90% of 30 seconds (27 seconds), with the goal of letting our process clean up and correctly
 // log any failed queries
 var MaxExecutionTime = time.Duration(getEnvInt64("COOL_MAX_EXECUTION_TIME_TIME", int64(float64(30)*.9))) * time.Second
-
-var b = backoff.NewExponentialBackOff()
-
-func init() {
-	b.MaxElapsedTime = MaxExecutionTime
-}
 
 var MaxConnectionTime = MaxExecutionTime

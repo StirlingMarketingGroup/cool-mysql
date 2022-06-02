@@ -163,6 +163,8 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 	var rows *sql.Rows
 	start := time.Now()
 
+	var b = backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = MaxExecutionTime
 	err = backoff.Retry(func() error {
 		var err error
 		rows, err = conn.QueryContext(ctx, replacedQuery)
