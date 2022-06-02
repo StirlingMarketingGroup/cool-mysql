@@ -47,7 +47,7 @@ func (db *Database) exec(ex Executor, ctx context.Context, query string, params 
 		return nil
 	}, backoff.WithContext(b, ctx))
 
-	db.callLog(replacedQuery, mergedParams, time.Since(start))
+	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
 
 	if err != nil {
 		return nil, Error{

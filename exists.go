@@ -16,7 +16,7 @@ func (db *Database) Exists(query string, cache time.Duration, params ...Params) 
 
 	start := time.Now()
 	rows, err := db.Reads.Query(replacedQuery)
-	db.callLog(replacedQuery, mergedParams, time.Since(start))
+	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
 
 	if err != nil {
 		return false, Error{

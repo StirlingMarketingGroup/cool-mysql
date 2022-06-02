@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
+	"github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4"
 	"github.com/go-sql-driver/mysql"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 type Querier interface {
@@ -42,6 +46,113 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		}
 	}()
 
+	destRef := reflect.ValueOf(dest)
+	destKind := reflect.Indirect(destRef).Kind()
+
+	t, multiRow := getElementTypeFromDest(destRef)
+	ptrElements := t.Kind() == reflect.Pointer
+	if ptrElements {
+		t = t.Elem()
+	}
+
+	sendElement := func(el reflect.Value) error {
+		if !ptrElements {
+			el = reflect.Indirect(el)
+		}
+
+		if multiRow {
+			switch destKind {
+			case reflect.Chan:
+				cases := []reflect.SelectCase{
+					{
+						Dir:  reflect.SelectRecv,
+						Chan: reflect.ValueOf(ctx.Done()),
+					},
+					{
+						Dir:  reflect.SelectSend,
+						Chan: destRef,
+						Send: el,
+					},
+				}
+				switch index, _, _ := reflect.Select(cases); index {
+				case 0:
+					cancel()
+					return context.Canceled
+				}
+			case reflect.Slice:
+				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
+			}
+		} else {
+			destRef.Elem().Set(el)
+		}
+		return nil
+	}
+
+	var mutex *redsync.Mutex
+	var cacheKey string
+	var cacheSlice reflect.Value
+
+	if cacheDuration > 0 {
+		cacheSlice = reflect.New(reflect.SliceOf(t)).Elem()
+
+		key := new(strings.Builder)
+		key.WriteString("cool-mysql:")
+		key.WriteString(t.String())
+		key.WriteByte(':')
+		key.WriteString(replacedQuery)
+		key.WriteByte(':')
+		key.WriteString(strconv.FormatInt(int64(cacheDuration), 10))
+
+		cacheKey = key.String()
+
+		mutex = db.rs.NewMutex(cacheKey + ":mutex")
+		if err := mutex.Lock(); err != nil {
+			db.Logger.Error(fmt.Sprintf("failed to lock redis mutex: %v", err))
+		}
+
+		unlock := func() {
+			if mutex != nil {
+				if ok, err := mutex.Unlock(); !ok || err != nil {
+					db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
+				}
+			}
+		}
+
+		start := time.Now()
+		b, err := db.redis.Get(ctx, cacheKey).Bytes()
+		if err == redis.Nil {
+			// cache miss!
+			defer unlock()
+		} else if err != nil {
+			return fmt.Errorf("failed to get data from redis: %w", err)
+		} else {
+			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
+			unlock()
+
+			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
+			if err != nil {
+				return fmt.Errorf("failed to unmarshal from cache: %w", err)
+			}
+
+			l := cacheSlice.Len()
+			if !multiRow && l == 0 {
+				return sql.ErrNoRows
+			}
+
+			for i := 0; i < l; i++ {
+				err = sendElement(cacheSlice.Index(i).Addr())
+				if err != nil {
+					return err
+				}
+				if !multiRow {
+					break
+				}
+			}
+
+			return nil
+		}
+	}
+
 	var rows *sql.Rows
 	start := time.Now()
 	b := backoff.NewExponentialBackOff()
@@ -64,7 +175,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	db.callLog(replacedQuery, mergedParams, time.Since(start))
+	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
 	defer func() {
 		if rows != nil {
 			rows.Close()
@@ -72,15 +183,6 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 	}()
 	if err != nil {
 		return err
-	}
-
-	destRef := reflect.ValueOf(dest)
-	destKind := reflect.Indirect(destRef).Kind()
-
-	t, multiRow := getElementTypeFromDest(destRef)
-	ptrElements := t.Kind() == reflect.Pointer
-	if ptrElements {
-		t = t.Elem()
 	}
 
 	columns, err := rows.Columns()
@@ -125,42 +227,35 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 			}
 		}
 
-		if !ptrElements {
-			el = reflect.Indirect(el)
+		if len(cacheKey) != 0 {
+			cacheSlice = reflect.Append(cacheSlice, el.Elem())
 		}
 
 		i++
 
-		if multiRow {
-			switch destKind {
-			case reflect.Chan:
-				cases := []reflect.SelectCase{
-					{
-						Dir:  reflect.SelectRecv,
-						Chan: reflect.ValueOf(ctx.Done()),
-					},
-					{
-						Dir:  reflect.SelectSend,
-						Chan: destRef,
-						Send: el,
-					},
-				}
-				switch index, _, _ := reflect.Select(cases); index {
-				case 0:
-					cancel()
-					return context.Canceled
-				}
-			case reflect.Slice:
-				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
-			}
-		} else {
-			destRef.Elem().Set(el)
+		err = sendElement(el)
+		if err != nil {
+			return err
+		}
+		if !multiRow {
 			break
 		}
 	}
 
 	if !multiRow && i == 0 {
 		return sql.ErrNoRows
+	}
+
+	if len(cacheKey) != 0 {
+		b, err := msgpack.Marshal(cacheSlice.Interface())
+		if err != nil {
+			return fmt.Errorf("failed to marshal results for cache: %w", err)
+		}
+
+		err = db.redis.Set(ctx, cacheKey, b, cacheDuration).Err()
+		if err != nil {
+			return fmt.Errorf("failed to set redis cache: %w", err)
+		}
 	}
 
 	return nil
@@ -211,9 +306,9 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 	isStruct = !t.Implements(scannerType) && t.Kind() == reflect.Struct
 	if !isStruct {
 		if isMultiValueElement(t) {
-			return make([]any, 1), make([]jsonField, 1), nil, isStruct, nil
+			return make([]any, len(columns)), make([]jsonField, 1), nil, isStruct, nil
 		}
-		return make([]any, 1), nil, nil, isStruct, nil
+		return make([]any, len(columns)), nil, nil, isStruct, nil
 	}
 
 	structFieldIndexes := StructFieldIndexes(t)
@@ -260,6 +355,7 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 
 func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
 	t := ref.Type()
+	x := new(any)
 
 	isStruct := !t.Implements(scannerType) && t.Kind() == reflect.Struct
 	if !isStruct {
@@ -268,10 +364,14 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 		}
 
 		(*ptrs)[0] = ref.Addr().Interface()
+
+		for i := 1; i < len(columns); i++ {
+			(*ptrs)[i] = x
+		}
+
 		return
 	}
 
-	x := new(any)
 	jsonIndex := 0
 	for i, c := range columns {
 		fieldIndex, ok := fieldsMap[c]
