@@ -27,6 +27,8 @@ func (db *Database) exec(ex Executor, ctx context.Context, query string, params 
 	start := time.Now()
 	var res sql.Result
 
+	var b = backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = MaxExecutionTime
 	err := backoff.Retry(func() error {
 		var err error
 		res, err = ex.ExecContext(ctx, replacedQuery)
