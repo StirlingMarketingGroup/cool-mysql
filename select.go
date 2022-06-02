@@ -107,13 +107,14 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		cacheKey = key.String()
 
 		mutex = db.rs.NewMutex(cacheKey + ":mutex")
-		if err := mutex.Lock(); err != nil {
-			db.Logger.Error(fmt.Sprintf("failed to lock redis mutex: %v", err))
+		err = backoff.Retry(mutex.Lock, backoff.WithContext(b, ctx))
+		if err != nil {
+			return fmt.Errorf("failed to lock redis mutex: %v", err)
 		}
 
 		unlock := func() {
-			if mutex != nil {
-				if ok, err := mutex.Unlock(); !ok || err != nil {
+			if mutex != nil && len(mutex.Value()) != 0 {
+				if _, err := mutex.Unlock(); err != nil {
 					db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
 				}
 			}
@@ -125,6 +126,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 			// cache miss!
 			defer unlock()
 		} else if err != nil {
+			unlock()
 			return fmt.Errorf("failed to get data from redis: %w", err)
 		} else {
 			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
@@ -156,8 +158,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 	var rows *sql.Rows
 	start := time.Now()
-	b := backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+
 	err = backoff.Retry(func() error {
 		var err error
 		rows, err = conn.QueryContext(ctx, replacedQuery)
