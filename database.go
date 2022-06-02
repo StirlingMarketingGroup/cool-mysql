@@ -34,7 +34,7 @@ type Database struct {
 
 	maxInsertSize int
 
-	redis *redis.Client
+	redis redis.UniversalClient
 	rs    *redsync.Redsync
 
 	// DisableForeignKeyChecks only affects foreign keys for transactions
@@ -54,13 +54,8 @@ func (db *Database) Clone() *Database {
 
 // EnableRedis enables redis cache for select queries with cache times
 // with the given connection information
-func (db *Database) EnableRedis(address string, password string, redisDB int) {
-	db.redis = redis.NewClient(&redis.Options{
-		Addr:     address,
-		Password: password, // no password set
-		DB:       redisDB,  // use default DB
-	})
-
+func (db *Database) EnableRedis(redisClient redis.UniversalClient) {
+	db.redis = redisClient
 	db.rs = redsync.New(goredis.NewPool(db.redis))
 }
 

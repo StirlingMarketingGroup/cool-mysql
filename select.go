@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -120,7 +121,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		start := time.Now()
 		b, err := db.redis.Get(ctx, cacheKey).Bytes()
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			// cache miss!
 			defer unlock()
 		} else if err != nil {
@@ -163,7 +164,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		if err != nil {
 			if checkRetryError(err) {
 				return err
-			} else if err == mysql.ErrInvalidConn {
+			} else if errors.Is(err, mysql.ErrInvalidConn) {
 				if err := db.Test(); err != nil {
 					return err
 				}
