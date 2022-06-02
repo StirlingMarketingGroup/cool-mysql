@@ -131,7 +131,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
 			if err != nil {
-				panic(err)
+				return fmt.Errorf("failed to unmarshal from cache: %w", err)
 			}
 
 			l := cacheSlice.Len()
