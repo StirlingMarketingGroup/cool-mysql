@@ -15,7 +15,6 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
 	"github.com/go-redis/redis/v8"
-	"github.com/go-redsync/redsync/v4"
 	"github.com/go-sql-driver/mysql"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -89,7 +88,6 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		return nil
 	}
 
-	var mutex *redsync.Mutex
 	var cacheKey string
 	var cacheSlice reflect.Value
 
@@ -106,35 +104,14 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		cacheKey = key.String()
 
-		mutex = db.rs.NewMutex(cacheKey+":mutex",
-			redsync.WithExpiry(MaxExecutionTime),
-			redsync.WithTries(int(float64(MaxExecutionTime/time.Second)/.1)),
-			redsync.WithTimeoutFactor(.1),
-		)
-
-		if err = mutex.Lock(); err != nil {
-			return fmt.Errorf("failed to lock redis mutex: %v", err)
-		}
-
-		unlock := func() {
-			if mutex != nil && len(mutex.Value()) != 0 {
-				if _, err = mutex.Unlock(); err != nil {
-					db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
-				}
-			}
-		}
-
 		start := time.Now()
 		b, err := db.redis.Get(ctx, cacheKey).Bytes()
 		if errors.Is(err, redis.Nil) {
 			// cache miss!
-			defer unlock()
 		} else if err != nil {
-			unlock()
 			return fmt.Errorf("failed to get data from redis: %w", err)
 		} else {
 			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
-			unlock()
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
 			if err != nil {
