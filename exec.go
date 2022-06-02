@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -26,15 +27,13 @@ func (db *Database) exec(ex Executor, ctx context.Context, query string, params 
 	start := time.Now()
 	var res sql.Result
 
-	b := backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
 	err := backoff.Retry(func() error {
 		var err error
 		res, err = ex.ExecContext(ctx, replacedQuery)
 		if err != nil {
 			if checkRetryError(err) {
 				return err
-			} else if err == mysql.ErrInvalidConn {
+			} else if errors.Is(err, mysql.ErrInvalidConn) {
 				if err := db.Test(); err != nil {
 					return err
 				}

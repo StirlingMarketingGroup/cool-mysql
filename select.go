@@ -106,15 +106,19 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		cacheKey = key.String()
 
-		mutex = db.rs.NewMutex(cacheKey + ":mutex")
-		err = backoff.Retry(mutex.Lock, backoff.WithContext(b, ctx))
-		if err != nil {
+		mutex = db.rs.NewMutex(cacheKey+":mutex",
+			redsync.WithExpiry(MaxExecutionTime),
+			redsync.WithTries(int(float64(MaxExecutionTime/time.Second)/.1)),
+			redsync.WithTimeoutFactor(.1),
+		)
+
+		if err = mutex.Lock(); err != nil {
 			return fmt.Errorf("failed to lock redis mutex: %v", err)
 		}
 
 		unlock := func() {
 			if mutex != nil && len(mutex.Value()) != 0 {
-				if _, err := mutex.Unlock(); err != nil {
+				if _, err = mutex.Unlock(); err != nil {
 					db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
 				}
 			}
