@@ -6,17 +6,16 @@ import (
 	"github.com/cenkalti/backoff/v4"
 )
 
-// default is 5 seconds less than 30 (our max lambda execution time)
-// to hopefully allow errors to be logged before the lambda dies
-var BackoffDefaultMaxElapsedTime = time.Duration(getEnvInt64("COOL_BACKOFF_DEFAULT_MAX_ELAPSED_SECONDS", 25)) * time.Second
+// MaxExecutionTime is the total time we would like our queries to be able to execute.
+// Since we are using 30 second limited AWS Lambda functions, we'll default this time to
+// 90% of 30 seconds (27 seconds), with the goal of letting our process clean up and correctly
+// log any failed queries
+var MaxExecutionTime = time.Duration(getEnvInt64("COOL_MAX_EXECUTION_TIME_TIME", int64(float64(30)*.9))) * time.Second
 
 var b = backoff.NewExponentialBackOff()
 
 func init() {
-	b.MaxElapsedTime = BackoffDefaultMaxElapsedTime
+	b.MaxElapsedTime = MaxExecutionTime
 }
 
-// also defaulting this to 30 seconds because that's our lambda lifetime
-// currently unfreezing lambda functions causes queries to try to run on connections
-// that have been closed by the server causing random failures
-var MaxConnectionTime = time.Duration(getEnvInt64("COOL_MAX_CONNECTION_LIFE_TIME", 30)) * time.Second
+var MaxConnectionTime = MaxExecutionTime
