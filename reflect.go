@@ -16,10 +16,9 @@ func structFieldIndexes(t reflect.Type, indexPrefix []int) [][]int {
 
 		newIndex := append(indexPrefix, i)
 
+		indexes = append(indexes, newIndex)
 		if f.Anonymous && f.Type.Kind() == reflect.Struct {
 			indexes = append(indexes, structFieldIndexes(f.Type, newIndex)...)
-		} else {
-			indexes = append(indexes, newIndex)
 		}
 	}
 
