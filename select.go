@@ -15,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
 	"github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4"
 	"github.com/go-sql-driver/mysql"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -105,9 +106,30 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		cacheKey = key.String()
 
 		start := time.Now()
+
+	CHECK_CACHE:
 		b, err := db.redis.Get(ctx, cacheKey).Bytes()
 		if errors.Is(err, redis.Nil) {
 			// cache miss!
+
+			// grab a lock so we can update the cache
+			mutex := db.rs.NewMutex(cacheKey+":mutex", redsync.WithTries(1))
+
+			if err = mutex.Lock(); err != nil {
+				// if we couldn't get the lock, then just check the cache again
+				time.Sleep(10 * time.Millisecond)
+				goto CHECK_CACHE
+			}
+
+			unlock := func() {
+				if mutex != nil && len(mutex.Value()) != 0 {
+					if _, err = mutex.Unlock(); err != nil {
+						db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
+					}
+				}
+			}
+
+			defer unlock()
 		} else if err != nil {
 			return fmt.Errorf("failed to get data from redis: %w", err)
 		} else {
