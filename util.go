@@ -21,3 +21,14 @@ func getEnvInt64(key string, fallback int64) int64 {
 	}
 	return fallback
 }
+
+// getEnvFloat gets an environment variable with a default float64
+func getEnvFloat(key string, fallback float64) float64 {
+	if value, ok := os.LookupEnv(key); ok {
+		n, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return fallback
+}

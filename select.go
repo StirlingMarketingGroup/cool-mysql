@@ -117,7 +117,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 			if err = mutex.Lock(); err != nil {
 				// if we couldn't get the lock, then just check the cache again
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(RedisLockRetryDelay)
 				goto CHECK_CACHE
 			}
 

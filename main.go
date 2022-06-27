@@ -11,3 +11,5 @@ import (
 var MaxExecutionTime = time.Duration(getEnvInt64("COOL_MAX_EXECUTION_TIME_TIME", int64(float64(30)*.9))) * time.Second
 
 var MaxConnectionTime = MaxExecutionTime
+
+var RedisLockRetryDelay = time.Duration(getEnvFloat("COOL_REDIS_LOCK_RETRY_DELAY", .020)) * time.Second
