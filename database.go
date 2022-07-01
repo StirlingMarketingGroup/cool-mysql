@@ -27,8 +27,9 @@ type Database struct {
 	WritesDSN string
 	ReadsDSN  string
 
-	Log      LogFunc
-	Finished FinishedFunc
+	Log              LogFunc
+	Finished         FinishedFunc
+	HandleRedisError HandleRedisError
 
 	die bool
 
@@ -65,6 +66,10 @@ type LogFunc func(query string, params Params, duration time.Duration, cacheHit 
 // FinishedFunc executes after all rows have been processed,
 // including being read from the channel if used
 type FinishedFunc func(cached bool, replacedQuery string, mergedParams Params, execDuration time.Duration, fetchDuration time.Duration)
+
+// HandleRedisError is executed on a redis error, so it can be handled by the user
+// return false to let the function return the error, or return to let the function continue executing despite the redis error
+type HandleRedisError func(err error) bool
 
 func (db *Database) callLog(query string, params Params, duration time.Duration, cacheHit bool) {
 	if db.Log != nil {
