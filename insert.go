@@ -477,17 +477,17 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructBuilder := dynamicstruct.NewStruct()
 	for _, f := range fields {
 		fieldName := f.Name()
-
+		if _, ok := colsMap[fieldName]; !ok {
+			continue
+		}
 		fd := fieldDetailsMap[fieldName]
 		if fd == nil || fd.skip {
 			continue
 		}
-
 		tag := fd.name
 		if fd.omitempty {
 			tag += ",omitempty"
 		}
-
 		uniqueStructBuilder.AddField(fieldName, f.Value(), `mysql:"`+tag+`"`)
 	}
 	uniqueStructType := uniqueStructBuilder.Build()
