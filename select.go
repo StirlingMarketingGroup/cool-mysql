@@ -268,7 +268,14 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		err = db.redis.Set(ctx, cacheKey, b, cacheDuration).Err()
 		if err != nil {
-			return fmt.Errorf("failed to set redis cache: %w", err)
+			err = fmt.Errorf("failed to set redis cache: %w", err)
+			ok := false
+			if db.HandleRedisError != nil {
+				ok = db.HandleRedisError(err)
+			}
+			if !ok {
+				return err
+			}
 		}
 	}
 
