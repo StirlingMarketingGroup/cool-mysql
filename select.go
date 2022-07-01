@@ -109,7 +109,14 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		if errors.Is(err, redis.Nil) {
 			// cache miss!
 		} else if err != nil {
-			return fmt.Errorf("failed to get data from redis: %w", err)
+			err = fmt.Errorf("failed to get data from redis: %w", err)
+			ok := false
+			if db.HandleRedisError != nil {
+				ok = db.HandleRedisError(err)
+			}
+			if !ok {
+				return err
+			}
 		} else {
 			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
 
