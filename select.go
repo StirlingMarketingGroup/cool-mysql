@@ -359,7 +359,9 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 	for _, c := range columns {
 		fieldIndex, ok := fieldsMap[c]
 		if !ok {
-			db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
+			if !db.DisableUnusedColumnWarnings {
+				db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
+			}
 			continue
 		}
 
