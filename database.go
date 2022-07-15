@@ -43,7 +43,8 @@ type Database struct {
 
 	testMx *sync.Mutex
 
-	Logger *zap.Logger
+	Logger                      *zap.Logger
+	DisableUnusedColumnWarnings bool
 }
 
 // Clone returns a copy of the db with the same connections
