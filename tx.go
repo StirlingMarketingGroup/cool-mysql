@@ -13,34 +13,40 @@ type Tx struct {
 }
 
 // BeginTx begins and returns a new transaction on the writes connection
-func (db *Database) BeginTx(ctx context.Context) (*Tx, error) {
-	tx, err := db.Writes.BeginTx(ctx, nil)
+func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+	t, err := db.Writes.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, t.Rollback, err
 	}
 
 	return &Tx{
 		db: db,
-		Tx: tx,
-	}, nil
+		Tx: t,
+	}, t.Rollback, nil
 }
 
 // BeginReadsTx begins and returns a new transaction on the reads connection
-func (db *Database) BeginReadsTx(ctx context.Context) (*Tx, error) {
-	tx, err := db.Writes.BeginTx(ctx, nil)
+func (db *Database) BeginReadsTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+	t, err := db.Reads.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, t.Rollback, err
 	}
 
 	return &Tx{
 		db: db,
-		Tx: tx,
-	}, nil
+		Tx: t,
+	}, t.Rollback, nil
 }
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
 	return tx.Tx.Commit()
+}
+
+// Cancel the transaction
+// this should be deferred after creating new tx every time
+func (tx *Tx) Cancel() error {
+	return tx.Tx.Rollback()
 }
 
 func (tx *Tx) DefaultInsertOptions() *Inserter {
