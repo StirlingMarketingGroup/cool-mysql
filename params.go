@@ -29,9 +29,9 @@ var stringsBuilderPool = sync.Pool{
 // have to specify params if there aren't any, but each param will
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
-func ReplaceParams(query string, params ...Params) (replacedQuery string, mergedParams Params) {
+func ReplaceParams(query string, params ...Params) (replacedQuery RawMessage, mergedParams Params) {
 	if len(params) == 0 {
-		return query, nil
+		return RawMessage(query), nil
 	}
 
 	for i, p := range params {
@@ -45,7 +45,7 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 	}
 
 	if len(params[0]) == 0 {
-		return query, nil
+		return RawMessage(query), nil
 	}
 
 	i := 0
@@ -138,7 +138,7 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 		s.WriteString(query[start:])
 	}
 
-	return s.String(), params[0]
+	return RawMessage(s.String()), params[0]
 }
 
 // Encodable is a type with it's own cool mysql

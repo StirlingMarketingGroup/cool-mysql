@@ -41,7 +41,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 			err = Error{
 				Err:           err,
 				OriginalQuery: query,
-				ReplacedQuery: replacedQuery,
+				ReplacedQuery: string(replacedQuery),
 				Params:        mergedParams,
 			}
 		}
@@ -99,7 +99,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		key.WriteString("cool-mysql:")
 		key.WriteString(t.String())
 		key.WriteByte(':')
-		key.WriteString(replacedQuery)
+		key.WriteString(string(replacedQuery))
 		key.WriteByte(':')
 		key.WriteString(strconv.FormatInt(int64(cacheDuration), 10))
 
@@ -140,7 +140,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 				return err
 			}
 		} else {
-			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
+			db.callLog(string(replacedQuery), mergedParams, time.Since(start), true)
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
 			if err != nil {
@@ -173,7 +173,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 	b.MaxElapsedTime = MaxExecutionTime
 	err = backoff.Retry(func() error {
 		var err error
-		rows, err = conn.QueryContext(ctx, replacedQuery)
+		rows, err = conn.QueryContext(ctx, string(replacedQuery))
 		if err != nil {
 			if checkRetryError(err) {
 				return err
@@ -189,7 +189,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
+	db.callLog(string(replacedQuery), mergedParams, time.Since(start), false)
 	defer func() {
 		if rows != nil {
 			rows.Close()

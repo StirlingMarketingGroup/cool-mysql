@@ -31,7 +31,7 @@ func (db *Database) exec(ex Executor, ctx context.Context, query string, params 
 	b.MaxElapsedTime = MaxExecutionTime
 	err := backoff.Retry(func() error {
 		var err error
-		res, err = ex.ExecContext(ctx, replacedQuery)
+		res, err = ex.ExecContext(ctx, string(replacedQuery))
 		if err != nil {
 			if checkRetryError(err) {
 				return err
@@ -48,13 +48,13 @@ func (db *Database) exec(ex Executor, ctx context.Context, query string, params 
 		return nil
 	}, backoff.WithContext(b, ctx))
 
-	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
+	db.callLog(string(replacedQuery), mergedParams, time.Since(start), false)
 
 	if err != nil {
 		return nil, Error{
 			Err:           err,
 			OriginalQuery: query,
-			ReplacedQuery: replacedQuery,
+			ReplacedQuery: string(replacedQuery),
 			Params:        mergedParams,
 		}
 	}

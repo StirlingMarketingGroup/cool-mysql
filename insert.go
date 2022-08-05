@@ -264,7 +264,7 @@ func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, sour
 			}
 
 			if columns[i].omitempty && isZero(p) {
-				WriteEncoded(insertBuf, Literal("default"), false)
+				WriteEncoded(insertBuf, RawMessage("default"), false)
 				continue
 			}
 

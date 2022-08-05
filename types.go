@@ -2,12 +2,12 @@ package mysql
 
 import "github.com/pkg/errors"
 
-// Literal is a literal MySQL string,
+// RawMessage is a raw MySQL string,
 // not to be encoded or escaped in any way
-type Literal string
+type RawMessage string
 
-// CoolMySQLEncode writes the literal to the query writer
-func (v Literal) CoolMySQLEncode(s Builder) {
+// CoolMySQLEncode writes the raw mysql to the query writer
+func (v RawMessage) CoolMySQLEncode(s Builder) {
 	s.WriteString(string(v))
 }
 
@@ -16,7 +16,7 @@ func (v Literal) CoolMySQLEncode(s Builder) {
 // in MySQL
 type JSON []byte
 
-// CoolMySQLEncode writes the literal to the query writer
+// CoolMySQLEncode writes the raw mysql to the query writer
 func (v JSON) CoolMySQLEncode(s Builder) {
 	WriteEncoded(s, string(v), false)
 }
