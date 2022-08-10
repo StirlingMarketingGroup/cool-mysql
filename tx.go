@@ -17,7 +17,7 @@ type Tx struct {
 func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
 	start := time.Now()
 	t, err := db.Writes.BeginTx(ctx, nil)
-	db.callLog("start transaction", nil, time.Since(start), true)
+	db.callLog("start transaction", nil, time.Since(start), false)
 	if err != nil {
 		return nil, t.Rollback, err
 	}
@@ -32,7 +32,7 @@ func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, e
 func (db *Database) BeginReadsTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
 	start := time.Now()
 	t, err := db.Reads.BeginTx(ctx, nil)
-	db.callLog("start transaction", nil, time.Since(start), true)
+	db.callLog("start transaction", nil, time.Since(start), false)
 	if err != nil {
 		return nil, t.Rollback, err
 	}
@@ -47,7 +47,7 @@ func (db *Database) BeginReadsTx(ctx context.Context) (tx *Tx, cancel func() err
 func (tx *Tx) Commit() error {
 	start := time.Now()
 	err := tx.Tx.Commit()
-	tx.db.callLog("commit", nil, time.Since(start), true)
+	tx.db.callLog("commit", nil, time.Since(start), false)
 
 	return err
 }
