@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 // Tx is a cool MySQL transaction
@@ -14,7 +15,9 @@ type Tx struct {
 
 // BeginTx begins and returns a new transaction on the writes connection
 func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+	start := time.Now()
 	t, err := db.Writes.BeginTx(ctx, nil)
+	tx.db.callLog("start transaction", nil, time.Since(start), true)
 	if err != nil {
 		return nil, t.Rollback, err
 	}
@@ -27,7 +30,9 @@ func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, e
 
 // BeginReadsTx begins and returns a new transaction on the reads connection
 func (db *Database) BeginReadsTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+	start := time.Now()
 	t, err := db.Reads.BeginTx(ctx, nil)
+	tx.db.callLog("start transaction", nil, time.Since(start), true)
 	if err != nil {
 		return nil, t.Rollback, err
 	}
@@ -40,7 +45,11 @@ func (db *Database) BeginReadsTx(ctx context.Context) (tx *Tx, cancel func() err
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
-	return tx.Tx.Commit()
+	start := time.Now()
+	err := tx.Tx.Commit()
+	tx.db.callLog("commit", nil, time.Since(start), true)
+
+	return err
 }
 
 // Cancel the transaction
