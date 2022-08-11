@@ -77,6 +77,10 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 	return tx.I().InsertContext(ctx, insert, source)
 }
 
+func (tx *Tx) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args interface{}) error {
+	return tx.I().InsertUniquely(insertQuery, uniqueColumns, active, args)
+}
+
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
 	return tx.db.exec(tx.Tx, ctx, query, params...)
