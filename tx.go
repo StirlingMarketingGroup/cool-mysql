@@ -13,10 +13,11 @@ type Tx struct {
 	Tx *sql.Tx
 }
 
-// BeginTx begins and returns a new transaction on the writes connection
-func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+type txCancelFunc func() error
+
+func beginTx(db *Database, conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc, error) {
 	start := time.Now()
-	t, err := db.Writes.BeginTx(ctx, nil)
+	t, err := conn.BeginTx(ctx, nil)
 	db.callLog("start transaction", nil, time.Since(start), false)
 	if err != nil {
 		return nil, t.Rollback, err
@@ -28,19 +29,24 @@ func (db *Database) BeginTx(ctx context.Context) (tx *Tx, cancel func() error, e
 	}, t.Rollback, nil
 }
 
-// BeginReadsTx begins and returns a new transaction on the reads connection
-func (db *Database) BeginReadsTx(ctx context.Context) (tx *Tx, cancel func() error, err error) {
-	start := time.Now()
-	t, err := db.Reads.BeginTx(ctx, nil)
-	db.callLog("start transaction", nil, time.Since(start), false)
-	if err != nil {
-		return nil, t.Rollback, err
-	}
+// BeginTx begins and returns a new transaction on the writes connection
+func (db *Database) BeginTx() (tx *Tx, cancel func() error, err error) {
+	return beginTx(db, db.Writes, context.Background())
+}
 
-	return &Tx{
-		db: db,
-		Tx: t,
-	}, t.Rollback, nil
+// BeginTxContext begins and returns a new transaction on the writes connection
+func (db *Database) BeginTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+	return beginTx(db, db.Writes, ctx)
+}
+
+// BeginReadsTx begins and returns a new transaction on the writes connection
+func (db *Database) BeginReadsTx() (tx *Tx, cancel func() error, err error) {
+	return beginTx(db, db.Reads, context.Background())
+}
+
+// BeginReadsTxContext begins and returns a new transaction on the reads connection
+func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
+	return beginTx(db, db.Reads, ctx)
 }
 
 // Commit commits the transaction
