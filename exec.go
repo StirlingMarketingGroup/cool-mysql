@@ -12,13 +12,8 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-type executor interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	querier
-}
-
 // exec executes a query and nothing more
-func (db *Database) exec(ex executor, ctx context.Context, query string, params ...Params) (sql.Result, error) {
+func (db *Database) exec(ex commander, ctx context.Context, query string, params ...Params) (sql.Result, error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)

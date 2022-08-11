@@ -20,13 +20,9 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-type querier interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}
-
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
-func query(db *Database, conn querier, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
+func query(db *Database, conn commander, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
