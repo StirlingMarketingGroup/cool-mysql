@@ -108,3 +108,11 @@ func (tx *Tx) Exec(query string, params ...Params) error {
 	_, err := tx.ExecContextResult(context.Background(), query, params...)
 	return err
 }
+
+func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(tx.db, tx.Tx, context.Background(), dest, q, cache, params...)
+}
+
+func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(tx.db, tx.Tx, ctx, dest, q, cache, params...)
+}
