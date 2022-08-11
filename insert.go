@@ -326,7 +326,7 @@ var insertUniquelyTableRegexp = regexp.MustCompile("`.+?`")
 
 // InsertUniquely inserts the structs as rows
 // if active versions don't already exist
-func (db *Database) InsertUniquely(query string, uniqueColumns []string, active string, args interface{}) error {
+func (in *Inserter) InsertUniquely(query string, uniqueColumns []string, active string, args interface{}) error {
 	structsErr := fmt.Errorf("args must be a slice of structs")
 
 	// this function only works with a slice of structs
@@ -493,7 +493,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()
 
-	err := db.SelectWrites(uniqueStructs, q.String(), 0)
+	err := in.db.SelectWrites(uniqueStructs, q.String(), 0)
 	if err != nil {
 		return errors.Wrapf(err, "failed to execute InsertUniquely's initial select query")
 	}
@@ -549,5 +549,5 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 
 	args = slice.Slice(0, sliceLen).Interface()
 
-	return db.Insert(query, args)
+	return in.Insert(query, args)
 }
