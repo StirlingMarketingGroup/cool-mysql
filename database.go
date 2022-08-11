@@ -210,6 +210,10 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 	return db.I().SetExecutor(db.Reads).InsertContext(ctx, insert, source)
 }
 
+func (db *Database) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args interface{}) error {
+	return db.I().InsertUniquely(insertQuery, uniqueColumns, active, args)
+}
+
 // ExecContext executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
 	return db.exec(db.Writes, ctx, query, params...)
