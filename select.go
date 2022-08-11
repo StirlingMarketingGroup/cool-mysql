@@ -24,14 +24,72 @@ type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
+type Selector struct {
+	db   *Database
+	tx   *Tx
+	conn Querier
+
+	HandleResult func(sql.Result)
+}
+
+func (sel *Selector) SetResultHandler(fn func(sql.Result)) *Selector {
+	sel.HandleResult = fn
+
+	return sel
+}
+
+func (sel *Selector) SetQuerier(conn Querier) *Selector {
+	sel.conn = conn
+
+	return sel
+}
+
+func (sel *Selector) Select(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(sel, context.Background(), dest, q, cache, params...)
+}
+
+func (sel *Selector) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(sel, ctx, dest, q, cache, params...)
+}
+
+func (sel *Selector) SelectWrites(dest any, q string, cache time.Duration, params ...Params) error {
+	return query(sel.SetQuerier(sel.db.Writes), context.Background(), dest, q, cache, params...)
+}
+
+func (sel *Selector) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return query(sel.SetQuerier(sel.db.Writes), ctx, dest, q, cache, params...)
+}
+
+func (sel *Selector) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
+	return sel.SelectJSONContext(context.Background(), dest, query, cache, params...)
+}
+
+func (sel *Selector) SelectJSONContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
+	var store struct {
+		JSON []byte
+	}
+
+	err := sel.SelectContext(ctx, &store, query, cache, params...)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(store.JSON, dest)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
-func query(db *Database, conn Querier, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
+func query(sel *Selector, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
-	if db.die {
+	if sel.db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)
 	}
@@ -108,12 +166,12 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		start := time.Now()
 
 	CHECK_CACHE:
-		b, err := db.redis.Get(ctx, cacheKey).Bytes()
+		b, err := sel.db.redis.Get(ctx, cacheKey).Bytes()
 		if errors.Is(err, redis.Nil) {
 			// cache miss!
 
 			// grab a lock so we can update the cache
-			mutex := db.rs.NewMutex(cacheKey+":mutex", redsync.WithTries(1))
+			mutex := sel.db.rs.NewMutex(cacheKey+":mutex", redsync.WithTries(1))
 
 			if err = mutex.Lock(); err != nil {
 				// if we couldn't get the lock, then just check the cache again
@@ -124,7 +182,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 			unlock := func() {
 				if mutex != nil && len(mutex.Value()) != 0 {
 					if _, err = mutex.Unlock(); err != nil {
-						db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
+						sel.db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
 					}
 				}
 			}
@@ -133,14 +191,14 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		} else if err != nil {
 			err = fmt.Errorf("failed to get data from redis: %w", err)
 			ok := false
-			if db.HandleRedisError != nil {
-				ok = db.HandleRedisError(err)
+			if sel.db.HandleRedisError != nil {
+				ok = sel.db.HandleRedisError(err)
 			}
 			if !ok {
 				return err
 			}
 		} else {
-			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
+			sel.db.callLog(replacedQuery, mergedParams, time.Since(start), true)
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
 			if err != nil {
@@ -173,12 +231,12 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 	b.MaxElapsedTime = MaxExecutionTime
 	err = backoff.Retry(func() error {
 		var err error
-		rows, err = conn.QueryContext(ctx, replacedQuery)
+		rows, err = sel.conn.QueryContext(ctx, replacedQuery)
 		if err != nil {
 			if checkRetryError(err) {
 				return err
 			} else if errors.Is(err, mysql.ErrInvalidConn) {
-				if err := db.Test(); err != nil {
+				if err := sel.db.Test(); err != nil {
 					return err
 				}
 				return err
@@ -189,7 +247,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
+	sel.db.callLog(replacedQuery, mergedParams, time.Since(start), false)
 	defer func() {
 		if rows != nil {
 			rows.Close()
@@ -207,7 +265,7 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 		columns[i] = strings.ToLower(columns[i])
 	}
 
-	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns)
+	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(sel.db, t, columns)
 	if err != nil {
 		return err
 	}
@@ -266,12 +324,12 @@ func query(db *Database, conn Querier, ctx context.Context, dest any, query stri
 			return fmt.Errorf("failed to marshal results for cache: %w", err)
 		}
 
-		err = db.redis.Set(ctx, cacheKey, b, cacheDuration).Err()
+		err = sel.db.redis.Set(ctx, cacheKey, b, cacheDuration).Err()
 		if err != nil {
 			err = fmt.Errorf("failed to set redis cache: %w", err)
 			ok := false
-			if db.HandleRedisError != nil {
-				ok = db.HandleRedisError(err)
+			if sel.db.HandleRedisError != nil {
+				ok = sel.db.HandleRedisError(err)
 			}
 			if !ok {
 				return err

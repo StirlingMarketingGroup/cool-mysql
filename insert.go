@@ -91,6 +91,7 @@ func paramToJSON(v interface{}) (interface{}, error) {
 
 type Inserter struct {
 	db   *Database
+	tx   *Tx
 	conn Executor
 
 	AfterChunkExec func(start time.Time)
@@ -493,7 +494,12 @@ func (in *Inserter) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()
 
-	err := in.db.SelectWrites(uniqueStructs, q.String(), 0)
+	var err error
+	if in.tx != nil {
+		err = in.db.Select(uniqueStructs, q.String(), 0)
+	} else {
+		err = in.tx.Select(uniqueStructs, q.String(), 0)
+	}
 	if err != nil {
 		return errors.Wrapf(err, "failed to execute InsertUniquely's initial select query")
 	}

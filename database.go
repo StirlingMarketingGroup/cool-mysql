@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
@@ -236,40 +235,33 @@ func (db *Database) Exec(query string, params ...Params) error {
 	return err
 }
 
+func (db *Database) DefaultSelectOptions() *Selector {
+	return &Selector{
+		db:   db,
+		conn: db.Reads,
+	}
+}
+
+func (db *Database) S() *Selector {
+	return db.DefaultSelectOptions()
+}
+
 func (db *Database) Select(dest any, q string, cache time.Duration, params ...Params) error {
-	return query(db, db.Reads, context.Background(), dest, q, cache, params...)
+	return query(db.S(), context.Background(), dest, q, cache, params...)
 }
 
 func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
-	return query(db, db.Reads, ctx, dest, q, cache, params...)
+	return query(db.S(), ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...Params) error {
-	return query(db, db.Writes, context.Background(), dest, q, cache, params...)
+	return query(db.S(), context.Background(), dest, q, cache, params...)
 }
 
 func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
-	return query(db, db.Writes, ctx, dest, q, cache, params...)
+	return query(db.S(), ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
-	return db.SelectJSONContext(context.Background(), dest, query, cache, params...)
-}
-
-func (db *Database) SelectJSONContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
-	var store struct {
-		JSON []byte
-	}
-
-	err := db.SelectContext(ctx, &store, query, cache, params...)
-	if err != nil {
-		return err
-	}
-
-	err = json.Unmarshal(store.JSON, dest)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return db.S().SelectJSONContext(context.Background(), dest, query, cache, params...)
 }

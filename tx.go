@@ -58,9 +58,42 @@ func (tx *Tx) Cancel() error {
 	return tx.Tx.Rollback()
 }
 
+func (tx *Tx) DefaultSelectOptions() *Selector {
+	return &Selector{
+		db:   tx.db,
+		tx:   tx,
+		conn: tx.Tx,
+	}
+}
+
+func (tx *Tx) S() *Selector {
+	return tx.DefaultSelectOptions()
+}
+
+func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...Params) error {
+	return tx.S().Select(dest, q, cache, params...)
+}
+
+func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return tx.S().SelectContext(ctx, dest, q, cache, params...)
+}
+
+func (tx *Tx) SelectWrites(dest any, q string, cache time.Duration, params ...Params) error {
+	return tx.S().SelectWrites(dest, q, cache, params...)
+}
+
+func (tx *Tx) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+	return tx.S().SelectWritesContext(ctx, dest, q, cache, params...)
+}
+
+func (tx *Tx) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
+	return tx.S().SelectJSONContext(context.Background(), dest, query, cache, params...)
+}
+
 func (tx *Tx) DefaultInsertOptions() *Inserter {
 	return &Inserter{
 		db:   tx.db,
+		tx:   tx,
 		conn: tx.Tx,
 	}
 }
