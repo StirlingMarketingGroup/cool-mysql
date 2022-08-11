@@ -91,7 +91,7 @@ func paramToJSON(v interface{}) (interface{}, error) {
 
 type Inserter struct {
 	db   *Database
-	conn Executor
+	conn commander
 
 	AfterChunkExec func(start time.Time)
 	HandleResult   func(sql.Result)
@@ -109,7 +109,7 @@ func (in *Inserter) SetResultHandler(fn func(sql.Result)) *Inserter {
 	return in
 }
 
-func (in *Inserter) SetExecutor(conn Executor) *Inserter {
+func (in *Inserter) SetExecutor(conn commander) *Inserter {
 	in.conn = conn
 
 	return in
@@ -124,7 +124,7 @@ func (in *Inserter) InsertContext(ctx context.Context, insert string, source any
 }
 
 // insert inserts struct rows from the source as a channel, single struct, or slice of structs
-func (in *Inserter) insert(ex Executor, ctx context.Context, insert string, source any) error {
+func (in *Inserter) insert(ex commander, ctx context.Context, insert string, source any) error {
 	reflectValue, reflectKind, reflectStruct, err := checkSource(source)
 	if err != nil {
 		return err
@@ -326,7 +326,7 @@ var insertUniquelyTableRegexp = regexp.MustCompile("`.+?`")
 
 // InsertUniquely inserts the structs as rows
 // if active versions don't already exist
-func (db *Database) InsertUniquely(query string, uniqueColumns []string, active string, args interface{}) error {
+func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args interface{}) error {
 	structsErr := fmt.Errorf("args must be a slice of structs")
 
 	// this function only works with a slice of structs
@@ -362,7 +362,7 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	c := cols.String()
 	q.WriteString(c)
 	q.WriteString("from")
-	q.WriteString(insertUniquelyTableRegexp.FindString(query))
+	q.WriteString(insertUniquelyTableRegexp.FindString(insertQuery))
 	q.WriteString("where(")
 	q.WriteString(c)
 	q.WriteString(")in(")
@@ -493,9 +493,9 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 	uniqueStructType := uniqueStructBuilder.Build()
 	uniqueStructs := uniqueStructType.NewSliceOfStructs()
 
-	err := db.SelectWrites(uniqueStructs, q.String(), 0)
+	err := query(in.db, in.conn, context.Background(), uniqueStructs, q.String(), 0)
 	if err != nil {
-		return errors.Wrapf(err, "failed to execute InsertUniquely's initial select query")
+		return fmt.Errorf("failed to execute InsertUniquely's initial select query: %w", err)
 	}
 
 	rowsMap := make(map[string]struct{}, sliceLen)
@@ -549,5 +549,5 @@ func (db *Database) InsertUniquely(query string, uniqueColumns []string, active 
 
 	args = slice.Slice(0, sliceLen).Interface()
 
-	return db.Insert(query, args)
+	return in.Insert(insertQuery, args)
 }
