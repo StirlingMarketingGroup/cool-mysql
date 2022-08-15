@@ -33,7 +33,7 @@ type Database struct {
 
 	die bool
 
-	maxInsertSize int
+	MaxInsertSize synct[int]
 
 	redis redis.UniversalClient
 	rs    *redsync.Redsync
@@ -56,9 +56,11 @@ func (db *Database) Clone() *Database {
 
 // EnableRedis enables redis cache for select queries with cache times
 // with the given connection information
-func (db *Database) EnableRedis(redisClient redis.UniversalClient) {
+func (db *Database) EnableRedis(redisClient redis.UniversalClient) *Database {
 	db.redis = redisClient
 	db.rs = redsync.New(goredis.NewPool(db.redis))
+
+	return db
 }
 
 // LogFunc is called after the query executes
@@ -123,7 +125,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	}
 
 	writesDSN, _ := mysql.ParseDSN(writes)
-	db.maxInsertSize = writesDSN.MaxAllowedPacket
+	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
 	db.Writes.SetConnMaxLifetime(MaxConnectionTime)
 

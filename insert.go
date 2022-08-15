@@ -277,7 +277,7 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 		}
 		insertBuf.WriteByte(')')
 
-		if insertBuf.Len() > int(float64(in.db.maxInsertSize+len(onDuplicateKeyUpdate))*0.80) && curRows > 1 {
+		if insertBuf.Len() > int(float64(in.db.MaxInsertSize.Get()+len(onDuplicateKeyUpdate))*0.80) && curRows > 1 {
 			buf := insertBuf.Bytes()[preRowLen+1:]
 			insertBuf.Truncate(preRowLen)
 			if onDuplicateKeyUpdateI != -1 {
