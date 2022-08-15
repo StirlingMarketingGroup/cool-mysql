@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// Exists efficiently checks if there are any rows in the given query
-func (db *Database) Exists(query string, cache time.Duration, params ...Params) (bool, error) {
+// exists efficiently checks if there are any rows in the given query
+func exists(db *Database, conn commander, query string, cache time.Duration, params ...Params) (bool, error) {
 	replacedQuery, mergedParams := ReplaceParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
