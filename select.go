@@ -232,7 +232,7 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 				f := el.Elem().FieldByIndex(jsonField.index)
 				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
 				if err != nil {
-					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", f.Type().Name(), err)
+					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", el.Elem().Type().FieldByIndex(jsonField.index).Name, err)
 				}
 			}
 		}
