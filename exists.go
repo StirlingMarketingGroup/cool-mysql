@@ -1,36 +1,31 @@
 package mysql
 
 import (
-	"fmt"
-	"os"
+	"context"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // exists efficiently checks if there are any rows in the given query
-func exists(db *Database, conn commander, query string, cache time.Duration, params ...Params) (bool, error) {
-	replacedQuery, mergedParams := ReplaceParams(query, params...)
-	if db.die {
-		fmt.Println(replacedQuery)
-		os.Exit(0)
+func exists(db *Database, conn commander, ctx context.Context, q string, cache time.Duration, params ...Params) (bool, error) {
+	ch := make(chan struct{})
+	grp := new(errgroup.Group)
+
+	grp.Go(func() error {
+		defer close(ch)
+		return query(db, conn, ctx, ch, q, cache, params...)
+	})
+
+	exists := false
+
+	for range ch {
+		exists = true
 	}
 
-	start := time.Now()
-	rows, err := db.Reads.Query(replacedQuery)
-	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
-
-	if err != nil {
-		return false, Error{
-			Err:           err,
-			OriginalQuery: query,
-			ReplacedQuery: replacedQuery,
-			Params:        mergedParams,
-		}
+	if err := grp.Wait(); err != nil {
+		return false, err
 	}
 
-	defer rows.Close()
-	for rows.Next() {
-		return true, nil
-	}
-
-	return false, nil
+	return exists, nil
 }
