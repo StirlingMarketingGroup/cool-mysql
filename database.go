@@ -278,10 +278,20 @@ func (db *Database) SelectJSONContext(ctx context.Context, dest interface{}, que
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) Exists(query string, cache time.Duration, params ...Params) (bool, error) {
-	return exists(db, db.Reads, query, cache, params...)
+	return exists(db, db.Reads, context.Background(), query, cache, params...)
+}
+
+// ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
+func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...Params) (bool, error) {
+	return exists(db, db.Reads, ctx, query, cache, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWrites(query string, cache time.Duration, params ...Params) (bool, error) {
-	return exists(db, db.Writes, query, cache, params...)
+	return exists(db, db.Writes, context.Background(), query, cache, params...)
+}
+
+// ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
+func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...Params) (bool, error) {
+	return exists(db, db.Writes, ctx, query, cache, params...)
 }

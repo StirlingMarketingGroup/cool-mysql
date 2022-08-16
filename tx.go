@@ -119,5 +119,10 @@ func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (tx *Tx) Exists(query string, cache time.Duration, params ...Params) (bool, error) {
-	return exists(tx.db, tx.Tx, query, cache, params...)
+	return exists(tx.db, tx.Tx, context.Background(), query, cache, params...)
+}
+
+// ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
+func (tx *Tx) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...Params) (bool, error) {
+	return exists(tx.db, tx.Tx, ctx, query, cache, params...)
 }
