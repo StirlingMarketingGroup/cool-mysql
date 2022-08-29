@@ -248,9 +248,9 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 		s.WriteString(v.String())
 		return
 	case time.Time:
-		s.WriteString("from_unixtime(")
-		s.WriteString(strconv.FormatFloat(float64(v.UnixMicro())/1000/1000, 'f', 6, 64))
-		s.WriteByte(')')
+		s.WriteString("convert_tz('")
+		s.WriteString(v.UTC().Format("2006-01-02 15:04:05.000000"))
+		s.WriteString("','UTC',@@session.time_zone)")
 		return
 	case json.RawMessage:
 		if len(v) != 0 {
