@@ -23,6 +23,10 @@ var stringsBuilderPool = sync.Pool{
 	},
 }
 
+var BuiltInParams = Params{
+	"MaxTime": Literal("from_unixtime((1<<31)-.000001)"),
+}
+
 // ReplaceParams replaces the `@@` parameters in a query
 // with their values from the map(s)
 // Takes multiple "sets" of params for convenience, so we don't
@@ -34,7 +38,7 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 		return query, nil
 	}
 
-	for i, p := range params {
+	for i, p := range append(params, BuiltInParams) {
 		if i == 0 {
 			continue
 		}
