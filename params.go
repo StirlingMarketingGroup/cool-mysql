@@ -23,8 +23,10 @@ var stringsBuilderPool = sync.Pool{
 	},
 }
 
+const MaxTime = Literal("from_unixtime((1<<31)-.000001)")
+
 var BuiltInParams = Params{
-	"MaxTime": Literal("from_unixtime((1<<31)-.000001)"),
+	"MaxTime": MaxTime,
 }
 
 // ReplaceParams replaces the `@@` parameters in a query
