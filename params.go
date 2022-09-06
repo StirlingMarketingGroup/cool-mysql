@@ -23,7 +23,7 @@ var stringsBuilderPool = sync.Pool{
 	},
 }
 
-const MaxTime = Literal("from_unixtime((1<<31)-.000001)")
+var MaxTime = time.Unix((1<<31)-1, 999999999)
 
 var BuiltInParams = Params{
 	"MaxTime": MaxTime,
@@ -36,11 +36,8 @@ var BuiltInParams = Params{
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
 func ReplaceParams(query string, params ...Params) (replacedQuery string, mergedParams Params) {
-	if len(params) == 0 {
-		return query, nil
-	}
-
-	for i, p := range append(params, BuiltInParams) {
+	params = append(params, BuiltInParams)
+	for i, p := range params {
 		if i == 0 {
 			continue
 		}
