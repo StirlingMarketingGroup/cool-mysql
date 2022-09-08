@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"golang.org/x/exp/maps"
 )
 
 // Params are a map of paramterer names to values
@@ -40,6 +41,10 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 	for i, p := range params {
 		if i == 0 {
 			continue
+		}
+
+		if i == 1 {
+			params[0] = maps.Clone(params[0])
 		}
 
 		for k, v := range p {
