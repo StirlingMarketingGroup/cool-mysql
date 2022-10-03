@@ -12,6 +12,9 @@ func exists(db *Database, conn commander, ctx context.Context, q string, cache t
 	ch := make(chan struct{})
 	grp := new(errgroup.Group)
 
+	db = db.Clone()
+	db.DisableUnusedColumnWarnings = true
+
 	grp.Go(func() error {
 		defer close(ch)
 		return query(db, conn, ctx, ch, q, cache, params...)
