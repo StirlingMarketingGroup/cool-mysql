@@ -33,7 +33,7 @@ type Database struct {
 
 	die bool
 
-	MaxInsertSize synct[int]
+	MaxInsertSize *synct[int]
 
 	redis redis.UniversalClient
 	rs    *redsync.Redsync
@@ -125,6 +125,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	}
 
 	writesDSN, _ := mysql.ParseDSN(writes)
+	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
 	db.Writes.SetConnMaxLifetime(MaxConnectionTime)
