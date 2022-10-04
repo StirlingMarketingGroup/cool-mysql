@@ -8,7 +8,7 @@ type zeroer interface {
 	IsZero() bool
 }
 
-func isZero(v interface{}) bool {
+func isZero(v any) bool {
 	if isNil(v) {
 		return true
 	}
