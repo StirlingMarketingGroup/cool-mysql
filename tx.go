@@ -83,46 +83,46 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 	return tx.I().InsertContext(ctx, insert, source)
 }
 
-func (tx *Tx) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args interface{}) error {
+func (tx *Tx) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args any) error {
 	return tx.I().InsertUniquely(insertQuery, uniqueColumns, active, args)
 }
 
 // ExecContextResult executes a query and nothing more
-func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
+func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
 	return tx.db.exec(tx.Tx, ctx, query, params...)
 }
 
 // ExecContext executes a query and nothing more
-func (tx *Tx) ExecContext(ctx context.Context, query string, params ...Params) error {
+func (tx *Tx) ExecContext(ctx context.Context, query string, params ...any) error {
 	_, err := tx.ExecContextResult(ctx, query, params...)
 	return err
 }
 
 // ExecResult executes a query and nothing more
-func (tx *Tx) ExecResult(query string, params ...Params) (sql.Result, error) {
+func (tx *Tx) ExecResult(query string, params ...any) (sql.Result, error) {
 	return tx.ExecContextResult(context.Background(), query, params...)
 }
 
 // Exec executes a query and nothing more
-func (tx *Tx) Exec(query string, params ...Params) error {
+func (tx *Tx) Exec(query string, params ...any) error {
 	_, err := tx.ExecContextResult(context.Background(), query, params...)
 	return err
 }
 
-func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...Params) error {
+func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...any) error {
 	return query(tx.db, tx.Tx, context.Background(), dest, q, cache, params...)
 }
 
-func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return query(tx.db, tx.Tx, ctx, dest, q, cache, params...)
 }
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
-func (tx *Tx) Exists(query string, cache time.Duration, params ...Params) (bool, error) {
+func (tx *Tx) Exists(query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(tx.db, tx.Tx, context.Background(), query, cache, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
-func (tx *Tx) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...Params) (bool, error) {
+func (tx *Tx) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(tx.db, tx.Tx, ctx, query, cache, params...)
 }

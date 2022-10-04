@@ -14,7 +14,6 @@ import (
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
 	"github.com/go-sql-driver/mysql"
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -68,7 +67,7 @@ type LogFunc func(query string, params Params, duration time.Duration, cacheHit 
 
 // FinishedFunc executes after all rows have been processed,
 // including being read from the channel if used
-type FinishedFunc func(cached bool, replacedQuery string, mergedParams Params, execDuration time.Duration, fetchDuration time.Duration)
+type FinishedFunc func(cached bool, replacedQuery string, params Params, execDuration time.Duration, fetchDuration time.Duration)
 
 // HandleRedisError is executed on a redis error, so it can be handled by the user
 // return false to let the function return the error, or return to let the function continue executing despite the redis error
@@ -164,7 +163,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 func (db *Database) Reconnect() error {
 	new, err := NewFromDSN(db.WritesDSN, db.ReadsDSN)
 	if err != nil {
-		return errors.Wrapf(err, "failed to reconnect")
+		return fmt.Errorf("failed to reconnect: %w", err)
 	}
 
 	*db.Writes = *new.Writes
@@ -213,53 +212,53 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 	return db.I().SetExecutor(db.Reads).InsertContext(ctx, insert, source)
 }
 
-func (db *Database) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args interface{}) error {
+func (db *Database) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args any) error {
 	return db.I().InsertUniquely(insertQuery, uniqueColumns, active, args)
 }
 
 // ExecContext executes a query and nothing more
-func (db *Database) ExecContextResult(ctx context.Context, query string, params ...Params) (sql.Result, error) {
+func (db *Database) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
 	return db.exec(db.Writes, ctx, query, params...)
 }
 
 // ExecContext executes a query and nothing more
-func (db *Database) ExecContext(ctx context.Context, query string, params ...Params) error {
+func (db *Database) ExecContext(ctx context.Context, query string, params ...any) error {
 	_, err := db.ExecContextResult(ctx, query, params...)
 	return err
 }
 
 // ExecResult executes a query and nothing more
-func (db *Database) ExecResult(query string, params ...Params) (sql.Result, error) {
+func (db *Database) ExecResult(query string, params ...any) (sql.Result, error) {
 	return db.ExecContextResult(context.Background(), query, params...)
 }
 
 // Exec executes a query and nothing more
-func (db *Database) Exec(query string, params ...Params) error {
+func (db *Database) Exec(query string, params ...any) error {
 	_, err := db.ExecContextResult(context.Background(), query, params...)
 	return err
 }
 
-func (db *Database) Select(dest any, q string, cache time.Duration, params ...Params) error {
+func (db *Database) Select(dest any, q string, cache time.Duration, params ...any) error {
 	return query(db, db.Reads, context.Background(), dest, q, cache, params...)
 }
 
-func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return query(db, db.Reads, ctx, dest, q, cache, params...)
 }
 
-func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...any) error {
 	return query(db, db.Writes, context.Background(), dest, q, cache, params...)
 }
 
-func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return query(db, db.Writes, ctx, dest, q, cache, params...)
 }
 
-func (db *Database) SelectJSON(dest interface{}, query string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectJSON(dest any, query string, cache time.Duration, params ...any) error {
 	return db.SelectJSONContext(context.Background(), dest, query, cache, params...)
 }
 
-func (db *Database) SelectJSONContext(ctx context.Context, dest interface{}, query string, cache time.Duration, params ...Params) error {
+func (db *Database) SelectJSONContext(ctx context.Context, dest any, query string, cache time.Duration, params ...any) error {
 	var store struct {
 		JSON []byte
 	}
@@ -278,21 +277,21 @@ func (db *Database) SelectJSONContext(ctx context.Context, dest interface{}, que
 }
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
-func (db *Database) Exists(query string, cache time.Duration, params ...Params) (bool, error) {
+func (db *Database) Exists(query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(db, db.Reads, context.Background(), query, cache, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
-func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...Params) (bool, error) {
+func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(db, db.Reads, ctx, query, cache, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection
-func (db *Database) ExistsWrites(query string, cache time.Duration, params ...Params) (bool, error) {
+func (db *Database) ExistsWrites(query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(db, db.Writes, context.Background(), query, cache, params...)
 }
 
 // ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
-func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...Params) (bool, error) {
+func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(db, db.Writes, ctx, query, cache, params...)
 }

@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-func isNil(a interface{}) bool {
+func isNil(a any) bool {
 	defer func() { recover() }()
 	return a == nil || reflect.ValueOf(a).IsNil()
 }

@@ -22,11 +22,11 @@ import (
 
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
-func query(db *Database, conn commander, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...Params) (err error) {
+func query(db *Database, conn commander, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	replacedQuery, mergedParams := ReplaceParams(query, params...)
+	replacedQuery, normalizedParams := InlineParams(query, params...)
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)
@@ -38,7 +38,7 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 				Err:           err,
 				OriginalQuery: query,
 				ReplacedQuery: replacedQuery,
-				Params:        mergedParams,
+				Params:        normalizedParams,
 			}
 		}
 	}()
@@ -136,7 +136,7 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 				return err
 			}
 		} else {
-			db.callLog(replacedQuery, mergedParams, time.Since(start), true)
+			db.callLog(replacedQuery, normalizedParams, time.Since(start), true)
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
 			if err != nil {
@@ -185,7 +185,7 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	db.callLog(replacedQuery, mergedParams, time.Since(start), false)
+	db.callLog(replacedQuery, normalizedParams, time.Since(start), false)
 	defer func() {
 		if rows != nil {
 			rows.Close()

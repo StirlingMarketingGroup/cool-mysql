@@ -16,14 +16,13 @@ import (
 	"github.com/fatih/structs"
 	"github.com/fatih/structtag"
 	"github.com/jinzhu/copier"
-	"github.com/pkg/errors"
 	"github.com/shopspring/decimal"
 )
 
 // ErrSourceInvalidType is an error about what types are allowed
-var ErrSourceInvalidType = errors.New("source must be a channel of structs, a slice of structs, or a single struct")
+var ErrSourceInvalidType = fmt.Errorf("source must be a channel of structs, a slice of structs, or a single struct")
 
-func checkSource(source interface{}) (reflect.Value, reflect.Kind, reflect.Type, error) {
+func checkSource(source any) (reflect.Value, reflect.Kind, reflect.Type, error) {
 	switch source.(type) {
 	case Params:
 		return reflect.Value{}, 0, nil, nil
@@ -56,8 +55,8 @@ type insertColumn struct {
 	omitempty        bool
 }
 
-func paramToJSON(v interface{}) (interface{}, error) {
-	if _, ok := v.(Encodable); ok {
+func paramToJSON(v any) (any, error) {
+	if _, ok := v.(Encoder); ok {
 		return v, nil
 	}
 	if _, ok := v.(time.Time); ok {
@@ -249,7 +248,7 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 				insertBuf.WriteByte(',')
 			}
 
-			var p interface{}
+			var p any
 
 			switch src := source.(type) {
 			case Params:
@@ -264,13 +263,13 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 			}
 
 			if columns[i].omitempty && isZero(p) {
-				WriteEncoded(insertBuf, Literal("default"), false)
+				WriteEncoded(insertBuf, RawMySQL("default"), false)
 				continue
 			}
 
 			p, err = paramToJSON(p)
 			if err != nil {
-				return errors.Wrapf(err, "failed to convert param to json for value", columns[i].name)
+				return fmt.Errorf("failed to convert param to json for value %q: %w", columns[i].name, err)
 			}
 
 			WriteEncoded(insertBuf, p, true)
@@ -326,7 +325,7 @@ var insertUniquelyTableRegexp = regexp.MustCompile("`.+?`")
 
 // InsertUniquely inserts the structs as rows
 // if active versions don't already exist
-func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args interface{}) error {
+func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args any) error {
 	structsErr := fmt.Errorf("args must be a slice of structs")
 
 	// this function only works with a slice of structs
@@ -455,7 +454,7 @@ func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, a
 
 			d, ok := fieldDetailsMap[u]
 			if !ok || d.skip {
-				return errors.Errorf("column %q doesn't exist in struct or isn't exported or was ignored", c)
+				return fmt.Errorf("column %q doesn't exist in struct or isn't exported or was ignored", c)
 			}
 
 			f = s.Field(d.fieldName)
@@ -506,7 +505,7 @@ func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, a
 		enc := gob.NewEncoder(&b)
 		err = enc.Encode(uniqueStructsRef.Index(i).Interface())
 		if err != nil {
-			return errors.Wrapf(err, "failed to encode InsertUniquely's struct to bytes")
+			return fmt.Errorf("failed to encode InsertUniquely's struct to bytes: %w", err)
 		}
 
 		rowsMap[b.String()] = struct{}{}
@@ -524,7 +523,7 @@ func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, a
 		enc := gob.NewEncoder(&b)
 		err = enc.Encode(s)
 		if err != nil {
-			return errors.Wrapf(err, "failed to encode InsertUniquely's struct to bytes")
+			return fmt.Errorf("failed to encode InsertUniquely's struct to bytes: %w", err)
 		}
 		k := b.String()
 

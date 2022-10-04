@@ -4,22 +4,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+	"github.com/fatih/structtag"
 	"github.com/shopspring/decimal"
-	"golang.org/x/exp/maps"
 )
 
 // Params are a map of paramterer names to values
 // use in the query like `select @@Name`
-type Params map[string]interface{}
+type Params map[string]any
 
 var stringsBuilderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(strings.Builder)
 	},
 }
@@ -30,39 +32,122 @@ var BuiltInParams = Params{
 	"MaxTime": MaxTime,
 }
 
-// ReplaceParams replaces the `@@` parameters in a query
+func normalizeParams(params ...Params) Params {
+	if len(params) == 0 {
+		return nil
+	}
+
+	normalizedParams := make(Params)
+	for _, p := range params {
+		for k, v := range p {
+			normalizedParams[strings.ToLower(k)] = v
+		}
+	}
+
+	return normalizedParams
+}
+
+// InlineParams replaces the `@@` parameters in a query
 // with their values from the map(s)
 // Takes multiple "sets" of params for convenience, so we don't
 // have to specify params if there aren't any, but each param will
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
-func ReplaceParams(query string, params ...Params) (replacedQuery string, mergedParams Params) {
-	params = append(params, BuiltInParams)
-	for i, p := range params {
-		if i == 0 {
-			continue
-		}
-
-		if i == 1 {
-			params[0] = maps.Clone(params[0])
-		}
-
-		for k, v := range p {
-			params[0][k] = v
-		}
-	}
-
-	if len(params[0]) == 0 {
+func InlineParams(query string, params ...any) (replacedQuery string, normalizedParams Params) {
+	if !strings.Contains(query, "@@") {
 		return query, nil
 	}
 
-	i := 0
-	start := 0
-	l := len(query)
+	queryTokens := parseQuery(query)
+	if len(queryTokens) == 0 {
+		return query, nil
+	}
+
+	var firstParamName string
+	for _, t := range parseQuery(query) {
+		if t.kind == queryTokenKindRaw {
+			continue
+		}
+
+		firstParamName = t.string[2:]
+		break
+	}
+
+	spew.Dump(params)
+
+	convertedParams := make([]Params, 0, len(params))
+	for _, p := range params {
+		convertedParams = append(convertedParams, convertToParams(firstParamName, p))
+	}
+
+	spew.Dump(convertedParams)
+
+	normalizedParams = normalizeParams(append([]Params{BuiltInParams}, convertedParams...)...)
+
+	spew.Dump(normalizedParams)
+
+	if len(normalizedParams) == 0 {
+		return query, nil
+	}
+
+	usedParams := make(map[string]struct{})
 
 	s := stringsBuilderPool.Get().(*strings.Builder)
 	defer stringsBuilderPool.Put(s)
 	s.Reset()
+
+	for _, t := range queryTokens {
+		switch t.kind {
+		case queryTokenKindRaw:
+			s.WriteString(t.string)
+		case queryTokenKindParam:
+			k := strings.ToLower(t.string[2:])
+			if v, ok := normalizedParams[k]; ok {
+				WriteEncoded(s, v, true)
+
+				usedParams[k] = struct{}{}
+				break
+			}
+
+			s.WriteString(t.string)
+		default:
+			panic(fmt.Errorf("unknown query token kind of %q", t.kind))
+		}
+	}
+
+	for k := range normalizedParams {
+		if _, ok := usedParams[k]; !ok {
+			delete(normalizedParams, k)
+		}
+	}
+
+	spew.Dump(normalizedParams)
+
+	spew.Dump(s.String())
+
+	os.Exit(0)
+
+	return s.String(), normalizedParams
+}
+
+type queryToken struct {
+	string
+	pos  int
+	end  int
+	kind queryTokenKind
+}
+
+type queryTokenKind int
+
+const (
+	queryTokenKindParam queryTokenKind = iota
+	queryTokenKindRaw
+)
+
+func parseQuery(query string) []queryToken {
+	i := 0
+	start := 0
+	l := len(query)
 
 	next := func() {
 		i++
@@ -114,6 +199,21 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 		}
 	}
 
+	queryTokens := make([]queryToken, 0)
+
+	pushToken := func(kind queryTokenKind) {
+		if len(query[start:i]) == 0 {
+			return
+		}
+
+		queryTokens = append(queryTokens, queryToken{
+			string: query[start:i],
+			pos:    start,
+			end:    i,
+			kind:   kind,
+		})
+	}
+
 	for i < l {
 		switch b := query[i]; b {
 		case '\'', '"', '`':
@@ -122,36 +222,29 @@ func ReplaceParams(query string, params ...Params) (replacedQuery string, merged
 			next()
 		case '@':
 			if i+2 < l && query[i+1] == '@' {
-				s.WriteString(query[start:i])
+				pushToken(queryTokenKindRaw)
+				start = i
 
 				nextN(2)
-				start = i
 				consumeAllAlphaNum()
-				k := query[start : i+1]
-				v, ok := params[0][k]
-				if ok {
-					WriteEncoded(s, v, true)
-				} else {
-					s.WriteString("@@")
-					s.WriteString(k)
-				}
 				next()
-				start = i
 
+				pushToken(queryTokenKindParam)
+				start = i
 			}
 		}
 		next()
 	}
 	if start < l {
-		s.WriteString(query[start:])
+		pushToken(queryTokenKindRaw)
 	}
 
-	return s.String(), params[0]
+	return queryTokens
 }
 
-// Encodable is a type with it's own cool mysql
+// Encoder is a type with it's own cool mysql
 // encode method for safe replacing
-type Encodable interface {
+type Encoder interface {
 	CoolMySQLEncode(Builder)
 }
 
@@ -164,14 +257,14 @@ type Builder interface {
 }
 
 type nestedValue struct {
-	x interface{}
+	x any
 }
 
 // WriteEncoded takes a string builder and any value and writes it
 // safely to the query, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
+func WriteEncoded(s Builder, x any, possiblyNull bool) {
 	nested, _ := x.(*nestedValue)
 	if nested != nil {
 		x = nested.x
@@ -249,7 +342,7 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 	case float64:
 		s.WriteString(strconv.FormatFloat(float64(v), 'E', -1, 64))
 		return
-	case Encodable:
+	case Encoder:
 		v.CoolMySQLEncode(s)
 		return
 	case decimal.Decimal:
@@ -349,4 +442,77 @@ func WriteEncoded(s Builder, x interface{}, possiblyNull bool) {
 	}
 
 	panic(fmt.Errorf("not sure how to interpret %q of type %T", x, x))
+}
+
+var encoderType = reflect.TypeOf((*Encoder)(nil)).Elem()
+var paramsType = reflect.TypeOf((*Params)(nil)).Elem()
+
+func convertToParams(firstParamName string, v any) Params {
+	r := reflect.ValueOf(v)
+
+	if !r.IsValid() {
+		return Params{firstParamName: v}
+	}
+
+	rv := reflect.Indirect(r)
+	t := r.Type()
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	if isSingleParam(t) || isNil(v) {
+		return Params{firstParamName: v}
+	}
+
+	if t == paramsType {
+		return rv.Interface().(Params)
+	}
+
+	switch k := t.Kind(); k {
+	case reflect.Struct:
+		p := make(Params)
+
+		structFieldIndexes := StructFieldIndexes(t)
+		for _, i := range structFieldIndexes {
+			f := t.FieldByIndex(i)
+
+			if !f.IsExported() {
+				continue
+			}
+
+			tags, _ := structtag.Parse(string(f.Tag))
+
+			name := f.Name
+			mysqlTag, _ := tags.Get("mysql")
+			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
+				name = mysqlTag.Name
+			}
+
+			p[name] = rv.FieldByIndex(i).Interface()
+		}
+
+		return p
+	case reflect.Map:
+		p := make(Params)
+		for _, k := range rv.MapKeys() {
+			p[fmt.Sprint(k.Interface())] = rv.MapIndex(k).Interface()
+		}
+
+		return p
+	}
+
+	return nil
+}
+
+func isSingleParam(t reflect.Type) bool {
+	if reflect.New(t).Type().Implements(encoderType) || t == timeType {
+		return true
+	}
+
+	switch k := t.Kind(); k {
+	case reflect.Map, reflect.Struct:
+		return false
+	}
+
+	return true
 }

@@ -8,7 +8,7 @@ import (
 )
 
 // exists efficiently checks if there are any rows in the given query
-func exists(db *Database, conn commander, ctx context.Context, q string, cache time.Duration, params ...Params) (bool, error) {
+func exists(db *Database, conn commander, ctx context.Context, q string, cache time.Duration, params ...any) (bool, error) {
 	ch := make(chan struct{})
 	grp := new(errgroup.Group)
 
