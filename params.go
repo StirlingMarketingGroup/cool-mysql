@@ -4,14 +4,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/fatih/structtag"
 	"github.com/shopspring/decimal"
 )
@@ -73,18 +71,12 @@ func InlineParams(query string, params ...any) (replacedQuery string, normalized
 		break
 	}
 
-	spew.Dump(params)
-
 	convertedParams := make([]Params, 0, len(params))
 	for _, p := range params {
 		convertedParams = append(convertedParams, convertToParams(firstParamName, p))
 	}
 
-	spew.Dump(convertedParams)
-
 	normalizedParams = normalizeParams(append([]Params{BuiltInParams}, convertedParams...)...)
-
-	spew.Dump(normalizedParams)
 
 	if len(normalizedParams) == 0 {
 		return query, nil
@@ -120,12 +112,6 @@ func InlineParams(query string, params ...any) (replacedQuery string, normalized
 			delete(normalizedParams, k)
 		}
 	}
-
-	spew.Dump(normalizedParams)
-
-	spew.Dump(s.String())
-
-	os.Exit(0)
 
 	return s.String(), normalizedParams
 }
