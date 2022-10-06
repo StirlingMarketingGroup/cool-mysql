@@ -76,7 +76,10 @@ func InlineParams(query string, params ...any) (replacedQuery string, normalized
 		convertedParams = append(convertedParams, convertToParams(firstParamName, p))
 	}
 
-	normalizedParams = normalizeParams(append([]Params{BuiltInParams}, convertedParams...)...)
+	allParams := append(make([]Params, 0, len(params)+2), Params{"now": time.Now()}, BuiltInParams)
+	allParams = append(allParams, convertedParams...)
+
+	normalizedParams = normalizeParams(allParams...)
 
 	if len(normalizedParams) == 0 {
 		return query, nil
