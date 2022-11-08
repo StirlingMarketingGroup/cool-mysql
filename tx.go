@@ -61,7 +61,11 @@ func (tx *Tx) Commit() error {
 // Cancel the transaction
 // this should be deferred after creating new tx every time
 func (tx *Tx) Cancel() error {
-	return tx.Tx.Rollback()
+	start := time.Now()
+	err := tx.Tx.Rollback()
+	tx.db.callLog("rollback", nil, time.Since(start), false)
+
+	return err
 }
 
 func (tx *Tx) DefaultInsertOptions() *Inserter {
