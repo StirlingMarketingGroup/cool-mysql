@@ -82,16 +82,21 @@ func (db *Database) callLog(query string, params Params, duration time.Duration,
 // New creates a new Database
 func New(wUser, wPass, wSchema, wHost string, wPort int,
 	rUser, rPass, rSchema, rHost string, rPort int,
-	timeZone *time.Location) (db *Database, err error) {
+	collation string, timeZone *time.Location) (db *Database, err error) {
 	writes := mysql.NewConfig()
 	writes.User = wUser
 	writes.Passwd = wPass
 	writes.DBName = wSchema
 	writes.Net = "tcp"
 	writes.Addr = net.JoinHostPort(wHost, strconv.Itoa(wPort))
-	writes.Loc = timeZone
+	if timeZone != nil {
+		writes.Loc = timeZone
+	}
 	writes.ParseTime = true
 	writes.InterpolateParams = true
+	if len(collation) != 0 {
+		writes.Collation = collation
+	}
 
 	reads := mysql.NewConfig()
 	reads.User = rUser
@@ -99,9 +104,14 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	reads.DBName = rSchema
 	reads.Net = "tcp"
 	reads.Addr = net.JoinHostPort(rHost, strconv.Itoa(rPort))
-	reads.Loc = timeZone
+	if timeZone != nil {
+		reads.Loc = timeZone
+	}
 	reads.ParseTime = true
 	reads.InterpolateParams = true
+	if len(collation) != 0 {
+		reads.Collation = collation
+	}
 
 	return NewFromDSN(writes.FormatDSN(), reads.FormatDSN())
 }
