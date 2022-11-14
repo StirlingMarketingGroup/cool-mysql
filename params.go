@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fatih/structtag"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -265,6 +266,9 @@ func WriteEncoded(s Builder, x any, possiblyNull bool) {
 	}
 
 	switch v := x.(type) {
+	case Encoder:
+		v.CoolMySQLEncode(s)
+		return
 	case bool:
 		if v {
 			s.WriteByte('1')
@@ -331,9 +335,6 @@ func WriteEncoded(s Builder, x any, possiblyNull bool) {
 	case float64:
 		s.WriteString(strconv.FormatFloat(float64(v), 'E', -1, 64))
 		return
-	case Encoder:
-		v.CoolMySQLEncode(s)
-		return
 	case decimal.Decimal:
 		s.WriteString(v.String())
 		return
@@ -341,6 +342,11 @@ func WriteEncoded(s Builder, x any, possiblyNull bool) {
 		s.WriteString("convert_tz('")
 		s.WriteString(v.UTC().Format("2006-01-02 15:04:05.000000"))
 		s.WriteString("','UTC',@@session.time_zone)")
+		return
+	case uuid.UUID:
+		s.WriteByte('\'')
+		s.WriteString(v.String())
+		s.WriteByte('\'')
 		return
 	case json.RawMessage:
 		if len(v) != 0 {
@@ -354,7 +360,7 @@ func WriteEncoded(s Builder, x any, possiblyNull bool) {
 	}
 
 	// check the reflect kind, since we want to
-	// deal with underyling value types if they didn't
+	// deal with underlying value types if they didn't
 	// explicitly set a way to be encoded
 	ref := reflect.ValueOf(x)
 	kind := ref.Kind()
