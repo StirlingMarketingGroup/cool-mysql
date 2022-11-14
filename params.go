@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fatih/structtag"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -341,6 +342,11 @@ func WriteEncoded(s Builder, x any, possiblyNull bool) {
 		s.WriteString("convert_tz('")
 		s.WriteString(v.UTC().Format("2006-01-02 15:04:05.000000"))
 		s.WriteString("','UTC',@@session.time_zone)")
+		return
+	case uuid.UUID:
+		s.WriteByte('\'')
+		s.WriteString(v.String())
+		s.WriteByte('\'')
 		return
 	case json.RawMessage:
 		if len(v) != 0 {
