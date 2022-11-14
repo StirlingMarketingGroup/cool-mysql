@@ -15,6 +15,7 @@ import (
 	dynamicstruct "github.com/Ompluscator/dynamic-struct"
 	"github.com/fatih/structs"
 	"github.com/fatih/structtag"
+	"github.com/google/uuid"
 	"github.com/jinzhu/copier"
 	"github.com/shopspring/decimal"
 )
@@ -63,6 +64,9 @@ func paramToJSON(v any) (any, error) {
 		return v, nil
 	}
 	if _, ok := v.(decimal.Decimal); ok {
+		return v, nil
+	}
+	if _, ok := v.(uuid.UUID); ok {
 		return v, nil
 	}
 
