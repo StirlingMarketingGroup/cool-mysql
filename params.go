@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatih/structtag"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -475,15 +474,7 @@ func convertToParams(firstParamName string, v any) Params {
 				continue
 			}
 
-			tags, _ := structtag.Parse(string(f.Tag))
-
-			name := f.Name
-			mysqlTag, _ := tags.Get("mysql")
-			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
-				name = mysqlTag.Name
-			}
-
-			p[name] = rv.FieldByIndex(i).Interface()
+			p[f.Name] = rv.FieldByIndex(i).Interface()
 		}
 
 		return p
