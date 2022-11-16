@@ -243,13 +243,15 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 
 		i++
 
-		err = sendElement(el)
-		if err != nil {
+		if err = sendElement(el); err != nil {
 			return err
 		}
 		if !multiRow {
 			break
 		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
 	}
 
 	if !multiRow && i == 0 {
