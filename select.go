@@ -78,6 +78,8 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 				}
 			case reflect.Slice:
 				destRef.Elem().Set(reflect.Append(destRef.Elem(), el))
+			case reflect.Func:
+				destRef.Call([]reflect.Value{el})
 			}
 		} else {
 			destRef.Elem().Set(el)
@@ -294,6 +296,10 @@ func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow boo
 				return indirectDestRefType.Elem(), true
 			}
 		}
+	}
+
+	if destRef.Kind() == reflect.Func && indirectDestRefType.NumIn() == 1 {
+		return indirectDestRefType.In(0), true
 	}
 
 	return destRef.Type().Elem(), false
