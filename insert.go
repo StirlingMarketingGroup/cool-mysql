@@ -299,16 +299,18 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 			curRows = 0
 
 			insertBuf.Write(buf)
+
+			if in.AfterChunkExec != nil {
+				in.AfterChunkExec(start)
+			}
 		}
 
 		curRows++
-
-		if in.AfterChunkExec != nil {
-			in.AfterChunkExec(start)
-		}
 	}
 
 	if insertBuf.Len() > baseLen {
+		start := time.Now()
+
 		if onDuplicateKeyUpdateI != -1 {
 			insertBuf.WriteString(onDuplicateKeyUpdate)
 		}
@@ -319,6 +321,10 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 
 		if in.HandleResult != nil {
 			in.HandleResult(result)
+		}
+
+		if in.AfterChunkExec != nil {
+			in.AfterChunkExec(start)
 		}
 	}
 
