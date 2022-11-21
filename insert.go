@@ -97,11 +97,18 @@ type Inserter struct {
 	conn commander
 
 	AfterChunkExec func(start time.Time)
+	AfterRowExec   func(start time.Time)
 	HandleResult   func(sql.Result)
 }
 
 func (in *Inserter) SetAfterChunkExec(fn func(start time.Time)) *Inserter {
 	in.AfterChunkExec = fn
+
+	return in
+}
+
+func (in *Inserter) SetAfterRowExec(fn func(start time.Time)) *Inserter {
+	in.AfterRowExec = fn
 
 	return in
 }
@@ -306,6 +313,10 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 		}
 
 		curRows++
+
+		if in.AfterRowExec != nil {
+			in.AfterRowExec(start)
+		}
 	}
 
 	if insertBuf.Len() > baseLen {
@@ -325,6 +336,10 @@ func (in *Inserter) insert(ex commander, ctx context.Context, insert string, sou
 
 		if in.AfterChunkExec != nil {
 			in.AfterChunkExec(start)
+		}
+
+		if in.AfterRowExec != nil {
+			in.AfterRowExec(start)
 		}
 	}
 
