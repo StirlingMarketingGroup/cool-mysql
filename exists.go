@@ -123,14 +123,6 @@ func exists(db *Database, conn commander, ctx context.Context, query string, cac
 		return
 	}
 
-	columns, err := rows.Columns()
-	if err != nil {
-		return
-	}
-	for i := range columns {
-		columns[i] = strings.ToLower(columns[i])
-	}
-
 	exists = rows.Next()
 	if err = rows.Err(); err != nil {
 		return
