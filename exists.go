@@ -132,15 +132,11 @@ func exists(db *Database, conn commander, ctx context.Context, query string, cac
 		err = db.redis.Set(ctx, cacheKey, exists, cacheDuration).Err()
 		if err != nil {
 			err = fmt.Errorf("failed to set redis cache: %w", err)
-			ok := false
 			if db.HandleRedisError != nil {
-				ok = db.HandleRedisError(err)
-			}
-			if !ok {
-				return
+				db.HandleRedisError(err)
 			}
 		}
 	}
 
-	return false, nil
+	return
 }
