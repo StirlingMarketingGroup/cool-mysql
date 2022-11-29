@@ -16,7 +16,6 @@ require (
 	github.com/shopspring/decimal v1.3.1
 	github.com/vmihailenco/msgpack/v5 v5.2.2
 	go.uber.org/zap v1.16.0
-	golang.org/x/sync v0.0.0-20220907140024-f12130a52804
 )
 
 require (

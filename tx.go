@@ -17,16 +17,19 @@ type txCancelFunc func() error
 
 func beginTx(db *Database, conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc, error) {
 	start := time.Now()
-	t, err := conn.BeginTx(ctx, nil)
-	db.callLog("start transaction", nil, time.Since(start), false)
-	if err != nil {
-		return nil, t.Rollback, err
-	}
 
-	return &Tx{
+	t, err := conn.BeginTx(ctx, nil)
+	tx := &Tx{
 		db: db,
 		Tx: t,
-	}, t.Rollback, nil
+	}
+
+	db.callLog("start transaction", nil, time.Since(start), false)
+	if err != nil {
+		return nil, tx.Cancel, err
+	}
+
+	return tx, tx.Cancel, nil
 }
 
 // BeginTx begins and returns a new transaction on the writes connection
@@ -61,6 +64,10 @@ func (tx *Tx) Commit() error {
 // Cancel the transaction
 // this should be deferred after creating new tx every time
 func (tx *Tx) Cancel() error {
+	if tx.Tx == nil {
+		return nil
+	}
+
 	start := time.Now()
 	err := tx.Tx.Rollback()
 	tx.db.callLog("rollback", nil, time.Since(start), false)
