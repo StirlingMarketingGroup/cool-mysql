@@ -213,6 +213,13 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 	i := 0
 	for rows.Next() {
 		el := reflect.New(t)
+		switch t {
+		case mapRowType:
+			el.Elem().Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
+		case sliceRowType:
+			el.Elem().Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
+		}
+
 		updateElementPtrs(el.Elem(), &ptrs, jsonFields, columns, fieldsMap)
 
 		err = rows.Scan(ptrs...)
@@ -284,12 +291,17 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 
 var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
 var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
+var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
+var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
 
 func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow bool) {
 	indirectDestRef := reflect.Indirect(destRef)
 	indirectDestRefType := indirectDestRef.Type()
 
-	if !reflect.New(indirectDestRefType).Type().Implements(scannerType) && indirectDestRefType != timeType {
+	if !reflect.New(indirectDestRefType).Type().Implements(scannerType) &&
+		indirectDestRefType != timeType &&
+		indirectDestRefType != sliceRowType &&
+		indirectDestRefType != mapRowType {
 		switch k := indirectDestRef.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice:
 			if !((k == reflect.Array || k == reflect.Slice) && indirectDestRefType.Elem().Kind() == reflect.Uint8) {
@@ -328,92 +340,115 @@ type jsonField struct {
 }
 
 func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
-	isStruct = !t.Implements(scannerType) && t.Kind() == reflect.Struct
-	if !isStruct {
-		if isMultiValueElement(t) {
-			return make([]any, len(columns)), make([]jsonField, 1), nil, isStruct, nil
-		}
-		return make([]any, len(columns)), nil, nil, isStruct, nil
-	}
+	switch true {
+	case !t.Implements(scannerType) && t.Kind() == reflect.Struct:
+		structFieldIndexes := StructFieldIndexes(t)
 
-	structFieldIndexes := StructFieldIndexes(t)
+		fieldsMap = make(map[string][]int, len(structFieldIndexes))
+		for _, i := range structFieldIndexes {
+			f := t.FieldByIndex(i)
 
-	fieldsMap = make(map[string][]int, len(structFieldIndexes))
-	for _, i := range structFieldIndexes {
-		f := t.FieldByIndex(i)
-
-		if !f.IsExported() {
-			continue
-		}
-
-		tags, err := structtag.Parse(string(f.Tag))
-		if err != nil {
-			return nil, nil, nil, isStruct, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
-		}
-
-		name := f.Name
-		mysqlTag, _ := tags.Get("mysql")
-		if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
-			name = mysqlTag.Name
-		}
-
-		fieldsMap[strings.ToLower(name)] = i
-	}
-
-	for _, c := range columns {
-		fieldIndex, ok := fieldsMap[c]
-		if !ok {
-			if !db.DisableUnusedColumnWarnings {
-				db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
+			if !f.IsExported() {
+				continue
 			}
-			continue
+
+			tags, err := structtag.Parse(string(f.Tag))
+			if err != nil {
+				return nil, nil, nil, false, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
+			}
+
+			name := f.Name
+			mysqlTag, _ := tags.Get("mysql")
+			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
+				name = mysqlTag.Name
+			}
+
+			fieldsMap[strings.ToLower(name)] = i
 		}
 
-		f := t.FieldByIndex(fieldIndex)
-		if isMultiValueElement(f.Type) {
-			jsonFields = append(jsonFields, jsonField{
-				index: fieldIndex,
-			})
+		for _, c := range columns {
+			fieldIndex, ok := fieldsMap[c]
+			if !ok {
+				if !db.DisableUnusedColumnWarnings {
+					db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
+				}
+				continue
+			}
+
+			f := t.FieldByIndex(fieldIndex)
+			if isMultiValueElement(f.Type) {
+				jsonFields = append(jsonFields, jsonField{
+					index: fieldIndex,
+				})
+			}
 		}
+		return make([]any, len(columns)), jsonFields, fieldsMap, true, nil
+	case isMultiValueElement(t):
+		return make([]any, len(columns)), make([]jsonField, 1), nil, false, nil
+	default:
+		return make([]any, len(columns)), nil, nil, false, nil
 	}
-
-	return make([]any, len(columns)), jsonFields, fieldsMap, isStruct, nil
 }
 
 func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
 	t := ref.Type()
 	x := new(any)
 
-	isStruct := !t.Implements(scannerType) && t.Kind() == reflect.Struct
-	if !isStruct {
-		if isMultiValueElement(t) {
-			(*ptrs)[0] = &jsonFields[0].j
+	switch true {
+	case !t.Implements(scannerType) && t.Kind() == reflect.Struct:
+		jsonIndex := 0
+		for i, c := range columns {
+			fieldIndex, ok := fieldsMap[c]
+			if !ok {
+				(*ptrs)[i] = x
+				continue
+			}
+
+			f := t.FieldByIndex(fieldIndex)
+			if isMultiValueElement(f.Type) {
+				jsonFields[jsonIndex].j = jsonFields[jsonIndex].j[:0]
+				(*ptrs)[i] = &jsonFields[jsonIndex].j
+				jsonIndex++
+			} else {
+				(*ptrs)[i] = ref.FieldByIndex(fieldIndex).Addr().Interface()
+			}
 		}
+	case t == mapRowType:
+		// map row is a special type that allows us to select all the columns from the query into
+		// a map of colname => interfaces, letting us do what we want with the data later
 
-		(*ptrs)[0] = ref.Addr().Interface()
+		// a normal slice of interfaces will be treated like json normally, and will try to unmarshal the
+		// first column as json into that slice.
 
+		for i := 0; i < len(columns); i++ {
+			v := reflect.ValueOf(new(any))
+			ref.SetMapIndex(reflect.ValueOf(columns[i]), v)
+			(*ptrs)[i] = v.Interface()
+		}
+	case t == sliceRowType:
+		// slice row is a special type that allows us to select all the columns from the query into
+		// a slice of interfaces
+		for i := 0; i < len(columns); i++ {
+			(*ptrs)[i] = ref.Index(i).Addr().Interface()
+		}
+	case isMultiValueElement(t):
+		// this is one element (single column row), but with multiple values, like a map or array.
+		// a struct is also technically a multi value element, but that's handled specially above
+
+		// so the first column from the query is the only one that's kept since we only have a single element
+		// making the first pointer in our slice of ptrs being scanned into a json byte sink
+		(*ptrs)[0] = &jsonFields[0].j
+
+		// and since we don't care about the rest of the column values, each of those will
+		// be scanned into the same dummy interface
 		for i := 1; i < len(columns); i++ {
 			(*ptrs)[i] = x
 		}
-
-		return
-	}
-
-	jsonIndex := 0
-	for i, c := range columns {
-		fieldIndex, ok := fieldsMap[c]
-		if !ok {
+	default:
+		// this is one element (row), like a time, number, or string
+		(*ptrs)[0] = ref.Addr().Interface()
+		for i := 1; i < len(columns); i++ {
 			(*ptrs)[i] = x
-			continue
-		}
-
-		f := t.FieldByIndex(fieldIndex)
-		if isMultiValueElement(f.Type) {
-			jsonFields[jsonIndex].j = jsonFields[jsonIndex].j[:0]
-			(*ptrs)[i] = &jsonFields[jsonIndex].j
-			jsonIndex++
-		} else {
-			(*ptrs)[i] = ref.FieldByIndex(fieldIndex).Addr().Interface()
 		}
 	}
 }
