@@ -252,6 +252,16 @@ func (db *Database) Select(dest any, q string, cache time.Duration, params ...an
 	return query(db, db.Reads, context.Background(), dest, q, cache, params...)
 }
 
+func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Rows, error) {
+	var rows Rows
+	err := query(db, db.Reads, context.Background(), &rows, q, cache, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	return rows, nil
+}
+
 func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return query(db, db.Reads, ctx, dest, q, cache, params...)
 }

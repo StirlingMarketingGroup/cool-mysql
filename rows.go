@@ -10,90 +10,85 @@ import (
 	"time"
 )
 
-type SliceRow []*any
+type SliceRow []any
 
 type SliceRows []SliceRow
 
-type MapRow map[string]*any
+type MapRow map[string]any
 
 type MapRows []MapRow
 
 type Row = MapRow
 type Rows = MapRows
 
-func Value[T any](v *any) T {
+func Value[T any](v any) T {
 	dest := new(T)
-
-	if v == nil {
-		return *dest
-	}
-
-	convertAssignRows(dest, *v)
+	convertAssignRows(dest, v)
 
 	return *dest
 }
 
-func Int(v *any) int {
+func Int(v any) int {
 	return Value[int](v)
 }
 
-func Int64(v *any) int64 {
+func Int64(v any) int64 {
 	return Value[int64](v)
 }
 
-func Int32(v *any) int32 {
+func Int32(v any) int32 {
 	return Value[int32](v)
 }
 
-func Int16(v *any) int16 {
+func Int16(v any) int16 {
 	return Value[int16](v)
 }
 
-func Int8(v *any) int8 {
+func Int8(v any) int8 {
 	return Value[int8](v)
 }
 
-func Uint(v *any) uint {
+func Uint(v any) uint {
 	return Value[uint](v)
 }
 
-func Uint64(v *any) uint64 {
+func Uint64(v any) uint64 {
 	return Value[uint64](v)
 }
 
-func Uint32(v *any) uint32 {
+func Uint32(v any) uint32 {
 	return Value[uint32](v)
 }
 
-func Uint16(v *any) uint16 {
+func Uint16(v any) uint16 {
 	return Value[uint16](v)
 }
 
-func Uint8(v *any) uint8 {
+func Uint8(v any) uint8 {
 	return Value[uint8](v)
 }
 
-func Float64(v *any) float64 {
+func Float64(v any) float64 {
 	return Value[float64](v)
 }
 
-func Float32(v *any) float32 {
+func Float32(v any) float32 {
 	return Value[float32](v)
 }
 
-func String(v *any) string {
+func String(v any) string {
 	return Value[string](v)
 }
 
-func Bool(v *any) bool {
+func Bool(v any) bool {
 	return Value[bool](v)
 }
 
-func Time(v *any) time.Time {
+func Time(v any) time.Time {
 	return Value[time.Time](v)
 }
 
-func Bytes(v *any) []byte {
+func Bytes(v any) []byte {
 	return Value[[]byte](v)
 }
 

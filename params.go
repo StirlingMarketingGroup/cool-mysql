@@ -63,7 +63,7 @@ func InlineParams(query string, params ...any) (replacedQuery string, normalized
 
 	var firstParamName string
 	for _, t := range parseQuery(query) {
-		if t.kind == queryTokenKindRaw {
+		if t.kind != queryTokenKindParam {
 			continue
 		}
 
@@ -93,8 +93,6 @@ func InlineParams(query string, params ...any) (replacedQuery string, normalized
 
 	for _, t := range queryTokens {
 		switch t.kind {
-		case queryTokenKindRaw:
-			s.WriteString(t.string)
 		case queryTokenKindParam:
 			k := strings.ToLower(t.string[2:])
 			if v, ok := normalizedParams[k]; ok {
@@ -106,7 +104,7 @@ func InlineParams(query string, params ...any) (replacedQuery string, normalized
 
 			s.WriteString(t.string)
 		default:
-			panic(fmt.Errorf("unknown query token kind of %q", t.kind))
+			s.WriteString(t.string)
 		}
 	}
 
@@ -130,7 +128,11 @@ type queryTokenKind int
 
 const (
 	queryTokenKindParam queryTokenKind = iota
-	queryTokenKindRaw
+	queryTokenKindParen
+	queryTokenKindString
+	queryTokenKindWord
+	queryTokenKindVar
+	queryTokenKindComma
 )
 
 func parseQuery(query string) []queryToken {
@@ -167,36 +169,51 @@ func parseQuery(query string) []queryToken {
 			}
 		}
 		prev()
-		if i >= l {
-			i = l - 1
-		}
 	}
 
-	consumeAllAlphaNum := func() {
+	isWordChar := func(b byte) bool {
+		return 'A' <= b && b <= 'Z' || 'a' <= b && b <= 'z' || '0' <= b && b <= '9' || b == '_'
+	}
+
+	consumeAllWordChars := func() {
 	loop:
 		for i < l {
 			switch b := query[i]; {
-			case 'A' <= b && b <= 'Z', 'a' <= b && b <= 'z', '0' <= b && b <= '9':
+			case isWordChar(b):
 				next()
 			default:
 				prev()
 				break loop
 			}
 		}
-		if i >= l {
-			i = l - 1
+	}
+
+	isParamChar := func(b byte) bool {
+		return isWordChar(b) || b == '-' || b == '.'
+	}
+
+	consumeAllParamChars := func() {
+	loop:
+		for i < l {
+			switch b := query[i]; {
+			case isParamChar(b):
+				next()
+			default:
+				prev()
+				break loop
+			}
 		}
 	}
 
 	queryTokens := make([]queryToken, 0)
 
 	pushToken := func(kind queryTokenKind) {
-		if len(query[start:i]) == 0 {
+		if len(query[start:i+1]) == 0 {
 			return
 		}
 
 		queryTokens = append(queryTokens, queryToken{
-			string: query[start:i],
+			string: query[start : i+1],
 			pos:    start,
 			end:    i,
 			kind:   kind,
@@ -204,28 +221,45 @@ func parseQuery(query string) []queryToken {
 	}
 
 	for i < l {
-		switch b := query[i]; b {
-		case '\'', '"', '`':
+		switch b := query[i]; true {
+		case b == '\'', b == '"', b == '`':
+			start = i
+
 			next()
 			consumeUntilEsc(b)
 			next()
-		case '@':
-			if i+2 < l && query[i+1] == '@' {
-				pushToken(queryTokenKindRaw)
+
+			pushToken(queryTokenKindString)
+		case b == '(', b == ')':
+			start = i
+			pushToken(queryTokenKindParen)
+		case b == ',':
+			start = i
+			pushToken(queryTokenKindComma)
+		case b == '@':
+			if i+2 < l && query[i+1] == '@' && isParamChar(query[i+2]) {
 				start = i
 
 				nextN(2)
-				consumeAllAlphaNum()
-				next()
+				consumeAllParamChars()
 
 				pushToken(queryTokenKindParam)
+			} else {
 				start = i
+
+				next()
+				consumeAllWordChars()
+
+				pushToken(queryTokenKindVar)
 			}
+		case isWordChar(b):
+			start = i
+
+			consumeAllWordChars()
+
+			pushToken(queryTokenKindWord)
 		}
 		next()
-	}
-	if start < l {
-		pushToken(queryTokenKindRaw)
 	}
 
 	return queryTokens

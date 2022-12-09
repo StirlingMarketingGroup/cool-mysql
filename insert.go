@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -15,82 +14,8 @@ import (
 	dynamicstruct "github.com/Ompluscator/dynamic-struct"
 	"github.com/fatih/structs"
 	"github.com/fatih/structtag"
-	"github.com/google/uuid"
 	"github.com/jinzhu/copier"
-	"github.com/shopspring/decimal"
 )
-
-// ErrSourceInvalidType is an error about what types are allowed
-var ErrSourceInvalidType = fmt.Errorf("source must be a channel of structs, a slice of structs, or a single struct")
-
-func checkSource(source any) (reflect.Value, reflect.Kind, reflect.Type, error) {
-	switch source.(type) {
-	case Params:
-		return reflect.Value{}, 0, nil, nil
-	}
-
-	ref := reflect.ValueOf(source)
-	kind := ref.Kind()
-
-	switch kind {
-	case reflect.Struct:
-		return ref, kind, ref.Type(), nil
-	case reflect.Slice:
-		strct := ref.Type().Elem()
-		if strct.Kind() == reflect.Struct {
-			return ref, kind, strct, nil
-		}
-	case reflect.Chan:
-		strct := ref.Type().Elem()
-		if strct.Kind() == reflect.Struct {
-			return ref, kind, strct, nil
-		}
-	}
-
-	return reflect.Value{}, 0, nil, ErrSourceInvalidType
-}
-
-type insertColumn struct {
-	name             string
-	structFieldIndex int
-	omitempty        bool
-}
-
-func paramToJSON(v any) (any, error) {
-	if _, ok := v.(Encoder); ok {
-		return v, nil
-	}
-	if _, ok := v.(time.Time); ok {
-		return v, nil
-	}
-	if _, ok := v.(decimal.Decimal); ok {
-		return v, nil
-	}
-	if _, ok := v.(uuid.UUID); ok {
-		return v, nil
-	}
-
-	r := reflect.ValueOf(v)
-
-	switch k := r.Kind(); k {
-	case reflect.Ptr:
-		if r.Elem().IsValid() {
-			return paramToJSON(r.Elem().Interface())
-		}
-	case reflect.Array, reflect.Map, reflect.Slice, reflect.Struct:
-		if k == reflect.Slice && r.Type().Elem().Kind() == reflect.Uint8 {
-			return v, nil
-		}
-
-		b, err := json.Marshal(v)
-		if err != nil {
-			return nil, err
-		}
-		return JSON(b), nil
-	}
-
-	return v, nil
-}
 
 type Inserter struct {
 	db   *Database
@@ -133,214 +58,230 @@ func (in *Inserter) InsertContext(ctx context.Context, insert string, source any
 	return in.insert(in.conn, ctx, insert, source)
 }
 
-// insert inserts struct rows from the source as a channel, single struct, or slice of structs
-func (in *Inserter) insert(ex commander, ctx context.Context, insert string, source any) error {
-	reflectValue, reflectKind, reflectStruct, err := checkSource(source)
-	if err != nil {
-		return err
+var ErrNoColumnNames = fmt.Errorf("no column names given")
+
+func (in *Inserter) insert(ex commander, ctx context.Context, query string, source any) (err error) {
+	sourceRef := reflect.Indirect(reflect.ValueOf(source))
+	sourceType := sourceRef.Type()
+
+	rowType := sourceType
+
+	multiRow := isMultiRow(sourceType)
+	if multiRow {
+		rowType = sourceType.Elem()
+		if rowType.Kind() == reflect.Ptr {
+			rowType = rowType.Elem()
+		}
+
+		switch sourceType.Kind() {
+		case reflect.Slice, reflect.Array:
+			if sourceRef.Len() == 0 {
+				return nil
+			}
+		}
 	}
 
-	var columns []insertColumn
+	queryTokens := parseQuery(query)
 
-	switch src := source.(type) {
-	case Params:
-		columns = make([]insertColumn, len(src))
-		i := 0
-		for c := range src {
-			columns[i] = insertColumn{name: c}
-			i++
+	columnNames := colNamesFromQuery(queryTokens)
+	insertPart := query
+	var onDuplicateKeyUpdate string
+
+	for i := range queryTokens {
+		if i+3 < len(queryTokens) &&
+			queryTokens[i].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i].string, "on") &&
+			queryTokens[i+1].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i+1].string, "duplicate") &&
+			queryTokens[i+2].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i+2].string, "key") &&
+			queryTokens[i+3].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i+3].string, "update") {
+			onDuplicateKeyUpdate = insertPart[queryTokens[i].pos:]
+			insertPart = insertPart[:queryTokens[i].pos]
+			break
 		}
-	default:
-		switch reflectKind {
-		case reflect.Chan, reflect.Slice, reflect.Struct:
-			structFieldIndexes := StructFieldIndexes(reflectStruct)
-			columns = make([]insertColumn, 0, len(structFieldIndexes))
-			j := 0
-			for _, i := range structFieldIndexes {
-				f := reflectStruct.FieldByIndex(i)
+	}
 
-				if f.PkgPath != "" {
+	currentRow := sourceRef
+	currentRowIndex := 0
+	next := func() bool {
+		if !multiRow {
+			return false
+		}
+
+		switch sourceType.Kind() {
+		case reflect.Slice, reflect.Array:
+			if currentRowIndex >= sourceRef.Len() {
+				return false
+			}
+
+			currentRow = reflect.Indirect(sourceRef.Index(currentRowIndex))
+			currentRowIndex++
+			return true
+		case reflect.Chan:
+			var ok bool
+			currentRow, ok = sourceRef.Recv()
+			if !ok {
+				return false
+			}
+
+			currentRow = reflect.Indirect(currentRow)
+			return true
+		}
+
+		return false
+	}
+	next()
+
+	var colOpts map[string]insertColOpts
+	if len(columnNames) == 0 {
+		if typeHasColNames(rowType) {
+			switch rowType.Kind() {
+			case reflect.Map:
+				columnNames = colNamesFromMap(currentRow)
+			case reflect.Struct:
+				columnNames, colOpts = colNamesFromStruct(rowType)
+			}
+		}
+
+		s := new(strings.Builder)
+		s.WriteByte('(')
+		for i, name := range columnNames {
+			if i != 0 {
+				s.WriteByte(',')
+			}
+			s.WriteByte('`')
+			s.WriteString(name)
+			s.WriteByte('`')
+		}
+		s.WriteByte(')')
+		insertPart += s.String()
+	}
+
+	if len(columnNames) == 0 {
+		err = ErrNoColumnNames
+		return
+	}
+
+	insertPart += "values"
+
+	insertBuf := bytes.NewBufferString(insertPart)
+	rowBuf := new(bytes.Buffer)
+	var rowBuffered bool
+
+	resetBuf := func() {
+		insertBuf.Truncate(len(insertPart))
+		rowBuffered = false
+	}
+
+	multiCol := isMultiColumn(rowType)
+
+	buildRow := func(row reflect.Value) string {
+		rowBuf.Reset()
+
+		rowBuf.WriteByte('(')
+
+		switch k := row.Kind(); true {
+		case !multiCol:
+			WriteEncoded(rowBuf, row.Interface(), true)
+		case k == reflect.Struct:
+			for i, col := range columnNames {
+				if i != 0 {
+					rowBuf.WriteByte(',')
+				}
+
+				v := row.FieldByIndex(colOpts[col].index)
+				if colOpts[col].insertDefault && isNil(v.Interface()) {
+					rowBuf.WriteString("default")
 					continue
 				}
 
-				var t *structtag.Tag
-				tag, err := structtag.Parse(string(f.Tag))
-				if err == nil {
-					t, _ = tag.Get("mysql")
-				}
-
-				newCol := insertColumn{f.Name, j, false}
-				j++
-				if t != nil {
-					if t.Name == "-" {
-						continue
-					}
-					if len(t.Name) != 0 {
-						newCol.name = t.Name
-					}
-					newCol.omitempty = t.HasOption("omitempty")
-				}
-
-				columns = append(columns, newCol)
+				WriteEncoded(rowBuf, v.Interface(), false)
 			}
-		default:
-			panic("cool-mysql insert: unhandled source type - how did you get here?")
-		}
-	}
-
-	onDuplicateKeyUpdateI := strings.Index(strings.ToLower(insert), "on duplicate key update")
-	var onDuplicateKeyUpdate string
-	if onDuplicateKeyUpdateI != -1 {
-		onDuplicateKeyUpdate = insert[onDuplicateKeyUpdateI:]
-		insert = insert[:onDuplicateKeyUpdateI]
-	}
-
-	insertBuf := new(bytes.Buffer)
-	insertBuf.WriteString(insert)
-	insertBuf.WriteByte('(')
-	for i, c := range columns {
-		if i != 0 {
-			insertBuf.WriteByte(',')
-		}
-		insertBuf.WriteByte('`')
-		insertBuf.WriteString(c.name)
-		insertBuf.WriteByte('`')
-	}
-	insertBuf.WriteString(")values")
-	baseLen := insertBuf.Len()
-
-	curRows := 0
-	i := 0
-	var r reflect.Value
-	for ok := true; ok; {
-		switch source.(type) {
-		case Params:
-			if curRows > 0 {
-				ok = false
-			}
-		default:
-			switch reflectKind {
-			case reflect.Chan:
-				r, ok = reflectValue.Recv()
-			case reflect.Slice:
-				if i >= reflectValue.Len() {
-					ok = false
-					break
-				}
-
-				r, ok = reflectValue.Index(i), true
-				i++
-			case reflect.Struct:
+		case k == reflect.Map:
+			for i, col := range columnNames {
 				if i != 0 {
-					ok = false
-					break
+					rowBuf.WriteByte(',')
 				}
 
-				r, ok = reflectValue, true
-				i++
-			default:
-				panic("cool-mysql insert: unhandled source type - how did you get here?")
-			}
-		}
-		if !ok {
-			break
-		}
-
-		start := time.Now()
-
-		preRowLen := insertBuf.Len()
-
-		if curRows != 0 {
-			insertBuf.WriteByte(',')
-		}
-		insertBuf.WriteByte('(')
-		for i := 0; i < len(columns); i++ {
-			if i != 0 {
-				insertBuf.WriteByte(',')
-			}
-
-			var p any
-
-			switch src := source.(type) {
-			case Params:
-				p = src[columns[i].name]
-			default:
-				switch reflectKind {
-				case reflect.Chan, reflect.Slice, reflect.Struct:
-					p = r.Field(columns[i].structFieldIndex).Interface()
-				default:
-					panic("cool-mysql insert: unhandled source type - how did you get here?")
+				v := row.MapIndex(reflect.ValueOf(col))
+				if !v.IsValid() {
+					rowBuf.WriteString("default")
+					continue
 				}
+
+				WriteEncoded(rowBuf, v.Interface(), true)
 			}
+		case k == reflect.Slice || k == reflect.Array:
+			for i := 0; i < row.Len(); i++ {
+				if i != 0 {
+					rowBuf.WriteByte(',')
+				}
 
-			if columns[i].omitempty && isZero(p) {
-				WriteEncoded(insertBuf, RawMySQL("default"), false)
-				continue
-			}
-
-			p, err = paramToJSON(p)
-			if err != nil {
-				return fmt.Errorf("failed to convert param to json for value %q: %w", columns[i].name, err)
-			}
-
-			WriteEncoded(insertBuf, p, true)
-		}
-		insertBuf.WriteByte(')')
-
-		if insertBuf.Len() > int(float64(in.db.MaxInsertSize.Get()+len(onDuplicateKeyUpdate))*0.80) && curRows > 1 {
-			buf := insertBuf.Bytes()[preRowLen+1:]
-			insertBuf.Truncate(preRowLen)
-			if onDuplicateKeyUpdateI != -1 {
-				insertBuf.WriteString(onDuplicateKeyUpdate)
-			}
-			result, err := in.db.exec(ex, ctx, insertBuf.String())
-			if err != nil {
-				return err
-			}
-
-			if in.HandleResult != nil {
-				in.HandleResult(result)
-			}
-
-			insertBuf.Truncate(baseLen)
-			curRows = 0
-
-			insertBuf.Write(buf)
-
-			if in.AfterChunkExec != nil {
-				in.AfterChunkExec(start)
+				WriteEncoded(rowBuf, row.Index(i).Interface(), true)
 			}
 		}
 
-		curRows++
-
-		if in.AfterRowExec != nil {
-			in.AfterRowExec(start)
-		}
+		rowBuf.WriteByte(')')
+		return rowBuf.String()
 	}
 
-	if insertBuf.Len() > baseLen {
-		start := time.Now()
+	var start time.Time
+	chunkStart := time.Now()
 
-		if onDuplicateKeyUpdateI != -1 {
-			insertBuf.WriteString(onDuplicateKeyUpdate)
+	insert := func() error {
+		if !rowBuffered {
+			return nil
 		}
+
+		insertBuf.WriteString(onDuplicateKeyUpdate)
+
 		result, err := in.db.exec(ex, ctx, insertBuf.String())
 		if err != nil {
 			return err
+		}
+
+		if in.AfterChunkExec != nil {
+			in.AfterChunkExec(chunkStart)
+			chunkStart = time.Now()
 		}
 
 		if in.HandleResult != nil {
 			in.HandleResult(result)
 		}
 
-		if in.AfterChunkExec != nil {
-			in.AfterChunkExec(start)
+		resetBuf()
+		return nil
+	}
+
+	for {
+		start = time.Now()
+
+		row := buildRow(currentRow)
+
+		// buffer will be too big with this row, exec first and reset buffer
+		if insertBuf.Len()+len(row)+len(onDuplicateKeyUpdate) > int(float64(in.db.MaxInsertSize.Get())*0.80) {
+			if err = insert(); err != nil {
+				return
+			}
 		}
+
+		if rowBuffered {
+			insertBuf.WriteByte(',')
+		}
+
+		insertBuf.WriteString(row)
+
+		rowBuffered = true
 
 		if in.AfterRowExec != nil {
 			in.AfterRowExec(start)
 		}
+
+		if !next() {
+			break
+		}
+	}
+
+	if err = insert(); err != nil {
+		return
 	}
 
 	return nil
@@ -574,4 +515,136 @@ func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, a
 	args = slice.Slice(0, sliceLen).Interface()
 
 	return in.Insert(insertQuery, args)
+}
+
+func isMultiRow(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Chan:
+		return true
+	case reflect.Slice, reflect.Array:
+		return t.Elem().Kind() != reflect.Uint8
+	default:
+		return false
+	}
+}
+
+func isMultiColumn(t reflect.Type) bool {
+	if t == timeType {
+		return false
+	}
+
+	switch t.Kind() {
+	case reflect.Map, reflect.Struct:
+		return true
+	case reflect.Slice, reflect.Array:
+		return t.Elem().Kind() != reflect.Uint8
+	default:
+		return false
+	}
+}
+
+func typeHasColNames(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Map:
+		return t.Key().Kind() == reflect.String
+	case reflect.Struct:
+		return true
+	default:
+		return false
+	}
+}
+
+func colNamesFromMap(v reflect.Value) (columns []string) {
+	keys := make([]string, 0, v.Len())
+	for _, k := range v.MapKeys() {
+		keys = append(keys, k.String())
+	}
+	return keys
+}
+
+type insertColOpts struct {
+	index         []int
+	insertDefault bool
+}
+
+func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts) {
+	structFieldIndexes := StructFieldIndexes(t)
+	colOpts = make(map[string]insertColOpts, len(structFieldIndexes))
+
+	for _, fieldIndex := range structFieldIndexes {
+		f := t.FieldByIndex(fieldIndex)
+		if f.PkgPath != "" {
+			continue
+		}
+
+		column := f.Name
+		opts := insertColOpts{
+			index: fieldIndex,
+		}
+
+		t, _ := structtag.Parse(string(f.Tag))
+		if t, _ := t.Get("mysql"); t != nil {
+			if t.Name == "-" {
+				continue
+			}
+
+			if len(t.Name) != 0 {
+				column = t.Name
+			}
+
+			opts.insertDefault = t.HasOption("insertDefault") || t.HasOption("omitempty")
+		}
+
+		columns = append(columns, column)
+		colOpts[column] = opts
+	}
+
+	return
+}
+
+// removes surrounding backticks and unescapes interior ones
+func parseColName(s string) string {
+	if len(s) < 2 {
+		return s
+	}
+
+	if s[0] == '`' && s[len(s)-1] == '`' {
+		s = s[1 : len(s)-1]
+	}
+
+	return strings.Replace(s, "``", "`", -1)
+}
+
+func colNamesFromQuery(queryTokens []queryToken) (columns []string) {
+	for i, t := range queryTokens {
+		// find the first paren
+		if t.kind == queryTokenKindParen && t.string == "(" {
+			queryTokens = queryTokens[i:]
+			for i, t := range queryTokens {
+				// if we found an end paren then we are done
+				if t.kind == queryTokenKindParen && t.string == ")" {
+					return
+				}
+
+				if t.kind != queryTokenKindWord && t.kind != queryTokenKindString {
+					continue
+				}
+
+				// are we the last token or the next token is not a word or string?
+				// we only want to push the last name of the "column" iun the case of "table.column"
+				if i+i == len(queryTokens) || (queryTokens[i+1].kind != queryTokenKindWord && queryTokens[i+1].kind != queryTokenKindString) {
+					col := t.string
+					if len(col) != 0 && col[0] == '`' {
+						col = parseColName(col)
+					}
+
+					columns = append(columns, col)
+				}
+			}
+
+			break
+		}
+	}
+
+	return
 }
