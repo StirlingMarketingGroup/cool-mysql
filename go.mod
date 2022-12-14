@@ -3,19 +3,16 @@ module github.com/StirlingMarketingGroup/cool-mysql
 go 1.19
 
 require (
-	github.com/Ompluscator/dynamic-struct v1.3.0
 	github.com/cenkalti/backoff/v4 v4.1.3
-	github.com/davecgh/go-spew v1.1.1
-	github.com/fatih/structs v1.1.0
 	github.com/fatih/structtag v1.2.0
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/go-redsync/redsync/v4 v4.5.1
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/google/uuid v1.3.0
-	github.com/jinzhu/copier v0.3.5
 	github.com/shopspring/decimal v1.3.1
 	github.com/vmihailenco/msgpack/v5 v5.2.2
 	go.uber.org/zap v1.16.0
+	golang.org/x/sync v0.1.0
 )
 
 require (

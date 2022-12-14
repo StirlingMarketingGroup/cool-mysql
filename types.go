@@ -1,10 +1,10 @@
 package mysql
 
-// RawMySQL is a literal MySQL string,
+// Raw is a literal MySQL string,
 // not to be encoded or escaped in any way
-type RawMySQL string
+type Raw string
 
-// CoolMySQLEncode writes the literal to the query writer
-func (v RawMySQL) CoolMySQLEncode(s Builder) {
-	s.WriteString(string(v))
+// MarshalMySQL writes the literal to the query writer
+func (v Raw) MarshalMySQL() ([]byte, error) {
+	return []byte(v), nil
 }

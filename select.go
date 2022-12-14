@@ -26,7 +26,11 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	replacedQuery, normalizedParams := InlineParams(query, params...)
+	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	if err != nil {
+		return fmt.Errorf("failed to interpolate params: %w", err)
+	}
+
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)

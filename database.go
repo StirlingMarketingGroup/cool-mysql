@@ -94,6 +94,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	}
 	writes.ParseTime = true
 	writes.InterpolateParams = true
+	writes.ClientFoundRows = true
 	if len(collation) != 0 {
 		writes.Collation = collation
 	}
@@ -109,6 +110,7 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	}
 	reads.ParseTime = true
 	reads.InterpolateParams = true
+	reads.ClientFoundRows = true
 	if len(collation) != 0 {
 		reads.Collation = collation
 	}
@@ -222,10 +224,6 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 	return db.I().SetExecutor(db.Reads).InsertContext(ctx, insert, source)
 }
 
-func (db *Database) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args any) error {
-	return db.I().InsertUniquely(insertQuery, uniqueColumns, active, args)
-}
-
 // ExecContext executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
 	return db.exec(db.Writes, ctx, query, params...)
@@ -314,4 +312,12 @@ func (db *Database) ExistsWrites(query string, cache time.Duration, params ...an
 // ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(db, db.Writes, ctx, query, cache, params...)
+}
+
+func (db *Database) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {
+	return db.I().Upsert(insert, uniqueColumns, updateColumns, where, source)
+}
+
+func (db *Database) UpsertContext(ctx context.Context, insert string, uniqueColumns, updateColumns []string, where string, source any) error {
+	return db.I().UpsertContext(ctx, insert, uniqueColumns, updateColumns, where, source)
 }

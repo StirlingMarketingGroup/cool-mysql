@@ -8,7 +8,11 @@ import (
 
 // Count efficiently checks the number of rows a query returns
 func (db *Database) Count(query string, cache time.Duration, params ...any) (int, error) {
-	replacedQuery, normalizedParams := InlineParams(query, params...)
+	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to interpolate params: %w", err)
+	}
+
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)

@@ -21,7 +21,11 @@ func exists(db *Database, conn commander, ctx context.Context, query string, cac
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	replacedQuery, normalizedParams := InlineParams(query, params...)
+	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	if err != nil {
+		return false, fmt.Errorf("failed to interpolate params: %w", err)
+	}
+
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)

@@ -94,10 +94,6 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 	return tx.I().InsertContext(ctx, insert, source)
 }
 
-func (tx *Tx) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args any) error {
-	return tx.I().InsertUniquely(insertQuery, uniqueColumns, active, args)
-}
-
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
 	return tx.db.exec(tx.Tx, ctx, query, params...)
@@ -136,4 +132,12 @@ func (tx *Tx) Exists(query string, cache time.Duration, params ...any) (bool, er
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (tx *Tx) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return exists(tx.db, tx.Tx, ctx, query, cache, params...)
+}
+
+func (tx *Tx) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {
+	return tx.I().Upsert(insert, uniqueColumns, updateColumns, where, source)
+}
+
+func (tx *Tx) UpsertContext(ctx context.Context, insert string, uniqueColumns, updateColumns []string, where string, source any) error {
+	return tx.I().UpsertContext(ctx, insert, uniqueColumns, updateColumns, where, source)
 }

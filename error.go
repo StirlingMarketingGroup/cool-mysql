@@ -1,9 +1,8 @@
 package mysql
 
 import (
+	"encoding/json"
 	"fmt"
-
-	"github.com/davecgh/go-spew/spew"
 
 	stdMysql "github.com/go-sql-driver/mysql"
 )
@@ -14,7 +13,7 @@ type Error struct {
 
 	OriginalQuery string
 	ReplacedQuery string
-	Params        Params
+	Params        any
 }
 
 // QueryErrorLoggingLength is the size of the query
@@ -26,7 +25,8 @@ func (v Error) Error() string {
 		half := QueryErrorLoggingLength >> 1
 		v.ReplacedQuery = v.ReplacedQuery[:half] + fmt.Sprintf("\n/* %d characters hidden */\n", len(v.ReplacedQuery)-QueryErrorLoggingLength) + v.ReplacedQuery[len(v.ReplacedQuery)-half:]
 	}
-	return fmt.Sprintf("%s\n\nquery len:\n%d\n\nquery:\n%s\n\nparams:\n%s", v.Err.Error(), len(v.ReplacedQuery), v.ReplacedQuery, spew.Sdump(v.Params))
+	j, _ := json.MarshalIndent(v.Params, "", "  ")
+	return fmt.Sprintf("%s\n\nquery len:\n%d\n\nquery:\n%s\n\nparams:\n%s", v.Err.Error(), len(v.ReplacedQuery), v.ReplacedQuery, j)
 }
 
 func (v Error) Unwrap() error {
@@ -44,5 +44,14 @@ func checkRetryError(err error) (ok bool) {
 		}
 	default:
 		return false
+	}
+}
+
+func Wrap(err error, originalQuery, replaceQuery string, params any) Error {
+	return Error{
+		Err:           err,
+		OriginalQuery: originalQuery,
+		ReplacedQuery: replaceQuery,
+		Params:        params,
 	}
 }

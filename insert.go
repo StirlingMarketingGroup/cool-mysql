@@ -4,17 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/gob"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 
-	dynamicstruct "github.com/Ompluscator/dynamic-struct"
-	"github.com/fatih/structs"
 	"github.com/fatih/structtag"
-	"github.com/jinzhu/copier"
 )
 
 type Inserter struct {
@@ -51,16 +46,16 @@ func (in *Inserter) SetExecutor(conn commander) *Inserter {
 }
 
 func (in *Inserter) Insert(insert string, source any) error {
-	return in.insert(in.conn, context.Background(), insert, source)
+	return in.insert(context.Background(), insert, source)
 }
 
 func (in *Inserter) InsertContext(ctx context.Context, insert string, source any) error {
-	return in.insert(in.conn, ctx, insert, source)
+	return in.insert(ctx, insert, source)
 }
 
 var ErrNoColumnNames = fmt.Errorf("no column names given")
 
-func (in *Inserter) insert(ex commander, ctx context.Context, query string, source any) (err error) {
+func (in *Inserter) insert(ctx context.Context, query string, source any) (err error) {
 	sourceRef := reflect.Indirect(reflect.ValueOf(source))
 	sourceType := sourceRef.Type()
 
@@ -82,6 +77,10 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 	}
 
 	queryTokens := parseQuery(query)
+	if len(queryTokens) == 1 {
+		query = "insert into`" + parseName(query) + "`"
+		queryTokens = parseQuery(query)
+	}
 
 	columnNames := colNamesFromQuery(queryTokens)
 	insertPart := query
@@ -137,7 +136,7 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 			case reflect.Map:
 				columnNames = colNamesFromMap(currentRow)
 			case reflect.Struct:
-				columnNames, colOpts = colNamesFromStruct(rowType)
+				columnNames, colOpts, _ = colNamesFromStruct(rowType)
 			}
 		}
 
@@ -153,6 +152,11 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 		}
 		s.WriteByte(')')
 		insertPart += s.String()
+	} else {
+		switch rowType.Kind() {
+		case reflect.Struct:
+			_, colOpts, _ = colNamesFromStruct(rowType)
+		}
 	}
 
 	if len(columnNames) == 0 {
@@ -180,7 +184,12 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 
 		switch k := row.Kind(); true {
 		case !multiCol:
-			WriteEncoded(rowBuf, row.Interface(), true)
+			b, err := Marshal(row.Interface())
+			if err != nil {
+				return fmt.Errorf("failed to marshal value: %w", err).Error()
+			}
+
+			rowBuf.Write(b)
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
@@ -193,7 +202,12 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 					continue
 				}
 
-				WriteEncoded(rowBuf, v.Interface(), false)
+				b, err := Marshal(v.Interface())
+				if err != nil {
+					return fmt.Errorf("failed to marshal value: %w", err).Error()
+				}
+
+				rowBuf.Write(b)
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
@@ -207,7 +221,12 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 					continue
 				}
 
-				WriteEncoded(rowBuf, v.Interface(), true)
+				b, err := Marshal(v.Interface())
+				if err != nil {
+					return fmt.Errorf("failed to marshal value: %w", err).Error()
+				}
+
+				rowBuf.Write(b)
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
@@ -215,7 +234,12 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 					rowBuf.WriteByte(',')
 				}
 
-				WriteEncoded(rowBuf, row.Index(i).Interface(), true)
+				b, err := Marshal(row.Index(i).Interface())
+				if err != nil {
+					return fmt.Errorf("failed to marshal value: %w", err).Error()
+				}
+
+				rowBuf.Write(b)
 			}
 		}
 
@@ -233,7 +257,7 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 
 		insertBuf.WriteString(onDuplicateKeyUpdate)
 
-		result, err := in.db.exec(ex, ctx, insertBuf.String())
+		result, err := in.db.exec(in.conn, ctx, insertBuf.String())
 		if err != nil {
 			return err
 		}
@@ -287,242 +311,17 @@ func (in *Inserter) insert(ex commander, ctx context.Context, query string, sour
 	return nil
 }
 
-var insertUniquelyTableRegexp = regexp.MustCompile("`.+?`")
-
-// InsertUniquely inserts the structs as rows
-// if active versions don't already exist
-func (in *Inserter) InsertUniquely(insertQuery string, uniqueColumns []string, active string, args any) error {
-	structsErr := fmt.Errorf("args must be a slice of structs")
-
-	// this function only works with a slice of structs
-	// that are all the same type
-	slice := reflect.ValueOf(args)
-	if slice.Kind() != reflect.Slice {
-		return structsErr
-	}
-
-	// if our slice is empty, then we have nothing to do
-	sliceLen := slice.Len()
-	if sliceLen == 0 {
-		return nil
-	}
-
-	colsMap := make(map[string]struct{}, len(uniqueColumns))
-	cols := new(strings.Builder)
-
-	// build the query that we'll use to see if active
-	// versions of our rows already exist
-	q := new(strings.Builder)
-	q.WriteString("select distinct")
-	for i, c := range uniqueColumns {
-		colsMap[c] = struct{}{}
-
-		if i != 0 {
-			cols.WriteByte(',')
-		}
-		cols.WriteByte('`')
-		cols.WriteString(c)
-		cols.WriteByte('`')
-	}
-	c := cols.String()
-	q.WriteString(c)
-	q.WriteString("from")
-	q.WriteString(insertUniquelyTableRegexp.FindString(insertQuery))
-	q.WriteString("where(")
-	q.WriteString(c)
-	q.WriteString(")in(")
-
-	iface := slice.Index(0).Interface()
-	if !structs.IsStruct(iface) {
-		return structsErr
-	}
-
-	reflectStruct := reflect.TypeOf(iface)
-	structFieldIndexes := StructFieldIndexes(reflectStruct)
-
-	type fieldDetail struct {
-		name      string
-		fieldName string
-		skip      bool
-		omitempty bool
-	}
-	fieldDetails := make([]fieldDetail, len(structFieldIndexes))
-	fieldDetailsMap := make(map[string]*fieldDetail)
-
-	j := 0
-	for _, i := range structFieldIndexes {
-		f := reflectStruct.FieldByIndex(i)
-
-		if f.PkgPath != "" {
-			fieldDetails[j].skip = true
-			continue
-		}
-
-		var t *structtag.Tag
-		tag, err := structtag.Parse(string(f.Tag))
-		if err == nil {
-			t, _ = tag.Get("mysql")
-		}
-
-		fieldDetails[j].fieldName = f.Name
-
-		if t != nil {
-			if t.Name == "-" {
-				fieldDetails[j].skip = true
-				continue
-			}
-
-			fieldDetails[j].omitempty = t.HasOption("omitempty")
-
-			if len(t.Name) != 0 {
-				fieldDetails[j].name = t.Name
-			}
-		}
-
-		if len(fieldDetails[j].name) == 0 {
-			fieldDetails[j].name = f.Name
-		}
-
-		j++
-	}
-
-	for i := range fieldDetails {
-		fieldDetailsMap[fieldDetails[i].name] = &fieldDetails[i]
-	}
-
-	var structName string
-	var fields []*structs.Field
-	var k int
-	for i := 0; i < sliceLen; i++ {
-		iface := slice.Index(i).Interface()
-		if !structs.IsStruct(iface) {
-			return structsErr
-		}
-		s := structs.New(iface)
-		if i == 0 {
-			structName = s.Name()
-			fields = s.Fields()
-		} else if s.Name() != structName {
-			return structsErr
-		}
-
-		if slice.Index(i).Kind() != reflect.Struct {
-			return fmt.Errorf("")
-		}
-
-		if i != 0 {
-			q.WriteByte(',')
-		}
-		q.WriteByte('(')
-		var j int
-		for _, u := range uniqueColumns {
-			var f *structs.Field
-
-			d, ok := fieldDetailsMap[u]
-			if !ok || d.skip {
-				return fmt.Errorf("column %q doesn't exist in struct or isn't exported or was ignored", c)
-			}
-
-			f = s.Field(d.fieldName)
-
-			if j != 0 {
-				q.WriteByte(',')
-			}
-
-			WriteEncoded(q, f.Value(), true)
-			k++
-			j++
-		}
-		q.WriteByte(')')
-	}
-
-	q.WriteString(")and ")
-	q.WriteString(active)
-
-	uniqueStructBuilder := dynamicstruct.NewStruct()
-	for _, f := range fields {
-		fieldName := f.Name()
-		if _, ok := colsMap[fieldName]; !ok {
-			continue
-		}
-		fd := fieldDetailsMap[fieldName]
-		if fd == nil || fd.skip {
-			continue
-		}
-		tag := fd.name
-		if fd.omitempty {
-			tag += ",omitempty"
-		}
-		uniqueStructBuilder.AddField(fieldName, f.Value(), `mysql:"`+tag+`"`)
-	}
-	uniqueStructType := uniqueStructBuilder.Build()
-	uniqueStructs := uniqueStructType.NewSliceOfStructs()
-
-	err := query(in.db, in.conn, context.Background(), uniqueStructs, q.String(), 0)
-	if err != nil {
-		return fmt.Errorf("failed to execute InsertUniquely's initial select query: %w", err)
-	}
-
-	rowsMap := make(map[string]struct{}, sliceLen)
-
-	uniqueStructsRef := reflect.Indirect(reflect.ValueOf(uniqueStructs))
-	for i := 0; i < uniqueStructsRef.Len(); i++ {
-		var b bytes.Buffer
-		enc := gob.NewEncoder(&b)
-		err = enc.Encode(uniqueStructsRef.Index(i).Interface())
-		if err != nil {
-			return fmt.Errorf("failed to encode InsertUniquely's struct to bytes: %w", err)
-		}
-
-		rowsMap[b.String()] = struct{}{}
-	}
-
-	for i := 0; i < sliceLen; i++ {
-		// make a new "unique struct" and copy the values
-		// from our real struct to this one
-		s := uniqueStructType.New()
-		copier.Copy(reflect.ValueOf(s).Elem().Addr().Interface(), slice.Index(i).Addr().Interface())
-
-		// convert are unique struct to a byte string so we can
-		// lookup this struct in our rows map
-		var b bytes.Buffer
-		enc := gob.NewEncoder(&b)
-		err = enc.Encode(s)
-		if err != nil {
-			return fmt.Errorf("failed to encode InsertUniquely's struct to bytes: %w", err)
-		}
-		k := b.String()
-
-		if _, ok := rowsMap[k]; ok {
-			// if the binary value of our unique struct exists
-			// in our rows map, then swap this value with the last
-			// value and make the slice 1 shorter,
-			// removing this value from the slice
-			slice.Index(i).Set(slice.Index(sliceLen - 1))
-			sliceLen--
-			i--
-		} else {
-			// make sure our newly inserted rows are also
-			// not creating non-unique rows
-			rowsMap[k] = struct{}{}
-		}
-	}
-
-	if sliceLen == 0 {
-		return nil
-	}
-
-	args = slice.Slice(0, sliceLen).Interface()
-
-	return in.Insert(insertQuery, args)
-}
-
 func isMultiRow(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Chan:
 		return true
 	case reflect.Slice, reflect.Array:
-		return t.Elem().Kind() != reflect.Uint8
+		switch t.Elem().Kind() {
+		case reflect.Uint8, reflect.Interface:
+			return false
+		default:
+			return true
+		}
 	default:
 		return false
 	}
@@ -567,9 +366,10 @@ type insertColOpts struct {
 	insertDefault bool
 }
 
-func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts) {
+func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts, colFieldMap map[string]string) {
 	structFieldIndexes := StructFieldIndexes(t)
 	colOpts = make(map[string]insertColOpts, len(structFieldIndexes))
+	colFieldMap = make(map[string]string, len(structFieldIndexes))
 
 	for _, fieldIndex := range structFieldIndexes {
 		f := t.FieldByIndex(fieldIndex)
@@ -597,13 +397,14 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 
 		columns = append(columns, column)
 		colOpts[column] = opts
+		colFieldMap[column] = f.Name
 	}
 
 	return
 }
 
 // removes surrounding backticks and unescapes interior ones
-func parseColName(s string) string {
+func parseName(s string) string {
 	if len(s) < 2 {
 		return s
 	}
@@ -635,7 +436,7 @@ func colNamesFromQuery(queryTokens []queryToken) (columns []string) {
 				if i+i == len(queryTokens) || (queryTokens[i+1].kind != queryTokenKindWord && queryTokens[i+1].kind != queryTokenKindString) {
 					col := t.string
 					if len(col) != 0 && col[0] == '`' {
-						col = parseColName(col)
+						col = parseName(col)
 					}
 
 					columns = append(columns, col)
