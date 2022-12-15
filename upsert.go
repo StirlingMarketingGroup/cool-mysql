@@ -66,7 +66,14 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 				return false
 			}
 
-			currentRow = reflect.Indirect(sourceRef.Index(currentRowIndex))
+			slice := reflect.Indirect(sourceRef.Index(currentRowIndex))
+			l := slice.Len()
+			m := make(map[string]any, l)
+			for i := 0; i < l; i++ {
+				m[strconv.Itoa(i)] = slice.Index(i).Interface()
+			}
+
+			currentRow = reflect.ValueOf(m)
 			currentRowIndex++
 			return true
 		case reflect.Chan:
