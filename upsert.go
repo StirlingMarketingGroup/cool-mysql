@@ -66,14 +66,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 				return false
 			}
 
-			slice := reflect.Indirect(sourceRef.Index(currentRowIndex))
-			l := slice.Len()
-			m := make(map[string]any, l)
-			for i := 0; i < l; i++ {
-				m[strconv.Itoa(i)] = slice.Index(i).Interface()
-			}
-
-			currentRow = reflect.ValueOf(m)
+			currentRow = reflect.Indirect(sourceRef.Index(currentRowIndex))
 			currentRowIndex++
 			return true
 		case reflect.Chan:
@@ -186,23 +179,42 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 	ch := reflect.MakeChan(reflect.ChanOf(reflect.BothDir, rowType), 0)
 	grp := new(errgroup.Group)
 
+	var sliceToMap func(slice reflect.Value) map[string]any
+	switch rowType.Kind() {
+	case reflect.Array, reflect.Slice:
+		sliceToMap = func(slice reflect.Value) map[string]any {
+			l := slice.Len()
+			m := make(map[string]any, l)
+			for i := 0; i < l; i++ {
+				m[strconv.Itoa(i)] = slice.Index(i).Interface()
+			}
+
+			return m
+		}
+	}
+
 	grp.Go(func() error {
 		defer ch.Close()
 
 		for {
+			r := currentRow.Interface()
+			if sliceToMap != nil {
+				r = sliceToMap(currentRow)
+			}
+
 			if len(updateColumns) != 0 {
-				res, err := in.db.exec(in.conn, ctx, q, currentRow.Interface())
+				res, err := in.db.exec(in.conn, ctx, q, r)
 				if err != nil {
-					return Wrap(fmt.Errorf("failed to update: %w", err), query, q, currentRow.Interface())
+					return Wrap(fmt.Errorf("failed to update: %w", err), query, q, r)
 				}
 
 				if m, _ := res.RowsAffected(); m != 0 {
 					goto NEXT
 				}
 			} else {
-				ok, err := exists(in.db, in.conn, ctx, q, 0, currentRow.Interface())
+				ok, err := exists(in.db, in.conn, ctx, q, 0, r)
 				if err != nil {
-					return Wrap(fmt.Errorf("failed to check if exists: %w", err), query, q, currentRow.Interface())
+					return Wrap(fmt.Errorf("failed to check if exists: %w", err), query, q, r)
 				}
 
 				if ok {
