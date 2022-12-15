@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/davecgh/go-spew/spew"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -201,6 +202,8 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 			if sliceToMap != nil {
 				r = sliceToMap(currentRow)
 			}
+
+			spew.Dump(r)
 
 			if len(updateColumns) != 0 {
 				res, err := in.db.exec(in.conn, ctx, q, r)
