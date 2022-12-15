@@ -344,7 +344,7 @@ func Marshal(x any) ([]byte, error) {
 		return []byte(fmt.Sprintf("'%s'", v)), nil
 	case json.RawMessage:
 		if len(v) != 0 {
-			return []byte(fmt.Sprintf("_utf8mb4 0x%s collate utf8mb4_unicode_ci", v)), nil
+			return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
 		} else {
 			return []byte("''"), nil
 		}
@@ -368,7 +368,7 @@ func Marshal(x any) ([]byte, error) {
 	case reflect.String:
 		v := ref.String()
 		if len(v) != 0 {
-			return []byte(fmt.Sprintf("_utf8mb4 0x%s collate utf8mb4_unicode_ci", v)), nil
+			return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
 		} else {
 			return []byte("''"), nil
 		}
@@ -385,7 +385,7 @@ func Marshal(x any) ([]byte, error) {
 		case reflect.Uint8:
 			v := ref.Bytes()
 			if len(v) != 0 {
-				return []byte(fmt.Sprintf("0x%s", v)), nil
+				return []byte(fmt.Sprintf("0x%x", v)), nil
 			} else {
 				return []byte("''"), nil
 			}
