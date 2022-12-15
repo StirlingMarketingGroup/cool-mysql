@@ -198,6 +198,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 		defer ch.Close()
 
 		for {
+			spew.Dump(currentRow.Interface())
 			r := currentRow.Interface()
 			if sliceToMap != nil {
 				r = sliceToMap(currentRow)
