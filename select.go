@@ -207,8 +207,11 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 	if err != nil {
 		return err
 	}
-	for i := range columns {
-		columns[i] = strings.ToLower(columns[i])
+
+	if t != mapRowType {
+		for i := range columns {
+			columns[i] = strings.ToLower(columns[i])
+		}
 	}
 
 	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns)
