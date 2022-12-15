@@ -392,7 +392,7 @@ func Marshal(x any) ([]byte, error) {
 		}
 	}
 
-	if kind == reflect.Slice || kind == reflect.Map {
+	if kind == reflect.Slice {
 		buf := new(bytes.Buffer)
 
 		if nested != nil {
@@ -494,9 +494,7 @@ func isSingleParam(t reflect.Type) bool {
 	switch k := t.Kind(); k {
 	case reflect.Map, reflect.Struct:
 		return false
-	case reflect.Slice, reflect.Array:
-		return t.Elem().Kind() == reflect.Uint8
+	default:
+		return true
 	}
-
-	return true
 }
