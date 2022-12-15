@@ -82,7 +82,9 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 
 		return false
 	}
-	next()
+	if multiRow && !next() {
+		return nil
+	}
 
 	var colFieldMap map[string]string
 	if len(columnNames) == 0 {

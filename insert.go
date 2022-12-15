@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -127,7 +128,9 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 
 		return false
 	}
-	next()
+	if multiRow && !next() {
+		return nil
+	}
 
 	var colOpts map[string]insertColOpts
 	if len(columnNames) == 0 {
@@ -177,19 +180,45 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 
 	multiCol := isMultiColumn(rowType)
 
-	buildRow := func(row reflect.Value) string {
+	buildRow := func(row reflect.Value) (string, error) {
 		rowBuf.Reset()
 
 		rowBuf.WriteByte('(')
 
-		switch k := row.Kind(); true {
-		case !multiCol:
-			b, err := Marshal(row.Interface())
-			if err != nil {
-				return fmt.Errorf("failed to marshal value: %w", err).Error()
+		writeValue := func(r reflect.Value, j *bool) error {
+			if j == nil {
+				j = new(bool)
+				if !r.Type().Implements(encoderType) {
+					switch reflect.Indirect(r).Kind() {
+					case reflect.Struct, reflect.Map:
+						*j = true
+					}
+				}
 			}
 
+			v := r.Interface()
+
+			if *j {
+				j, err := json.Marshal(r.Interface())
+				if err != nil {
+					return fmt.Errorf("failed to json marshal value: %w", err)
+				}
+
+				v = json.RawMessage(j)
+			}
+
+			b, err := Marshal(v)
+			if err != nil {
+				return fmt.Errorf("failed to marshal value: %w", err)
+			}
 			rowBuf.Write(b)
+
+			return nil
+		}
+
+		switch k := row.Kind(); true {
+		case !multiCol:
+			writeValue(row, nil)
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
@@ -202,12 +231,7 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 					continue
 				}
 
-				b, err := Marshal(v.Interface())
-				if err != nil {
-					return fmt.Errorf("failed to marshal value: %w", err).Error()
-				}
-
-				rowBuf.Write(b)
+				writeValue(v, colOpts[col].json)
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
@@ -223,7 +247,7 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 
 				b, err := Marshal(v.Interface())
 				if err != nil {
-					return fmt.Errorf("failed to marshal value: %w", err).Error()
+					return "", fmt.Errorf("failed to marshal value: %w", err)
 				}
 
 				rowBuf.Write(b)
@@ -234,17 +258,12 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 					rowBuf.WriteByte(',')
 				}
 
-				b, err := Marshal(row.Index(i).Interface())
-				if err != nil {
-					return fmt.Errorf("failed to marshal value: %w", err).Error()
-				}
-
-				rowBuf.Write(b)
+				writeValue(row.Index(i), nil)
 			}
 		}
 
 		rowBuf.WriteByte(')')
-		return rowBuf.String()
+		return rowBuf.String(), nil
 	}
 
 	var start time.Time
@@ -278,7 +297,11 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 	for {
 		start = time.Now()
 
-		row := buildRow(currentRow)
+		var row string
+		row, err = buildRow(currentRow)
+		if err != nil {
+			return err
+		}
 
 		// buffer will be too big with this row, exec first and reset buffer
 		if insertBuf.Len()+len(row)+len(onDuplicateKeyUpdate) > int(float64(in.db.MaxInsertSize.Get())*0.80) {
@@ -364,6 +387,7 @@ func colNamesFromMap(v reflect.Value) (columns []string) {
 type insertColOpts struct {
 	index         []int
 	insertDefault bool
+	json          *bool
 }
 
 func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts, colFieldMap map[string]string) {
@@ -393,6 +417,14 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 			}
 
 			opts.insertDefault = t.HasOption("insertDefault") || t.HasOption("omitempty")
+
+			if t.HasOption("json") {
+				j := true
+				opts.json = &j
+			} else if t.HasOption("disableJson") {
+				j := false
+				opts.json = &j
+			}
 		}
 
 		columns = append(columns, column)

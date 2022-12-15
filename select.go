@@ -33,6 +33,8 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 
 	if db.die {
 		fmt.Println(replacedQuery)
+		j, _ := json.Marshal(normalizedParams)
+		fmt.Println(string(j))
 		os.Exit(0)
 	}
 
