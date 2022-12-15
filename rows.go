@@ -246,6 +246,10 @@ func convertAssignRows(dest, src any) error {
 		sv = reflect.ValueOf(src)
 	}
 
+	if sv.Kind() == reflect.Ptr && !sv.IsNil() {
+		return convertAssignRows(dest, sv.Elem().Interface())
+	}
+
 	dv := reflect.Indirect(dpv)
 	if sv.IsValid() && sv.Type().AssignableTo(dv.Type()) {
 		switch b := src.(type) {

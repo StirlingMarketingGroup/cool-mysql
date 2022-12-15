@@ -209,6 +209,8 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 	}
 
 	if t != mapRowType {
+		// since the map keys are literally the column names, we don't need to compare
+		// without case sensitivity. But for structs, we do.
 		for i := range columns {
 			columns[i] = strings.ToLower(columns[i])
 		}
