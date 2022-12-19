@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,10 +14,16 @@ import (
 )
 
 // exec executes a query and nothing more
-func (db *Database) exec(ex commander, ctx context.Context, query string, params ...any) (sql.Result, error) {
-	replacedQuery, normalizedParams := InlineParams(query, params...)
+func (db *Database) exec(conn commander, ctx context.Context, query string, params ...any) (sql.Result, error) {
+	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to interpolate params: %w", err)
+	}
+
 	if db.die {
 		fmt.Println(replacedQuery)
+		j, _ := json.MarshalIndent(normalizedParams, "", "  ")
+		fmt.Println(string(j))
 		os.Exit(0)
 	}
 
@@ -25,9 +32,9 @@ func (db *Database) exec(ex commander, ctx context.Context, query string, params
 
 	var b = backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
-	err := backoff.Retry(func() error {
+	err = backoff.Retry(func() error {
 		var err error
-		res, err = ex.ExecContext(ctx, replacedQuery)
+		res, err = conn.ExecContext(ctx, replacedQuery)
 		if err != nil {
 			if checkRetryError(err) {
 				return err

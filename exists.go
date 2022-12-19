@@ -21,7 +21,11 @@ func exists(db *Database, conn commander, ctx context.Context, query string, cac
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	replacedQuery, normalizedParams := InlineParams(query, params...)
+	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	if err != nil {
+		return false, fmt.Errorf("failed to interpolate params: %w", err)
+	}
+
 	if db.die {
 		fmt.Println(replacedQuery)
 		os.Exit(0)
@@ -68,7 +72,7 @@ func exists(db *Database, conn commander, ctx context.Context, query string, cac
 			unlock := func() {
 				if mutex != nil && len(mutex.Value()) != 0 {
 					if _, err = mutex.Unlock(); err != nil {
-						db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
+						db.Logger.Warn(fmt.Sprintf("failed to unlock redis mutex: %v", err))
 					}
 				}
 			}
