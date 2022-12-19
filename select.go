@@ -128,7 +128,7 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 			unlock := func() {
 				if mutex != nil && len(mutex.Value()) != 0 {
 					if _, err = mutex.Unlock(); err != nil {
-						db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
+						db.Logger.Warn(fmt.Sprintf("failed to unlock redis mutex: %v", err))
 					}
 				}
 			}
@@ -236,6 +236,17 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 		err = rows.Scan(ptrs...)
 		if err != nil {
 			return err
+		}
+
+		switch t {
+		case mapRowType:
+			// our map row is actually a map to pointers, not actual values, since
+			// you can't take the address of a value by map and key, so we need to fix that here
+			// to make usage intuitive
+
+			for _, k := range el.Elem().MapKeys() {
+				el.Elem().SetMapIndex(k, el.Elem().MapIndex(k).Elem().Elem())
+			}
 		}
 
 		for _, jsonField := range jsonFields {
@@ -352,7 +363,7 @@ type jsonField struct {
 
 func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
 	switch true {
-	case !t.Implements(scannerType) && t.Kind() == reflect.Struct:
+	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
 		structFieldIndexes := StructFieldIndexes(t)
 
 		fieldsMap = make(map[string][]int, len(structFieldIndexes))
@@ -406,7 +417,7 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 	x := new(any)
 
 	switch true {
-	case !t.Implements(scannerType) && t.Kind() == reflect.Struct:
+	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
 		jsonIndex := 0
 		for i, c := range columns {
 			fieldIndex, ok := fieldsMap[c]

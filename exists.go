@@ -72,7 +72,7 @@ func exists(db *Database, conn commander, ctx context.Context, query string, cac
 			unlock := func() {
 				if mutex != nil && len(mutex.Value()) != 0 {
 					if _, err = mutex.Unlock(); err != nil {
-						db.Logger.Error(fmt.Sprintf("failed to unlock redis mutex: %v", err))
+						db.Logger.Warn(fmt.Sprintf("failed to unlock redis mutex: %v", err))
 					}
 				}
 			}

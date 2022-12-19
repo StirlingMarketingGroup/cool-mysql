@@ -435,19 +435,6 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 	return
 }
 
-// removes surrounding backticks and unescapes interior ones
-func parseName(s string) string {
-	if len(s) < 2 {
-		return s
-	}
-
-	if s[0] == '`' && s[len(s)-1] == '`' {
-		s = s[1 : len(s)-1]
-	}
-
-	return strings.Replace(s, "``", "`", -1)
-}
-
 func colNamesFromQuery(queryTokens []queryToken) (columns []string) {
 	for i, t := range queryTokens {
 		// find the first paren

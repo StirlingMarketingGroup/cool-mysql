@@ -1,0 +1,9 @@
+{
+    "go.testEnvVars": {
+        "MYSQL_TEST_USER": "root",
+        "MYSQL_TEST_PASS": "pass",
+        "MYSQL_TEST_PORT": "3306",
+        "MYSQL_TEST_HOST": "127.0.0.1",
+        "MYSQL_TEST_DBNAME": "test",
+      },
+}

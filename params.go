@@ -498,3 +498,19 @@ func isSingleParam(t reflect.Type) bool {
 		return true
 	}
 }
+
+// string replacer for double backticks and escaped backticks
+var backtickReplacer = strings.NewReplacer("``", "`", "\\`", "`")
+
+// removes surrounding backticks and unescapes interior ones
+func parseName(s string) string {
+	if len(s) < 2 {
+		return s
+	}
+
+	if s[0] == '`' && s[len(s)-1] == '`' {
+		s = s[1 : len(s)-1]
+	}
+
+	return backtickReplacer.Replace(s)
+}
