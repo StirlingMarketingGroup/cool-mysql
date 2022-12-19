@@ -83,21 +83,36 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 		queryTokens = parseQuery(query)
 	}
 
-	columnNames := colNamesFromQuery(queryTokens)
 	insertPart := query
 	var onDuplicateKeyUpdate string
 
-	for i := range queryTokens {
-		if i+3 < len(queryTokens) &&
-			queryTokens[i].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i].string, "on") &&
-			queryTokens[i+1].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i+1].string, "duplicate") &&
-			queryTokens[i+2].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i+2].string, "key") &&
-			queryTokens[i+3].kind == queryTokenKindWord && strings.EqualFold(queryTokens[i+3].string, "update") {
-			onDuplicateKeyUpdate = insertPart[queryTokens[i].pos:]
-			insertPart = insertPart[:queryTokens[i].pos]
-			break
+	var firstToken *queryToken
+	var prevToken *queryToken
+DUPE_KEY_SEARCH:
+	for _, t := range queryTokens {
+		switch true {
+		case t.kind == queryTokenKindMisc:
+			// skip
+		case prevToken == nil && t.kind == queryTokenKindWord && strings.EqualFold(t.string, "on"):
+			firstToken = p(t)
+			prevToken = p(t)
+		case prevToken != nil && strings.EqualFold(prevToken.string, "on") && t.kind == queryTokenKindWord && strings.EqualFold(t.string, "duplicate"):
+			prevToken = p(t)
+		case prevToken != nil && strings.EqualFold(prevToken.string, "duplicate") && t.kind == queryTokenKindWord && strings.EqualFold(t.string, "key"):
+			prevToken = p(t)
+		case prevToken != nil && strings.EqualFold(prevToken.string, "key") && t.kind == queryTokenKindWord && strings.EqualFold(t.string, "update"):
+			onDuplicateKeyUpdate = query[firstToken.pos:]
+			insertPart = query[:firstToken.pos]
+
+			break DUPE_KEY_SEARCH
+		default:
+			if prevToken != nil {
+				break DUPE_KEY_SEARCH
+			}
 		}
 	}
+
+	columnNames := colNamesFromQuery(parseQuery(insertPart))
 
 	currentRow := sourceRef
 	currentRowIndex := 0
