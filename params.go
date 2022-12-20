@@ -489,7 +489,7 @@ func convertToParams(firstParamName string, v any) Params {
 }
 
 func isSingleParam(t reflect.Type) bool {
-	if reflect.New(t).Type().Implements(encoderType) || t == timeType {
+	if reflect.New(t).Type().Implements(encoderType) || t == timeType || t == decimalType {
 		return true
 	}
 

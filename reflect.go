@@ -1,6 +1,11 @@
 package mysql
 
-import "reflect"
+import (
+	"reflect"
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 // StructFieldIndexes recursively gets all the struct field index,
 // including the indexes from embedded structs
@@ -59,8 +64,12 @@ func isMultiRow(t reflect.Type) bool {
 	}
 }
 
+var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
+var decimalType = reflect.TypeOf((*decimal.Decimal)(nil)).Elem()
+
 func isMultiColumn(t reflect.Type) bool {
-	if t == timeType {
+	switch t {
+	case timeType, decimalType:
 		return false
 	}
 

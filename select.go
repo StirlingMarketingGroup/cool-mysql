@@ -312,7 +312,6 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 }
 
 var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
-var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
 var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
 var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
 
@@ -322,6 +321,7 @@ func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow boo
 
 	if !reflect.New(indirectDestRefType).Type().Implements(scannerType) &&
 		indirectDestRefType != timeType &&
+		indirectDestRefType != decimalType &&
 		indirectDestRefType != sliceRowType &&
 		indirectDestRefType != mapRowType {
 		switch k := indirectDestRef.Kind(); k {
@@ -344,7 +344,7 @@ func isMultiValueElement(t reflect.Type) bool {
 		t = t.Elem()
 	}
 
-	if !reflect.New(t).Type().Implements(scannerType) && t != timeType {
+	if !reflect.New(t).Type().Implements(scannerType) && t != timeType && t != decimalType {
 		switch k := t.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.Struct:
 			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
