@@ -257,12 +257,7 @@ DUPE_KEY_SEARCH:
 					continue
 				}
 
-				b, err := Marshal(v.Interface())
-				if err != nil {
-					return "", fmt.Errorf("failed to marshal value: %w", err)
-				}
-
-				rowBuf.Write(b)
+				writeValue(v, nil)
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
@@ -347,11 +342,9 @@ DUPE_KEY_SEARCH:
 }
 
 func isMultiRow(t reflect.Type) bool {
-	if t.Kind() == reflect.Pointer {
-		return isMultiColumn(t.Elem())
-	}
-
 	switch t.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		return isMultiRow(t.Elem())
 	case reflect.Chan:
 		return true
 	case reflect.Slice, reflect.Array:
@@ -367,15 +360,13 @@ func isMultiRow(t reflect.Type) bool {
 }
 
 func isMultiColumn(t reflect.Type) bool {
-	if t.Kind() == reflect.Pointer {
-		return isMultiColumn(t.Elem())
-	}
-
 	if t == timeType {
 		return false
 	}
 
 	switch t.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		return isMultiColumn(t.Elem())
 	case reflect.Map, reflect.Struct:
 		return true
 	case reflect.Slice, reflect.Array:
@@ -387,6 +378,8 @@ func isMultiColumn(t reflect.Type) bool {
 
 func typeHasColNames(t reflect.Type) bool {
 	switch t.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		return typeHasColNames(t.Elem())
 	case reflect.Map:
 		return t.Key().Kind() == reflect.String
 	case reflect.Struct:
