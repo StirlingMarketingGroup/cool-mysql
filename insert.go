@@ -57,21 +57,18 @@ func (in *Inserter) InsertContext(ctx context.Context, insert string, source any
 var ErrNoColumnNames = fmt.Errorf("no column names given")
 
 func (in *Inserter) insert(ctx context.Context, query string, source any) (err error) {
-	sourceRef := reflect.Indirect(reflect.ValueOf(source))
-	sourceType := sourceRef.Type()
+	sv := reflectUnwrap(reflect.ValueOf(source))
+	st := sv.Type()
 
-	rowType := sourceType
+	rt := st
 
-	multiRow := isMultiRow(sourceType)
+	multiRow := isMultiRow(st)
 	if multiRow {
-		rowType = sourceType.Elem()
-		if rowType.Kind() == reflect.Ptr {
-			rowType = rowType.Elem()
-		}
+		rt = reflectUnwrapType(st.Elem())
 
-		switch sourceType.Kind() {
+		switch st.Kind() {
 		case reflect.Slice, reflect.Array:
-			if sourceRef.Len() == 0 {
+			if sv.Len() == 0 {
 				return nil
 			}
 		}
@@ -114,30 +111,30 @@ DUPE_KEY_SEARCH:
 
 	columnNames := colNamesFromQuery(parseQuery(insertPart))
 
-	currentRow := sourceRef
+	currentRow := sv
 	currentRowIndex := 0
 	next := func() bool {
 		if !multiRow {
 			return false
 		}
 
-		switch sourceType.Kind() {
+		switch st.Kind() {
 		case reflect.Slice, reflect.Array:
-			if currentRowIndex >= sourceRef.Len() {
+			if currentRowIndex >= sv.Len() {
 				return false
 			}
 
-			currentRow = reflect.Indirect(sourceRef.Index(currentRowIndex))
+			currentRow = reflectUnwrap(sv.Index(currentRowIndex))
 			currentRowIndex++
 			return true
 		case reflect.Chan:
 			var ok bool
-			currentRow, ok = sourceRef.Recv()
+			currentRow, ok = sv.Recv()
 			if !ok {
 				return false
 			}
 
-			currentRow = reflect.Indirect(currentRow)
+			currentRow = reflectUnwrap(currentRow)
 			return true
 		}
 
@@ -149,12 +146,12 @@ DUPE_KEY_SEARCH:
 
 	var colOpts map[string]insertColOpts
 	if len(columnNames) == 0 {
-		if typeHasColNames(rowType) {
-			switch rowType.Kind() {
+		if typeHasColNames(rt) {
+			switch rt.Kind() {
 			case reflect.Map:
 				columnNames = colNamesFromMap(currentRow)
 			case reflect.Struct:
-				columnNames, colOpts, _ = colNamesFromStruct(rowType)
+				columnNames, colOpts, _ = colNamesFromStruct(rt)
 			}
 		}
 
@@ -171,9 +168,9 @@ DUPE_KEY_SEARCH:
 		s.WriteByte(')')
 		insertPart += s.String()
 	} else {
-		switch rowType.Kind() {
+		switch rt.Kind() {
 		case reflect.Struct:
-			_, colOpts, _ = colNamesFromStruct(rowType)
+			_, colOpts, _ = colNamesFromStruct(rt)
 		}
 	}
 
@@ -193,7 +190,7 @@ DUPE_KEY_SEARCH:
 		rowBuffered = false
 	}
 
-	multiCol := isMultiColumn(rowType)
+	multiCol := isMultiColumn(rt)
 
 	buildRow := func(row reflect.Value) (string, error) {
 		rowBuf.Reset()
@@ -201,9 +198,16 @@ DUPE_KEY_SEARCH:
 		rowBuf.WriteByte('(')
 
 		writeValue := func(r reflect.Value, j *bool) error {
+			r = reflectUnwrap(r)
+
+			if !r.IsValid() {
+				rowBuf.WriteString("null")
+				return nil
+			}
+
 			if j == nil {
 				j = new(bool)
-				if r.IsValid() && !r.Type().Implements(encoderType) && isMultiColumn(r.Type()) {
+				if !r.Type().Implements(encoderType) && isMultiColumn(r.Type()) {
 					*j = true
 				}
 			}
@@ -339,54 +343,6 @@ DUPE_KEY_SEARCH:
 	}
 
 	return nil
-}
-
-func isMultiRow(t reflect.Type) bool {
-	switch t.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		return isMultiRow(t.Elem())
-	case reflect.Chan:
-		return true
-	case reflect.Slice, reflect.Array:
-		switch t.Elem().Kind() {
-		case reflect.Uint8, reflect.Interface:
-			return false
-		default:
-			return true
-		}
-	default:
-		return false
-	}
-}
-
-func isMultiColumn(t reflect.Type) bool {
-	if t == timeType {
-		return false
-	}
-
-	switch t.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		return isMultiColumn(t.Elem())
-	case reflect.Map, reflect.Struct:
-		return true
-	case reflect.Slice, reflect.Array:
-		return t.Elem().Kind() != reflect.Uint8
-	default:
-		return false
-	}
-}
-
-func typeHasColNames(t reflect.Type) bool {
-	switch t.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		return typeHasColNames(t.Elem())
-	case reflect.Map:
-		return t.Key().Kind() == reflect.String
-	case reflect.Struct:
-		return true
-	default:
-		return false
-	}
 }
 
 func colNamesFromMap(v reflect.Value) (columns []string) {

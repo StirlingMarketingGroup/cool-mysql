@@ -33,45 +33,42 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 		return Wrap(err, query, modifiedQuery, source)
 	}
 
-	sourceRef := reflect.Indirect(reflect.ValueOf(source))
-	sourceType := sourceRef.Type()
+	sv := reflectUnwrap(reflect.ValueOf(source))
+	st := sv.Type()
 
-	rowType := sourceType
+	rt := st
 
-	multiRow := isMultiRow(sourceType)
+	multiRow := isMultiRow(st)
 	if multiRow {
-		rowType = sourceType.Elem()
-		if rowType.Kind() == reflect.Ptr {
-			rowType = rowType.Elem()
-		}
+		rt = reflectUnwrapType(st.Elem())
 
-		switch sourceType.Kind() {
+		switch st.Kind() {
 		case reflect.Slice, reflect.Array:
-			if sourceRef.Len() == 0 {
+			if sv.Len() == 0 {
 				return nil
 			}
 		}
 	}
 
-	currentRow := sourceRef
+	currentRow := sv
 	currentRowIndex := 0
 	next := func() bool {
 		if !multiRow {
 			return false
 		}
 
-		switch sourceType.Kind() {
+		switch st.Kind() {
 		case reflect.Slice, reflect.Array:
-			if currentRowIndex >= sourceRef.Len() {
+			if currentRowIndex >= sv.Len() {
 				return false
 			}
 
-			currentRow = reflect.Indirect(sourceRef.Index(currentRowIndex))
+			currentRow = reflect.Indirect(sv.Index(currentRowIndex))
 			currentRowIndex++
 			return true
 		case reflect.Chan:
 			var ok bool
-			currentRow, ok = sourceRef.Recv()
+			currentRow, ok = sv.Recv()
 			if !ok {
 				return false
 			}
@@ -88,18 +85,18 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 
 	var colFieldMap map[string]string
 	if len(columnNames) == 0 {
-		if typeHasColNames(rowType) {
-			switch rowType.Kind() {
+		if typeHasColNames(rt) {
+			switch rt.Kind() {
 			case reflect.Map:
 				columnNames = colNamesFromMap(currentRow)
 			case reflect.Struct:
-				columnNames, _, colFieldMap = colNamesFromStruct(rowType)
+				columnNames, _, colFieldMap = colNamesFromStruct(rt)
 			}
 		}
 	} else {
-		switch rowType.Kind() {
+		switch rt.Kind() {
 		case reflect.Array, reflect.Slice:
-			if rowType.Elem().Kind() == reflect.Uint8 {
+			if rt.Elem().Kind() == reflect.Uint8 {
 				break
 			}
 
@@ -108,7 +105,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 				colFieldMap[c] = strconv.Itoa(i)
 			}
 		case reflect.Struct:
-			_, _, colFieldMap = colNamesFromStruct(rowType)
+			_, _, colFieldMap = colNamesFromStruct(rt)
 		}
 	}
 
@@ -176,11 +173,11 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 
 	q := s.String()
 
-	ch := reflect.MakeChan(reflect.ChanOf(reflect.BothDir, rowType), 0)
+	ch := reflect.MakeChan(reflect.ChanOf(reflect.BothDir, rt), 0)
 	grp := new(errgroup.Group)
 
 	var sliceToMap func(slice reflect.Value) map[string]any
-	switch rowType.Kind() {
+	switch rt.Kind() {
 	case reflect.Array, reflect.Slice:
 		sliceToMap = func(slice reflect.Value) map[string]any {
 			l := slice.Len()
