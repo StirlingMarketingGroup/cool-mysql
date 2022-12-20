@@ -283,13 +283,15 @@ func Marshal(x any) ([]byte, error) {
 		x = nested.x
 	}
 
+	if m, ok := x.(Marshaller); ok {
+		return m.MarshalMySQL()
+	}
+
 	if isNil(x) {
 		return []byte("null"), nil
 	}
 
 	switch v := x.(type) {
-	case Marshaller:
-		return v.MarshalMySQL()
 	case bool:
 		if v {
 			return []byte("1"), nil

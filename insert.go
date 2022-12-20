@@ -203,11 +203,8 @@ DUPE_KEY_SEARCH:
 		writeValue := func(r reflect.Value, j *bool) error {
 			if j == nil {
 				j = new(bool)
-				if !r.Type().Implements(encoderType) {
-					switch reflect.Indirect(r).Kind() {
-					case reflect.Struct, reflect.Map:
-						*j = true
-					}
+				if r.IsValid() && !r.Type().Implements(encoderType) && isMultiColumn(r.Type()) {
+					*j = true
 				}
 			}
 
@@ -350,6 +347,10 @@ DUPE_KEY_SEARCH:
 }
 
 func isMultiRow(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		return isMultiColumn(t.Elem())
+	}
+
 	switch t.Kind() {
 	case reflect.Chan:
 		return true
@@ -366,6 +367,10 @@ func isMultiRow(t reflect.Type) bool {
 }
 
 func isMultiColumn(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		return isMultiColumn(t.Elem())
+	}
+
 	if t == timeType {
 		return false
 	}
