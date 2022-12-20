@@ -24,3 +24,67 @@ func structFieldIndexes(t reflect.Type, indexPrefix []int) [][]int {
 
 	return indexes
 }
+
+func reflectUnwrap(v reflect.Value) reflect.Value {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		return reflectUnwrap(v.Elem())
+	default:
+		return v
+	}
+}
+
+func reflectUnwrapType(t reflect.Type) reflect.Type {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return reflectUnwrapType(t.Elem())
+	default:
+		return t
+	}
+}
+
+func isMultiRow(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Chan:
+		return true
+	case reflect.Slice, reflect.Array:
+		switch t.Elem().Kind() {
+		case reflect.Uint8, reflect.Interface:
+			return false
+		default:
+			return true
+		}
+	default:
+		return false
+	}
+}
+
+func isMultiColumn(t reflect.Type) bool {
+	if t == timeType {
+		return false
+	}
+
+	switch t.Kind() {
+	case reflect.Pointer:
+		return isMultiColumn(t.Elem())
+	case reflect.Map, reflect.Struct:
+		return true
+	case reflect.Slice, reflect.Array:
+		return t.Elem().Kind() != reflect.Uint8
+	default:
+		return false
+	}
+}
+
+func typeHasColNames(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return typeHasColNames(t.Elem())
+	case reflect.Map:
+		return t.Key().Kind() == reflect.String
+	case reflect.Struct:
+		return true
+	default:
+		return false
+	}
+}

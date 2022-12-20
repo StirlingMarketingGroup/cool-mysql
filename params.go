@@ -287,9 +287,11 @@ func Marshal(x any) ([]byte, error) {
 		return []byte("null"), nil
 	}
 
+	if m, ok := x.(Marshaller); ok {
+		return m.MarshalMySQL()
+	}
+
 	switch v := x.(type) {
-	case Marshaller:
-		return v.MarshalMySQL()
 	case bool:
 		if v {
 			return []byte("1"), nil
