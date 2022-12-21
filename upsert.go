@@ -96,7 +96,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 	} else {
 		switch rt.Kind() {
 		case reflect.Array, reflect.Slice:
-			if rt.Elem().Kind() == reflect.Uint8 {
+			if !isMultiColumn(rt) {
 				break
 			}
 

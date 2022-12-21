@@ -1,11 +1,21 @@
 package mysql
 
 import (
+	"database/sql"
+	"database/sql/driver"
 	"reflect"
 	"time"
-
-	"github.com/shopspring/decimal"
 )
+
+var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
+var valuerType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
+var valueserType = reflect.TypeOf((*Valueser)(nil)).Elem()
+
+var paramsType = reflect.TypeOf((*Params)(nil)).Elem()
+var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
+var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
+
+var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
 
 // StructFieldIndexes recursively gets all the struct field index,
 // including the indexes from embedded structs
@@ -33,7 +43,14 @@ func structFieldIndexes(t reflect.Type, indexPrefix []int) [][]int {
 func reflectUnwrap(v reflect.Value) reflect.Value {
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Interface:
-		return reflectUnwrap(v.Elem())
+		// stop "early" if the pointer/interface is nil
+		// since a nil pointer/interface of a type is more useful
+		// than an untyped nil value
+		v2 := v.Elem()
+		if !v2.IsValid() {
+			return v
+		}
+		return reflectUnwrap(v2)
 	default:
 		return v
 	}
@@ -48,6 +65,8 @@ func reflectUnwrapType(t reflect.Type) reflect.Type {
 	}
 }
 
+// isMultiColumn returns true if the value should be interpreted as multiple rows of values.
+// Expects an unwrapped reflect type.
 func isMultiRow(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Chan:
@@ -64,18 +83,16 @@ func isMultiRow(t reflect.Type) bool {
 	}
 }
 
-var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
-var decimalType = reflect.TypeOf((*decimal.Decimal)(nil)).Elem()
-
+// isMultiColumn returns true if the value should be interpreted as multiple values.
+// Expects an unwrapped reflect type.
 func isMultiColumn(t reflect.Type) bool {
-	switch t {
-	case timeType, decimalType:
+	if t == timeType ||
+		reflect.New(t).Type().Implements(valuerType) ||
+		reflect.New(t).Type().Implements(valueserType) {
 		return false
 	}
 
 	switch t.Kind() {
-	case reflect.Pointer:
-		return isMultiColumn(t.Elem())
 	case reflect.Map, reflect.Struct:
 		return true
 	case reflect.Slice, reflect.Array:
