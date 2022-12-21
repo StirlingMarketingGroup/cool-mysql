@@ -230,32 +230,6 @@ func Test_parseName(t *testing.T) {
 	}
 }
 
-func TestMarshal(t *testing.T) {
-	type args struct {
-		x any
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    []byte
-		wantErr bool
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := Marshal(tt.args.x)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Marshal() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Marshal() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func Test_marshal(t *testing.T) {
 	type args struct {
 		x     any
