@@ -1,9 +1,12 @@
 package mysql
 
 import (
+	"encoding/hex"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 func Test_normalizeParams(t *testing.T) {
@@ -222,6 +225,118 @@ func Test_parseName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := parseName(tt.args.s); got != tt.want {
 				t.Errorf("parseName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_marshal(t *testing.T) {
+	type args struct {
+		x     any
+		depth int
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name: "func",
+			args: args{
+				x: func() {},
+			},
+			wantErr: true,
+		},
+		{
+			name: "chan",
+			args: args{
+				x: make(chan int),
+			},
+			wantErr: true,
+		},
+		{
+			name: "map",
+			args: args{
+				x: map[string]int{
+					"foo": 1,
+					"bar": 2,
+				},
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`{"bar":2,"foo":1}`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "struct",
+			args: args{
+				x: struct {
+					Foo int
+					Bar int
+				}{
+					Foo: 1,
+					Bar: 2,
+				},
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`{"Foo":1,"Bar":2}`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "slice of ints",
+			args: args{
+				x: []int{1, 2, 3},
+			},
+			want: []byte("1,2,3"),
+		},
+		{
+			name: "decimal.Decimal",
+			args: args{
+				x: decimal.NewFromFloat(1.23),
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`1.23`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "decimal.Decimal ptr",
+			args: args{
+				x: p(decimal.NewFromFloat(1.23)),
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`1.23`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "decimal.Decimal ptr zero",
+			args: args{
+				x: p(decimal.Zero),
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`0`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "decimal.Decimal zero",
+			args: args{
+				x: decimal.Zero,
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`0`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "decimal.Decimal nil ptr",
+			args: args{
+				x: (*decimal.Decimal)(nil),
+			},
+			want: []byte("null"),
+		},
+		{
+			name: "untyped nil",
+			args: args{
+				x: nil,
+			},
+			want: []byte("null"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := marshal(tt.args.x, tt.args.depth)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("marshal() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("marshal() = %v, want %v", string(got), string(tt.want))
 			}
 		})
 	}

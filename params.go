@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -9,9 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 )
 
 // Params are a map of paramterer names to values
@@ -96,7 +94,7 @@ func InterpolateParams(query string, params ...any) (replacedQuery string, norma
 		case queryTokenKindParam:
 			k := strings.ToLower(t.string[2:])
 			if v, ok := normalizedParams[k]; ok {
-				b, err := Marshal(v)
+				b, err := marshal(v, 0)
 				if err != nil {
 					return "", nil, err
 				}
@@ -264,52 +262,34 @@ func parseQuery(query string) []queryToken {
 	return queryTokens
 }
 
-// Marshaller is a type with it's own cool mysql
-// encode method for param interpolation
-type Marshaller interface {
-	MarshalMySQL() ([]byte, error)
+func Marshal(x any) ([]byte, error) {
+	return marshal(x, 0)
 }
 
-type nestedValue struct {
-	x any
-}
-
-// Marshal returns the interpolated param, encoding values that could have escaping issues.
+// marshal returns the interpolated param, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func Marshal(x any) ([]byte, error) {
-	nested, _ := x.(*nestedValue)
-	if nested != nil {
-		x = nested.x
-	}
-
-	if isNil(x) {
-		return []byte("null"), nil
-	}
-
-	if m, ok := x.(Marshaller); ok {
-		return m.MarshalMySQL()
-	}
-
+func marshal(x any, depth int) ([]byte, error) {
 	switch v := x.(type) {
 	case bool:
-		if v {
-			return []byte("1"), nil
-		} else {
+		if !v {
 			return []byte("0"), nil
+
 		}
+		return []byte("1"), nil
 	case string:
-		if len(v) != 0 {
-			return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
-		} else {
+		if len(v) == 0 {
 			return []byte("''"), nil
 		}
+		return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
 	case []byte:
-		if len(v) != 0 {
-			return []byte(fmt.Sprintf("0x%x", v)), nil
-		} else {
+		if v == nil {
+			return []byte("null"), nil
+		}
+		if len(v) == 0 {
 			return []byte("''"), nil
 		}
+		return []byte(fmt.Sprintf("0x%x", v)), nil
 	case int:
 		return []byte(strconv.FormatInt(int64(v), 10)), nil
 	case int8:
@@ -338,70 +318,109 @@ func Marshal(x any) ([]byte, error) {
 		return []byte(strconv.FormatFloat(float64(v), 'E', -1, 64)), nil
 	case float64:
 		return []byte(strconv.FormatFloat(float64(v), 'E', -1, 64)), nil
-	case decimal.Decimal:
-		return []byte(v.String()), nil
 	case time.Time:
+		if v.IsZero() {
+			return []byte("null"), nil
+		}
 		return []byte(fmt.Sprintf("convert_tz('%s','UTC',@@session.time_zone)", v.UTC().Format("2006-01-02 15:04:05.000000"))), nil
-	case uuid.UUID:
-		return []byte(fmt.Sprintf("'%s'", v)), nil
 	case json.RawMessage:
-		if len(v) != 0 {
-			return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
-		} else {
+		if v == nil {
+			return []byte("null"), nil
+		}
+		if len(v) == 0 {
 			return []byte("''"), nil
 		}
+		return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
+	case Raw:
+		return []byte(v), nil
 	}
 
 	// check the reflect kind, since we want to
 	// deal with underlying value types if they didn't
 	// explicitly set a way to be encoded
-	ref := reflect.ValueOf(x)
-	kind := ref.Kind()
-	switch kind {
-	case reflect.Ptr:
-		return Marshal(ref.Elem().Interface())
-	case reflect.Bool:
-		v := ref.Bool()
-		if v {
-			return []byte("1"), nil
-		} else {
-			return []byte("0"), nil
-		}
-	case reflect.String:
-		v := ref.String()
-		if len(v) != 0 {
-			return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
-		} else {
-			return []byte("''"), nil
-		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return []byte(strconv.FormatInt(ref.Int(), 10)), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return []byte(strconv.FormatUint(ref.Uint(), 10)), nil
-	case reflect.Complex64, reflect.Complex128:
-		return []byte(strconv.FormatComplex(ref.Complex(), 'E', -1, 64)), nil
-	case reflect.Float32, reflect.Float64:
-		return []byte(strconv.FormatFloat(ref.Float(), 'E', -1, 64)), nil
-	case reflect.Slice:
-		switch subKind := ref.Type().Elem().Kind(); subKind {
-		case reflect.Uint8:
-			v := ref.Bytes()
-			if len(v) != 0 {
-				return []byte(fmt.Sprintf("0x%x", v)), nil
-			} else {
-				return []byte("''"), nil
-			}
-		}
+	v := reflectUnwrap(reflect.ValueOf(x))
+
+	if !v.IsValid() {
+		return []byte("null"), nil
 	}
 
-	if kind == reflect.Slice {
+	// pv needs to always be a pointer to a value
+	// a pointer to something can call pointer methods or value methods,
+	// but a value can only call value methods
+	pv := v
+	if v.Kind() != reflect.Ptr {
+		pv = reflect.New(v.Type())
+		pv.Elem().Set(v)
+	}
+
+	if v, ok := pv.Interface().(driver.Valuer); ok {
+		if pv.IsNil() {
+			// but, if the pointer is nil and we try to call a value method, we get a dereference panic
+			// so we need to check if the element type of the pointer has the method
+			// if it does have the method, then we can't call it, because we're nil
+			if _, ok := pv.Type().Elem().MethodByName("Value"); ok {
+				return []byte("null"), nil
+			}
+		}
+
+		v, err := v.Value()
+		if err != nil {
+			return nil, fmt.Errorf("cool-mysql: failed to call Value on driver.Valuer: %w", err)
+		}
+		return marshal(v, depth)
+	}
+
+	if vs, ok := pv.Interface().(Valueser); ok {
+		if pv.IsNil() {
+			if _, ok := pv.Type().Elem().MethodByName("Value"); ok {
+				return []byte("null"), nil
+			}
+		}
+
+		vs, err := vs.MySQLValues()
+		if err != nil {
+			return nil, fmt.Errorf("cool-mysql: failed to call MySQLValues on mysql.MySQLValues: %w", err)
+		}
+		return marshal(vs, depth)
+	}
+
+	if isNil(x) {
+		return []byte("null"), nil
+	}
+
+	k := v.Kind()
+	switch k {
+	case reflect.Bool:
+		return marshal(v.Bool(), depth)
+	case reflect.String:
+		return marshal(v.String(), depth)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return marshal(v.Int(), depth)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return marshal(v.Uint(), depth)
+	case reflect.Complex64, reflect.Complex128:
+		return marshal(v.Complex(), depth)
+	case reflect.Float32, reflect.Float64:
+		return marshal(v.Float(), depth)
+	case reflect.Struct, reflect.Map:
+		j, err := json.Marshal(x)
+		if err != nil {
+			return nil, fmt.Errorf("cool-mysql: failed to marshal struct to json: %w", err)
+		}
+
+		return marshal(json.RawMessage(j), depth)
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return marshal(v.Bytes(), depth)
+		}
+
 		buf := new(bytes.Buffer)
 
-		if nested != nil {
+		if depth != 0 {
 			buf.WriteByte('(')
 		}
 
-		refLen := ref.Len()
+		refLen := v.Len()
 		if refLen == 0 {
 			buf.WriteString("null")
 		}
@@ -410,25 +429,22 @@ func Marshal(x any) ([]byte, error) {
 				buf.WriteByte(',')
 			}
 
-			b, err := Marshal(&nestedValue{ref.Index(i).Interface()})
+			b, err := marshal(v.Index(i).Interface(), depth+1)
 			if err != nil {
 				return nil, err
 			}
 			buf.Write(b)
 		}
 
-		if nested != nil {
+		if depth != 0 {
 			buf.WriteByte(')')
 		}
 
 		return buf.Bytes(), nil
 	}
 
-	return nil, fmt.Errorf("not sure how to interpret %q of type %T", x, x)
+	return nil, fmt.Errorf("cool-mysql: not sure how to interpret %q of type %T", x, x)
 }
-
-var encoderType = reflect.TypeOf((*Marshaller)(nil)).Elem()
-var paramsType = reflect.TypeOf((*Params)(nil)).Elem()
 
 func convertToParams(firstParamName string, v any) Params {
 	r := reflect.ValueOf(v)
@@ -489,7 +505,7 @@ func convertToParams(firstParamName string, v any) Params {
 }
 
 func isSingleParam(t reflect.Type) bool {
-	if reflect.New(t).Type().Implements(encoderType) || t == timeType {
+	if t.Implements(valuerType) || t == timeType {
 		return true
 	}
 

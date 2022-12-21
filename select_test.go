@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"strconv"
 	"testing"
 	"time"
 
@@ -18,20 +17,18 @@ func getTestDatabase(t *testing.T) *Database {
 		panic(fmt.Sprintf("failed to get current tz: %v", err))
 	}
 
-	port, _ := strconv.Atoi(os.Getenv("MYSQL_TEST_PORT"))
-
 	db, err := New(
-		os.Getenv("MYSQL_TEST_USER"),
-		os.Getenv("MYSQL_TEST_PASS"),
-		os.Getenv("MYSQL_TEST_DBNAME"),
-		os.Getenv("MYSQL_TEST_HOST"),
-		port,
+		getenv("MYSQL_TEST_USER", "root"),
+		getenv("MYSQL_TEST_PASS", ""),
+		getenv("MYSQL_TEST_DBNAME", "test"),
+		getenv("MYSQL_TEST_HOST", "127.0.0.1"),
+		int(getenvInt64("MYSQL_TEST_PORT", 3306)),
 
-		os.Getenv("MYSQL_TEST_USER"),
-		os.Getenv("MYSQL_TEST_PASS"),
-		os.Getenv("MYSQL_TEST_DBNAME"),
-		os.Getenv("MYSQL_TEST_HOST"),
-		port,
+		getenv("MYSQL_TEST_USER", "root"),
+		getenv("MYSQL_TEST_PASS", ""),
+		getenv("MYSQL_TEST_DBNAME", "test"),
+		getenv("MYSQL_TEST_HOST", "127.0.0.1"),
+		int(getenvInt64("MYSQL_TEST_PORT", 3306)),
 		"utf8_unicode_ci", tz,
 	)
 	if err != nil {

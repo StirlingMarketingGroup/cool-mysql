@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -197,7 +196,7 @@ DUPE_KEY_SEARCH:
 
 		rowBuf.WriteByte('(')
 
-		writeValue := func(r reflect.Value, j *bool) error {
+		writeValue := func(r reflect.Value) error {
 			r = reflectUnwrap(r)
 
 			if !r.IsValid() {
@@ -205,25 +204,9 @@ DUPE_KEY_SEARCH:
 				return nil
 			}
 
-			if j == nil {
-				j = new(bool)
-				if !r.Type().Implements(encoderType) && isMultiColumn(r.Type()) {
-					*j = true
-				}
-			}
-
 			v := r.Interface()
 
-			if *j {
-				j, err := json.Marshal(r.Interface())
-				if err != nil {
-					return fmt.Errorf("failed to json marshal value: %w", err)
-				}
-
-				v = json.RawMessage(j)
-			}
-
-			b, err := Marshal(v)
+			b, err := marshal(v, 0)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}
@@ -234,20 +217,43 @@ DUPE_KEY_SEARCH:
 
 		switch k := row.Kind(); true {
 		case !multiCol:
-			writeValue(row, nil)
+			writeValue(row)
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
 					rowBuf.WriteByte(',')
 				}
 
-				v := row.FieldByIndex(colOpts[col].index)
-				if colOpts[col].insertDefault && isNil(v.Interface()) {
-					rowBuf.WriteString("default")
-					continue
+				v := reflectUnwrap(row.FieldByIndex(colOpts[col].index))
+
+				if colOpts[col].insertDefault {
+					pv := v
+					if v.Kind() != reflect.Ptr {
+						pv = reflect.New(v.Type())
+						pv.Elem().Set(v)
+					}
+
+					if v, ok := pv.Interface().(Zeroer); ok {
+						if pv.IsNil() {
+							if _, ok := pv.Type().Elem().MethodByName("IsZero"); ok {
+								rowBuf.WriteString("default")
+								continue
+							}
+						}
+
+						if v.IsZero() {
+							rowBuf.WriteString("default")
+							continue
+						}
+					}
+
+					if !v.IsValid() || v.IsZero() {
+						rowBuf.WriteString("default")
+						continue
+					}
 				}
 
-				writeValue(v, colOpts[col].json)
+				writeValue(v)
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
@@ -261,7 +267,7 @@ DUPE_KEY_SEARCH:
 					continue
 				}
 
-				writeValue(v, nil)
+				writeValue(v)
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
@@ -269,7 +275,7 @@ DUPE_KEY_SEARCH:
 					rowBuf.WriteByte(',')
 				}
 
-				writeValue(row.Index(i), nil)
+				writeValue(row.Index(i))
 			}
 		}
 
@@ -356,7 +362,6 @@ func colNamesFromMap(v reflect.Value) (columns []string) {
 type insertColOpts struct {
 	index         []int
 	insertDefault bool
-	json          *bool
 }
 
 func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts, colFieldMap map[string]string) {
@@ -386,14 +391,6 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 			}
 
 			opts.insertDefault = t.HasOption("insertDefault") || t.HasOption("omitempty")
-
-			if t.HasOption("json") {
-				j := true
-				opts.json = &j
-			} else if t.HasOption("disableJson") {
-				j := false
-				opts.json = &j
-			}
 		}
 
 		columns = append(columns, column)

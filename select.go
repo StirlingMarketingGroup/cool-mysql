@@ -311,11 +311,6 @@ func query(db *Database, conn commander, ctx context.Context, dest any, query st
 	return nil
 }
 
-var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
-var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
-var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
-var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
-
 func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow bool) {
 	indirectDestRef := reflect.Indirect(destRef)
 	indirectDestRefType := indirectDestRef.Type()
