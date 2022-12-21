@@ -335,10 +335,17 @@ func marshal(x any, depth int) ([]byte, error) {
 		return []byte(v), nil
 	}
 
+	v := reflect.ValueOf(x)
+	if v.IsValid() && (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) {
+		if v := v.Elem(); v.IsValid() {
+			return marshal(v.Interface(), depth)
+		}
+	}
+
 	// check the reflect kind, since we want to
 	// deal with underlying value types if they didn't
 	// explicitly set a way to be encoded
-	v := reflectUnwrap(reflect.ValueOf(x))
+	v = reflectUnwrap(v)
 
 	if !v.IsValid() {
 		return []byte("null"), nil
