@@ -9,7 +9,6 @@ import (
 
 var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
 var valuerType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
-var valueserType = reflect.TypeOf((*Valueser)(nil)).Elem()
 
 var paramsType = reflect.TypeOf((*Params)(nil)).Elem()
 var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
@@ -87,8 +86,7 @@ func isMultiRow(t reflect.Type) bool {
 // Expects an unwrapped reflect type.
 func isMultiColumn(t reflect.Type) bool {
 	if t == timeType ||
-		reflect.New(t).Type().Implements(valuerType) ||
-		reflect.New(t).Type().Implements(valueserType) {
+		reflect.New(t).Type().Implements(valuerType) {
 		return false
 	}
 
