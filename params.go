@@ -50,7 +50,7 @@ func normalizeParams(params ...Params) Params {
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
 func InterpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, 0, params...)
+	return interpolateParams(query, marshalOptNone, params...)
 }
 
 func interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
