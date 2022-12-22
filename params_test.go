@@ -232,8 +232,8 @@ func Test_parseName(t *testing.T) {
 
 func Test_marshal(t *testing.T) {
 	type args struct {
-		x     any
-		depth int
+		x   any
+		opt marshalOpt
 	}
 	tests := []struct {
 		name    string
@@ -327,10 +327,26 @@ func Test_marshal(t *testing.T) {
 			},
 			want: []byte("null"),
 		},
+		{
+			name: "slice of ints w wrap",
+			args: args{
+				x:   []int{1, 2, 3},
+				opt: marshalOptWrapSliceWithParens,
+			},
+			want: []byte("(1,2,3)"),
+		},
+		{
+			name: "slice of ints w json",
+			args: args{
+				x:   []int{1, 2, 3},
+				opt: marshalOptJSONSlice,
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte("[1,2,3]")) + " collate utf8mb4_unicode_ci"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := marshal(tt.args.x, tt.args.depth)
+			got, err := marshal(tt.args.x, tt.args.opt)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("marshal() error = %v, wantErr %v", err, tt.wantErr)
 				return

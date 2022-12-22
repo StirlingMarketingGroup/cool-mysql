@@ -226,7 +226,7 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 
 // ExecContext executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return db.exec(db.Writes, ctx, query, params...)
+	return db.exec(db.Writes, ctx, query, marshalOptNone, params...)
 }
 
 // ExecContext executes a query and nothing more
@@ -296,22 +296,22 @@ func (db *Database) SelectJSONContext(ctx context.Context, dest any, query strin
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) Exists(query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Reads, context.Background(), query, cache, params...)
+	return exists(db, db.Reads, context.Background(), query, cache, marshalOptNone, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Reads, ctx, query, cache, params...)
+	return exists(db, db.Reads, ctx, query, cache, marshalOptNone, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWrites(query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Writes, context.Background(), query, cache, params...)
+	return exists(db, db.Writes, context.Background(), query, cache, marshalOptNone, params...)
 }
 
 // ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Writes, ctx, query, cache, params...)
+	return exists(db, db.Writes, ctx, query, cache, marshalOptNone, params...)
 }
 
 func (db *Database) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {

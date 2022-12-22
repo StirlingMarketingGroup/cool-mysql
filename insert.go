@@ -206,7 +206,7 @@ DUPE_KEY_SEARCH:
 
 			v := r.Interface()
 
-			b, err := marshal(v, 0)
+			b, err := marshal(v, marshalOptJSONSlice)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}
@@ -293,7 +293,7 @@ DUPE_KEY_SEARCH:
 
 		insertBuf.WriteString(onDuplicateKeyUpdate)
 
-		result, err := in.db.exec(in.conn, ctx, insertBuf.String())
+		result, err := in.db.exec(in.conn, ctx, insertBuf.String(), marshalOptJSONSlice)
 		if err != nil {
 			return err
 		}
