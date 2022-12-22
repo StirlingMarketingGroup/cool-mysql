@@ -50,6 +50,10 @@ func normalizeParams(params ...Params) Params {
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
 func InterpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	return interpolateParams(query, marshalOptNone, params...)
+}
+
+func interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
 	if !strings.Contains(query, "@@") {
 		return query, nil, nil
 	}
@@ -266,10 +270,18 @@ func Marshal(x any) ([]byte, error) {
 	return marshal(x, 0)
 }
 
+type marshalOpt uint
+
+const (
+	marshalOptNone marshalOpt = 1 << iota
+	marshalOptWrapSliceWithParens
+	marshalOptJSONSlice
+)
+
 // marshal returns the interpolated param, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func marshal(x any, depth int) ([]byte, error) {
+func marshal(x any, opts marshalOpt) ([]byte, error) {
 	switch v := x.(type) {
 	case bool:
 		if !v {
@@ -338,7 +350,7 @@ func marshal(x any, depth int) ([]byte, error) {
 	v := reflect.ValueOf(x)
 	if v.IsValid() && (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) {
 		if v := v.Elem(); v.IsValid() {
-			return marshal(v.Interface(), depth)
+			return marshal(v.Interface(), opts)
 		}
 	}
 
@@ -374,7 +386,7 @@ func marshal(x any, depth int) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call Value on driver.Valuer: %w", err)
 		}
-		return marshal(v, depth)
+		return marshal(v, opts)
 	}
 
 	if vs, ok := pv.Interface().(Valueser); ok {
@@ -388,7 +400,7 @@ func marshal(x any, depth int) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call MySQLValues on mysql.MySQLValues: %w", err)
 		}
-		return marshal(vs, depth)
+		return marshal(vs, opts)
 	}
 
 	if isNil(x) {
@@ -398,32 +410,41 @@ func marshal(x any, depth int) ([]byte, error) {
 	k := v.Kind()
 	switch k {
 	case reflect.Bool:
-		return marshal(v.Bool(), depth)
+		return marshal(v.Bool(), opts)
 	case reflect.String:
-		return marshal(v.String(), depth)
+		return marshal(v.String(), opts)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return marshal(v.Int(), depth)
+		return marshal(v.Int(), opts)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return marshal(v.Uint(), depth)
+		return marshal(v.Uint(), opts)
 	case reflect.Complex64, reflect.Complex128:
-		return marshal(v.Complex(), depth)
+		return marshal(v.Complex(), opts)
 	case reflect.Float32, reflect.Float64:
-		return marshal(v.Float(), depth)
+		return marshal(v.Float(), opts)
 	case reflect.Struct, reflect.Map:
 		j, err := json.Marshal(x)
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to marshal struct to json: %w", err)
 		}
 
-		return marshal(json.RawMessage(j), depth)
+		return marshal(json.RawMessage(j), opts)
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return marshal(v.Bytes(), depth)
+			return marshal(v.Bytes(), opts)
+		}
+
+		if opts&marshalOptJSONSlice != 0 {
+			j, err := json.Marshal(x)
+			if err != nil {
+				return nil, fmt.Errorf("cool-mysql: failed to marshal slice to json: %w", err)
+			}
+
+			return marshal(json.RawMessage(j), opts)
 		}
 
 		buf := new(bytes.Buffer)
 
-		if depth != 0 {
+		if opts&marshalOptWrapSliceWithParens != 0 {
 			buf.WriteByte('(')
 		}
 
@@ -436,14 +457,14 @@ func marshal(x any, depth int) ([]byte, error) {
 				buf.WriteByte(',')
 			}
 
-			b, err := marshal(v.Index(i).Interface(), depth+1)
+			b, err := marshal(v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens)
 			if err != nil {
 				return nil, err
 			}
 			buf.Write(b)
 		}
 
-		if depth != 0 {
+		if opts&marshalOptWrapSliceWithParens != 0 {
 			buf.WriteByte(')')
 		}
 

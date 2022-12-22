@@ -17,11 +17,11 @@ import (
 )
 
 // exists efficiently checks if there are any rows in the given query
-func exists(db *Database, conn commander, ctx context.Context, query string, cacheDuration time.Duration, params ...any) (exists bool, err error) {
+func exists(db *Database, conn commander, ctx context.Context, query string, cacheDuration time.Duration, opt marshalOpt, params ...any) (exists bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	replacedQuery, normalizedParams, err := interpolateParams(query, opt, params...)
 	if err != nil {
 		return false, fmt.Errorf("failed to interpolate params: %w", err)
 	}

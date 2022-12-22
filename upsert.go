@@ -96,7 +96,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 	} else {
 		switch rt.Kind() {
 		case reflect.Array, reflect.Slice:
-			if !isMultiColumn(rt) {
+			if rt.Elem().Kind() == reflect.Uint8 {
 				break
 			}
 
@@ -200,7 +200,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 			}
 
 			if len(updateColumns) != 0 {
-				res, err := in.db.exec(in.conn, ctx, q, r)
+				res, err := in.db.exec(in.conn, ctx, q, marshalOptJSONSlice, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to update: %w", err), query, q, r)
 				}
@@ -209,7 +209,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 					goto NEXT
 				}
 			} else {
-				ok, err := exists(in.db, in.conn, ctx, q, 0, r)
+				ok, err := exists(in.db, in.conn, ctx, q, 0, marshalOptJSONSlice, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to check if exists: %w", err), query, q, r)
 				}
