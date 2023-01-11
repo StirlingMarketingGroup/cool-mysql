@@ -224,7 +224,8 @@ DUPE_KEY_SEARCH:
 					rowBuf.WriteByte(',')
 				}
 
-				v := reflectUnwrap(row.FieldByIndex(colOpts[col].index))
+				f := row.FieldByIndex(colOpts[col].index)
+				v := reflectUnwrap(f)
 
 				if colOpts[col].insertDefault {
 					pv := v
@@ -247,7 +248,7 @@ DUPE_KEY_SEARCH:
 						}
 					}
 
-					if !v.IsValid() || v.IsZero() {
+					if !f.IsValid() || f.IsZero() {
 						rowBuf.WriteString("default")
 						continue
 					}
