@@ -10,7 +10,8 @@ import (
 type Tx struct {
 	db *Database
 
-	Tx *sql.Tx
+	Tx   *sql.Tx
+	Time time.Time
 }
 
 type txCancelFunc func() error
@@ -20,8 +21,9 @@ func beginTx(db *Database, conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc
 
 	t, err := conn.BeginTx(ctx, nil)
 	tx := &Tx{
-		db: db,
-		Tx: t,
+		db:   db,
+		Tx:   t,
+		Time: time.Now(),
 	}
 
 	db.callLog("start transaction", nil, time.Since(start), false)
