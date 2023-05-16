@@ -14,9 +14,9 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
-	"github.com/go-redis/redis/v8"
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-sql-driver/mysql"
+	"github.com/redis/go-redis/v9"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
