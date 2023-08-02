@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -54,6 +55,18 @@ func InterpolateParams(query string, params ...any) (replacedQuery string, norma
 }
 
 func interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	if strings.Contains(query, "{{") {
+		convertedParams := make([]Params, 0, len(params))
+		for _, p := range params {
+			convertedParams = append(convertedParams, convertToParams("param", p))
+		}
+
+		query, err = execTemplate(query, convertToParams("params", normalizeParams(convertedParams...)))
+		if err != nil {
+			return "", nil, err
+		}
+	}
+
 	if !strings.Contains(query, "@@") {
 		return query, nil, nil
 	}
@@ -559,4 +572,35 @@ func parseName(s string) string {
 	}
 
 	return backtickReplacer.Replace(s)
+}
+
+func execTemplate(q string, params Params) (string, error) {
+	if !strings.Contains(q, "{{") {
+		return q, nil
+	}
+
+	tmpl, err := template.New("query").Funcs(template.FuncMap{
+		"marshal": func(x any) (string, error) {
+			b, err := marshal(x, 0)
+			if err != nil {
+				return "", err
+			}
+
+			return string(b), nil
+		},
+	}).Parse(q)
+	if err != nil {
+		return "", fmt.Errorf("cool-mysql: failed to parse query template: %w", err)
+	}
+
+	s := stringsBuilderPool.Get().(*strings.Builder)
+	defer stringsBuilderPool.Put(s)
+	s.Reset()
+
+	err = tmpl.Execute(s, params)
+	if err != nil {
+		return "", fmt.Errorf("cool-mysql: failed to execute query template: %w", err)
+	}
+
+	return s.String(), nil
 }

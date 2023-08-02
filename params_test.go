@@ -357,3 +357,65 @@ func Test_marshal(t *testing.T) {
 		})
 	}
 }
+
+func Test_execTemplate(t *testing.T) {
+	type args struct {
+		q      string
+		params Params
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "no template",
+			args: args{
+				q:      "SELECT * FROM `test`",
+				params: nil,
+			},
+			want:    "SELECT * FROM `test`",
+			wantErr: false,
+		},
+		{
+			name: "template",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{.foo}}",
+				params: Params{"foo": "bar"},
+			},
+			want:    "SELECT * FROM `test` WHERE `foo` = bar",
+			wantErr: false,
+		},
+		{
+			name: "marshal",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{marshal .foo}}",
+				params: Params{"foo": "bar"},
+			},
+			want:    "SELECT * FROM `test` WHERE `foo` = _utf8mb4 0x626172 collate utf8mb4_unicode_ci",
+			wantErr: false,
+		},
+		{
+			name: "template error",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{.foo}",
+				params: Params{"foo": "bar"},
+			},
+			want:    "",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := execTemplate(tt.args.q, tt.args.params)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("execTemplate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("execTemplate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

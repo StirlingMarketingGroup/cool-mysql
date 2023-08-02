@@ -178,8 +178,8 @@ func (db *Database) Reconnect() error {
 		return fmt.Errorf("failed to reconnect: %w", err)
 	}
 
-	*db.Writes = *new.Writes
-	*db.Reads = *new.Reads
+	db.Writes = new.Writes
+	db.Reads = new.Reads
 
 	return nil
 }
