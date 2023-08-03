@@ -11,7 +11,8 @@ import (
 
 func Test_normalizeParams(t *testing.T) {
 	type args struct {
-		params []Params
+		caseSensitive bool
+		params        []Params
 	}
 	tests := []struct {
 		name string
@@ -21,6 +22,7 @@ func Test_normalizeParams(t *testing.T) {
 		{
 			name: "normalize params",
 			args: args{
+				caseSensitive: false,
 				params: []Params{
 					{"Hello": "World", "Foo": "Bar", "hey": "There"},
 					{"foo": "World II"},
@@ -31,14 +33,26 @@ func Test_normalizeParams(t *testing.T) {
 		{
 			name: "empty",
 			args: args{
-				params: []Params{},
+				caseSensitive: false,
+				params:        []Params{},
 			},
 			want: nil,
+		},
+		{
+			name: "case sensitive",
+			args: args{
+				caseSensitive: true,
+				params: []Params{
+					{"Hello": "World", "Foo": "Bar", "hey": "There"},
+					{"foo": "World II"},
+				},
+			},
+			want: Params{"Hello": "World", "Foo": "Bar", "hey": "There", "foo": "World II"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeParams(tt.args.params...); !reflect.DeepEqual(got, tt.want) {
+			if got := normalizeParams(tt.args.caseSensitive, tt.args.params...); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("normalizeParams() = %v, want %v", got, tt.want)
 			}
 		})
@@ -129,7 +143,7 @@ func TestInterpolateParams(t *testing.T) {
 				params: []any{Params{"1": "hello", "2": "world"}},
 			},
 			wantReplacedQuery:    "SELECT * FROM `test` WHERE `foo` = _utf8mb4 0x68656c6c6f collate utf8mb4_unicode_ci AND `bar` = _utf8mb4 0x776f726c64 collate utf8mb4_unicode_ci",
-			wantNormalizedParams: normalizeParams(Params{"1": "hello", "2": "world"}),
+			wantNormalizedParams: normalizeParams(false, Params{"1": "hello", "2": "world"}),
 		},
 		{
 			name: "slice of strings",
@@ -138,7 +152,7 @@ func TestInterpolateParams(t *testing.T) {
 				params: []any{[]string{"hello", "world"}},
 			},
 			wantReplacedQuery:    "SELECT * FROM `test` WHERE `foo` IN (_utf8mb4 0x68656c6c6f collate utf8mb4_unicode_ci,_utf8mb4 0x776f726c64 collate utf8mb4_unicode_ci)",
-			wantNormalizedParams: normalizeParams(Params{"1": []string{"hello", "world"}}),
+			wantNormalizedParams: normalizeParams(false, Params{"1": []string{"hello", "world"}}),
 		},
 	}
 	for _, tt := range tests {
@@ -404,6 +418,42 @@ func Test_execTemplate(t *testing.T) {
 			},
 			want:    "",
 			wantErr: true,
+		},
+		{
+			name: "case sensitive",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{.Foo}}",
+				params: Params{"foo": "bar"},
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "err on missing key",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{.foo}}",
+				params: Params{"bar": "bar"},
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "upper case param err",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{.FOO}}",
+				params: Params{"foo": "bar"},
+			},
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name: "upper case param",
+			args: args{
+				q:      "SELECT * FROM `test` WHERE `foo` = {{.FOO}}",
+				params: Params{"FOO": "bar"},
+			},
+			want:    "SELECT * FROM `test` WHERE `foo` = bar",
+			wantErr: false,
 		},
 	}
 	for _, tt := range tests {

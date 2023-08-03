@@ -29,7 +29,7 @@ var BuiltInParams = Params{
 	"MaxTime": MaxTime,
 }
 
-func normalizeParams(params ...Params) Params {
+func normalizeParams(caseSensitive bool, params ...Params) Params {
 	if len(params) == 0 {
 		return nil
 	}
@@ -37,7 +37,11 @@ func normalizeParams(params ...Params) Params {
 	normalizedParams := make(Params)
 	for _, p := range params {
 		for k, v := range p {
-			normalizedParams[strings.ToLower(k)] = v
+			if !caseSensitive {
+				normalizedParams[strings.ToLower(k)] = v
+			} else {
+				normalizedParams[k] = v
+			}
 		}
 	}
 
@@ -61,7 +65,7 @@ func interpolateParams(query string, opts marshalOpt, params ...any) (replacedQu
 			convertedParams = append(convertedParams, convertToParams("param", p))
 		}
 
-		query, err = execTemplate(query, convertToParams("params", normalizeParams(convertedParams...)))
+		query, err = execTemplate(query, convertToParams("params", normalizeParams(true, convertedParams...)))
 		if err != nil {
 			return "", nil, err
 		}
@@ -94,7 +98,7 @@ func interpolateParams(query string, opts marshalOpt, params ...any) (replacedQu
 	allParams := append(make([]Params, 0, len(params)+2), Params{"now": time.Now()}, BuiltInParams)
 	allParams = append(allParams, convertedParams...)
 
-	normalizedParams = normalizeParams(allParams...)
+	normalizedParams = normalizeParams(false, allParams...)
 
 	if len(normalizedParams) == 0 {
 		return query, nil, nil
@@ -588,7 +592,7 @@ func execTemplate(q string, params Params) (string, error) {
 
 			return string(b), nil
 		},
-	}).Parse(q)
+	}).Option("missingkey=error").Parse(q)
 	if err != nil {
 		return "", fmt.Errorf("cool-mysql: failed to parse query template: %w", err)
 	}
