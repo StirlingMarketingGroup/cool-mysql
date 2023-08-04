@@ -357,6 +357,13 @@ func Test_marshal(t *testing.T) {
 			},
 			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte("[1,2,3]")) + " collate utf8mb4_unicode_ci"),
 		},
+		{
+			name: "time",
+			args: args{
+				x: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			},
+			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
