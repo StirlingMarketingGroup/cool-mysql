@@ -16,7 +16,7 @@ type Tx struct {
 
 type txCancelFunc func() error
 
-func beginTx(db *Database, conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc, error) {
+func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc, error) {
 	start := time.Now()
 
 	t, err := conn.BeginTx(ctx, nil)
@@ -36,22 +36,22 @@ func beginTx(db *Database, conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc
 
 // BeginTx begins and returns a new transaction on the writes connection
 func (db *Database) BeginTx() (tx *Tx, cancel func() error, err error) {
-	return beginTx(db, db.Writes, context.Background())
+	return db.beginTx(db.Writes, context.Background())
 }
 
 // BeginTxContext begins and returns a new transaction on the writes connection
 func (db *Database) BeginTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
-	return beginTx(db, db.Writes, ctx)
+	return db.beginTx(db.Writes, ctx)
 }
 
 // BeginReadsTx begins and returns a new transaction on the writes connection
 func (db *Database) BeginReadsTx() (tx *Tx, cancel func() error, err error) {
-	return beginTx(db, db.Reads, context.Background())
+	return db.beginTx(db.Reads, context.Background())
 }
 
 // BeginReadsTxContext begins and returns a new transaction on the reads connection
 func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
-	return beginTx(db, db.Reads, ctx)
+	return db.beginTx(db.Reads, ctx)
 }
 
 // Commit commits the transaction
@@ -119,21 +119,21 @@ func (tx *Tx) Exec(query string, params ...any) error {
 }
 
 func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...any) error {
-	return query(tx.db, tx.Tx, context.Background(), dest, q, cache, params...)
+	return tx.db.query(tx.Tx, context.Background(), dest, q, cache, params...)
 }
 
 func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
-	return query(tx.db, tx.Tx, ctx, dest, q, cache, params...)
+	return tx.db.query(tx.Tx, ctx, dest, q, cache, params...)
 }
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (tx *Tx) Exists(query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(tx.db, tx.Tx, context.Background(), query, cache, marshalOptNone, params...)
+	return tx.db.exists(tx.Tx, context.Background(), query, cache, marshalOptNone, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (tx *Tx) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(tx.db, tx.Tx, ctx, query, cache, marshalOptNone, params...)
+	return tx.db.exists(tx.Tx, ctx, query, cache, marshalOptNone, params...)
 }
 
 func (tx *Tx) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {

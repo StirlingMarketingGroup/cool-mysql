@@ -54,18 +54,18 @@ func normalizeParams(caseSensitive bool, params ...Params) Params {
 // have to specify params if there aren't any, but each param will
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
-func InterpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, marshalOptNone, params...)
+func InterpolateParams(query string, tmplFuncs template.FuncMap, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	return interpolateParams(query, marshalOptNone, tmplFuncs, params...)
 }
 
-func interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+func interpolateParams(query string, opts marshalOpt, tmplFuncs template.FuncMap, params ...any) (replacedQuery string, normalizedParams Params, err error) {
 	if strings.Contains(query, "{{") {
 		convertedParams := make([]Params, 0, len(params))
 		for _, p := range params {
 			convertedParams = append(convertedParams, convertToParams("param", p))
 		}
 
-		query, err = execTemplate(query, convertToParams("params", normalizeParams(true, convertedParams...)))
+		query, err = execTemplate(query, convertToParams("params", normalizeParams(true, convertedParams...)), tmplFuncs)
 		if err != nil {
 			return "", nil, err
 		}
@@ -578,21 +578,12 @@ func parseName(s string) string {
 	return backtickReplacer.Replace(s)
 }
 
-func execTemplate(q string, params Params) (string, error) {
+func execTemplate(q string, params Params, addlTmplFuncs template.FuncMap) (string, error) {
 	if !strings.Contains(q, "{{") {
 		return q, nil
 	}
 
-	tmpl, err := template.New("query").Funcs(template.FuncMap{
-		"marshal": func(x any) (string, error) {
-			b, err := marshal(x, 0)
-			if err != nil {
-				return "", err
-			}
-
-			return string(b), nil
-		},
-	}).Option("missingkey=error").Parse(q)
+	tmpl, err := template.New("query").Funcs(tmplFuncs).Funcs(addlTmplFuncs).Option("missingkey=error").Parse(q)
 	if err != nil {
 		return "", fmt.Errorf("cool-mysql: failed to parse query template: %w", err)
 	}

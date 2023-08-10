@@ -22,11 +22,11 @@ import (
 
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
-func query(db *Database, conn commander, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
+func (db *Database) query(conn commander, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	replacedQuery, normalizedParams, err := InterpolateParams(query, params...)
+	replacedQuery, normalizedParams, err := db.InterpolateParams(query, params...)
 	if err != nil {
 		return fmt.Errorf("failed to interpolate params: %w", err)
 	}
