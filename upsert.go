@@ -209,7 +209,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 					goto NEXT
 				}
 			} else {
-				ok, err := exists(in.db, in.conn, ctx, q, 0, marshalOptJSONSlice, r)
+				ok, err := in.db.exists(in.conn, ctx, q, 0, marshalOptJSONSlice, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to check if exists: %w", err), query, q, r)
 				}

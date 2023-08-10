@@ -154,10 +154,26 @@ func TestInterpolateParams(t *testing.T) {
 			wantReplacedQuery:    "SELECT * FROM `test` WHERE `foo` IN (_utf8mb4 0x68656c6c6f collate utf8mb4_unicode_ci,_utf8mb4 0x776f726c64 collate utf8mb4_unicode_ci)",
 			wantNormalizedParams: normalizeParams(false, Params{"1": []string{"hello", "world"}}),
 		},
+		{
+			name: "template error",
+			args: args{
+				query:  "SELECT * FROM `test` WHERE `foo` = {{.foo}",
+				params: []any{Params{"foo": "bar"}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "template error",
+			args: args{
+				query:  "SELECT * FROM `test` WHERE `foo` = {{.foo}}{{end}}",
+				params: []any{Params{"foo": "bar"}},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotReplacedQuery, gotNormalizedParams, err := InterpolateParams(tt.args.query, tt.args.params...)
+			gotReplacedQuery, gotNormalizedParams, err := InterpolateParams(tt.args.query, nil, tt.args.params...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("InterpolateParams() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -465,7 +481,7 @@ func Test_execTemplate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := execTemplate(tt.args.q, tt.args.params)
+			got, err := execTemplate(tt.args.q, tt.args.params, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("execTemplate() error = %v, wantErr %v", err, tt.wantErr)
 				return

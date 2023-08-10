@@ -15,7 +15,7 @@ import (
 
 // exec executes a query and nothing more
 func (db *Database) exec(conn commander, ctx context.Context, query string, opts marshalOpt, params ...any) (sql.Result, error) {
-	replacedQuery, normalizedParams, err := interpolateParams(query, opts, params...)
+	replacedQuery, normalizedParams, err := db.interpolateParams(query, opts, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to interpolate params: %w", err)
 	}

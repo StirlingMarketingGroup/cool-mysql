@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/go-redsync/redsync/v4"
@@ -44,6 +45,8 @@ type Database struct {
 
 	Logger                      *zap.Logger
 	DisableUnusedColumnWarnings bool
+
+	tmplFuncs template.FuncMap
 }
 
 // Clone returns a copy of the db with the same connections
@@ -170,6 +173,17 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	return
 }
 
+// AddTemplateFuncs adds template functions to the database
+func (db *Database) AddTemplateFuncs(funcs template.FuncMap) {
+	if db.tmplFuncs == nil {
+		db.tmplFuncs = make(template.FuncMap)
+	}
+
+	for k, v := range funcs {
+		db.tmplFuncs[k] = v
+	}
+}
+
 // Reconnect creates new connection(s) for writes and reads
 // and replaces the existing connections with the new ones
 func (db *Database) Reconnect() error {
@@ -247,12 +261,12 @@ func (db *Database) Exec(query string, params ...any) error {
 }
 
 func (db *Database) Select(dest any, q string, cache time.Duration, params ...any) error {
-	return query(db, db.Reads, context.Background(), dest, q, cache, params...)
+	return db.query(db.Reads, context.Background(), dest, q, cache, params...)
 }
 
 func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Rows, error) {
 	var rows Rows
-	err := query(db, db.Reads, context.Background(), &rows, q, cache, params...)
+	err := db.query(db.Reads, context.Background(), &rows, q, cache, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -261,15 +275,15 @@ func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Ro
 }
 
 func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
-	return query(db, db.Reads, ctx, dest, q, cache, params...)
+	return db.query(db.Reads, ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...any) error {
-	return query(db, db.Writes, context.Background(), dest, q, cache, params...)
+	return db.query(db.Writes, context.Background(), dest, q, cache, params...)
 }
 
 func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
-	return query(db, db.Writes, ctx, dest, q, cache, params...)
+	return db.query(db.Writes, ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectJSON(dest any, query string, cache time.Duration, params ...any) error {
@@ -296,22 +310,22 @@ func (db *Database) SelectJSONContext(ctx context.Context, dest any, query strin
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) Exists(query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Reads, context.Background(), query, cache, marshalOptNone, params...)
+	return db.exists(db.Reads, context.Background(), query, cache, marshalOptNone, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Reads, ctx, query, cache, marshalOptNone, params...)
+	return db.exists(db.Reads, ctx, query, cache, marshalOptNone, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWrites(query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Writes, context.Background(), query, cache, marshalOptNone, params...)
+	return db.exists(db.Writes, context.Background(), query, cache, marshalOptNone, params...)
 }
 
 // ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return exists(db, db.Writes, ctx, query, cache, marshalOptNone, params...)
+	return db.exists(db.Writes, ctx, query, cache, marshalOptNone, params...)
 }
 
 func (db *Database) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {
@@ -320,4 +334,12 @@ func (db *Database) Upsert(insert string, uniqueColumns, updateColumns []string,
 
 func (db *Database) UpsertContext(ctx context.Context, insert string, uniqueColumns, updateColumns []string, where string, source any) error {
 	return db.I().UpsertContext(ctx, insert, uniqueColumns, updateColumns, where, source)
+}
+
+func (db *Database) InterpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	return InterpolateParams(query, db.tmplFuncs, params...)
+}
+
+func (db *Database) interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	return interpolateParams(query, opts, db.tmplFuncs, params...)
 }
