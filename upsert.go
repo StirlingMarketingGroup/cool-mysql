@@ -90,7 +90,10 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 			case reflect.Map:
 				columnNames = colNamesFromMap(currentRow)
 			case reflect.Struct:
-				columnNames, _, colFieldMap = colNamesFromStruct(rt)
+				columnNames, _, colFieldMap, err = colNamesFromStruct(rt)
+				if err != nil {
+					return Wrap(err, query, modifiedQuery, source)
+				}
 			}
 		}
 	} else {
@@ -105,7 +108,10 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 				colFieldMap[c] = strconv.Itoa(i)
 			}
 		case reflect.Struct:
-			_, _, colFieldMap = colNamesFromStruct(rt)
+			_, _, colFieldMap, err = colNamesFromStruct(rt)
+			if err != nil {
+				return Wrap(err, query, modifiedQuery, source)
+			}
 		}
 	}
 

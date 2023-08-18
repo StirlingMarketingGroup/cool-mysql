@@ -150,7 +150,10 @@ DUPE_KEY_SEARCH:
 			case reflect.Map:
 				columnNames = colNamesFromMap(currentRow)
 			case reflect.Struct:
-				columnNames, colOpts, _ = colNamesFromStruct(rt)
+				columnNames, colOpts, _, err = colNamesFromStruct(rt)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -169,7 +172,10 @@ DUPE_KEY_SEARCH:
 	} else {
 		switch rt.Kind() {
 		case reflect.Struct:
-			_, colOpts, _ = colNamesFromStruct(rt)
+			_, colOpts, _, err = colNamesFromStruct(rt)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -365,7 +371,7 @@ type insertColOpts struct {
 	insertDefault bool
 }
 
-func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts, colFieldMap map[string]string) {
+func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts, colFieldMap map[string]string, err error) {
 	structFieldIndexes := StructFieldIndexes(t)
 	colOpts = make(map[string]insertColOpts, len(structFieldIndexes))
 	colFieldMap = make(map[string]string, len(structFieldIndexes))
@@ -388,7 +394,10 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 			}
 
 			if len(t.Name) != 0 {
-				column = t.Name
+				column, err = decodeHex(t.Name)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to decode hex in struct tag name %q: %w", t.Name, err)
+				}
 			}
 
 			opts.insertDefault = t.HasOption("insertDefault") || t.HasOption("omitempty")

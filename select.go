@@ -377,7 +377,10 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 			name := f.Name
 			mysqlTag, _ := tags.Get("mysql")
 			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
-				name = mysqlTag.Name
+				name, err = decodeHex(mysqlTag.Name)
+				if err != nil {
+					return nil, nil, nil, false, fmt.Errorf("failed to decode hex in struct tag name %q: %w", mysqlTag.Name, err)
+				}
 			}
 
 			fieldsMap[strings.ToLower(name)] = i
