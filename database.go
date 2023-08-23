@@ -291,16 +291,13 @@ func (db *Database) SelectJSON(dest any, query string, cache time.Duration, para
 }
 
 func (db *Database) SelectJSONContext(ctx context.Context, dest any, query string, cache time.Duration, params ...any) error {
-	var store struct {
-		JSON []byte
-	}
-
-	err := db.SelectContext(ctx, &store, query, cache, params...)
+	var j []byte
+	err := db.SelectContext(ctx, &j, query, cache, params...)
 	if err != nil {
 		return err
 	}
 
-	err = json.Unmarshal(store.JSON, dest)
+	err = json.Unmarshal(j, dest)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -124,6 +125,25 @@ func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...any) err
 
 func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return tx.db.query(tx.Tx, ctx, dest, q, cache, params...)
+}
+
+func (tx *Tx) SelectJSON(dest any, query string, cache time.Duration, params ...any) error {
+	return tx.SelectJSONContext(context.Background(), dest, query, cache, params...)
+}
+
+func (tx *Tx) SelectJSONContext(ctx context.Context, dest any, query string, cache time.Duration, params ...any) error {
+	var j []byte
+	err := tx.SelectContext(ctx, &j, query, cache, params...)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(j, dest)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
