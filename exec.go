@@ -32,23 +32,30 @@ func (db *Database) exec(conn commander, ctx context.Context, query string, opts
 
 	var b = backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
-	var tries int
+	var attempt int
 	var rowsAffected int64
 	err = backoff.Retry(func() error {
-		tries++
+		attempt++
 		var err error
 		res, err = conn.ExecContext(ctx, replacedQuery)
 		if res != nil {
 			rowsAffected, _ = res.RowsAffected()
 		}
+		tx, _ := conn.(*sql.Tx)
+		db.callLog(LogDetail{
+			Query:        replacedQuery,
+			Params:       normalizedParams,
+			Duration:     time.Since(start),
+			RowsAffected: rowsAffected,
+			Tx:           tx,
+			Attempt:      attempt,
+			Error:        err,
+		})
 		if err != nil {
 			if checkRetryError(err) {
 				return err
 			} else if errors.Is(err, mysql.ErrInvalidConn) {
-				if err := db.Test(); err != nil {
-					return err
-				}
-				return err
+				return db.Test()
 			} else {
 				return backoff.Permanent(err)
 			}
@@ -56,16 +63,6 @@ func (db *Database) exec(conn commander, ctx context.Context, query string, opts
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-
-	tx, _ := conn.(*sql.Tx)
-	db.callLog(LogDetail{
-		Query:        replacedQuery,
-		Params:       normalizedParams,
-		Duration:     time.Since(start),
-		Tries:        tries,
-		RowsAffected: rowsAffected,
-		Tx:           tx,
-	})
 
 	if err != nil {
 		return nil, Error{

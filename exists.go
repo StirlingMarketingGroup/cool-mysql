@@ -95,6 +95,7 @@ func (db *Database) exists(conn commander, ctx context.Context, query string, ca
 				Duration: time.Since(start),
 				CacheHit: true,
 				Tx:       tx,
+				Attempt:  1,
 			})
 			return
 		}
@@ -111,19 +112,25 @@ func (db *Database) exists(conn commander, ctx context.Context, query string, ca
 
 	var b = backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
-	var tries int
+	var attempt int
 	err = backoff.Retry(func() error {
-		tries++
+		attempt++
 		var err error
 		rows, err = conn.QueryContext(ctx, replacedQuery)
+		tx, _ := conn.(*sql.Tx)
+		db.callLog(LogDetail{
+			Query:    replacedQuery,
+			Params:   normalizedParams,
+			Duration: time.Since(start),
+			Tx:       tx,
+			Attempt:  attempt,
+			Error:    err,
+		})
 		if err != nil {
 			if checkRetryError(err) {
 				return err
 			} else if errors.Is(err, mysql.ErrInvalidConn) {
-				if err := db.Test(); err != nil {
-					return err
-				}
-				return err
+				return db.Test()
 			} else {
 				return backoff.Permanent(err)
 			}
@@ -131,14 +138,6 @@ func (db *Database) exists(conn commander, ctx context.Context, query string, ca
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	tx, _ := conn.(*sql.Tx)
-	db.callLog(LogDetail{
-		Query:    replacedQuery,
-		Params:   normalizedParams,
-		Duration: time.Since(start),
-		Tries:    tries,
-		Tx:       tx,
-	})
 	if err != nil {
 		return
 	}

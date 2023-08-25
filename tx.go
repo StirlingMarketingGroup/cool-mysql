@@ -31,6 +31,8 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 		Query:    "start transaction",
 		Duration: time.Since(start),
 		Tx:       tx.Tx,
+		Attempt:  1,
+		Error:    err,
 	})
 	if err != nil {
 		return nil, tx.Cancel, err
@@ -67,6 +69,8 @@ func (tx *Tx) Commit() error {
 		Query:    "commit",
 		Duration: time.Since(start),
 		Tx:       tx.Tx,
+		Attempt:  1,
+		Error:    err,
 	})
 
 	return err
@@ -85,6 +89,8 @@ func (tx *Tx) Cancel() error {
 		Query:    "rollback",
 		Duration: time.Since(start),
 		Tx:       tx.Tx,
+		Attempt:  1,
+		Error:    err,
 	})
 
 	return err

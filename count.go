@@ -24,6 +24,8 @@ func (db *Database) Count(query string, cache time.Duration, params ...any) (int
 		Query:    replacedQuery,
 		Params:   normalizedParams,
 		Duration: time.Since(start),
+		Attempt:  1,
+		Error:    err,
 	})
 
 	if err != nil {

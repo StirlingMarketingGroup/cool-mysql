@@ -70,9 +70,10 @@ type LogDetail struct {
 	Params       Params
 	Duration     time.Duration
 	CacheHit     bool
-	Tries        int
 	Tx           *sql.Tx
 	RowsAffected int64
+	Attempt      int
+	Error        error
 }
 
 // LogFunc is called after the query executes

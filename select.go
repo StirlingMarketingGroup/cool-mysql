@@ -151,6 +151,7 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 				Duration: time.Since(start),
 				CacheHit: true,
 				Tx:       tx,
+				Attempt:  1,
 			})
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
@@ -182,19 +183,25 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 
 	var b = backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
-	var tries int
+	var attempt int
 	err = backoff.Retry(func() error {
-		tries++
+		attempt++
 		var err error
 		rows, err = conn.QueryContext(ctx, replacedQuery)
+		tx, _ := conn.(*sql.Tx)
+		db.callLog(LogDetail{
+			Query:    replacedQuery,
+			Params:   normalizedParams,
+			Duration: time.Since(start),
+			Tx:       tx,
+			Attempt:  attempt,
+			Error:    err,
+		})
 		if err != nil {
 			if checkRetryError(err) {
 				return err
 			} else if errors.Is(err, mysql.ErrInvalidConn) {
-				if err := db.Test(); err != nil {
-					return err
-				}
-				return err
+				return db.Test()
 			} else {
 				return backoff.Permanent(err)
 			}
@@ -202,14 +209,6 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	tx, _ := conn.(*sql.Tx)
-	db.callLog(LogDetail{
-		Query:    replacedQuery,
-		Params:   normalizedParams,
-		Duration: time.Since(start),
-		Tries:    tries,
-		Tx:       tx,
-	})
 	defer func() {
 		if rows != nil {
 			rows.Close()
