@@ -144,7 +144,14 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 				return err
 			}
 		} else {
-			db.callLog(replacedQuery, normalizedParams, time.Since(start), true)
+			tx, _ := conn.(*sql.Tx)
+			db.callLog(LogDetail{
+				Query:    replacedQuery,
+				Params:   normalizedParams,
+				Duration: time.Since(start),
+				CacheHit: true,
+				Tx:       tx,
+			})
 
 			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
 			if err != nil {
@@ -175,7 +182,9 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 
 	var b = backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
+	var tries int
 	err = backoff.Retry(func() error {
+		tries++
 		var err error
 		rows, err = conn.QueryContext(ctx, replacedQuery)
 		if err != nil {
@@ -193,7 +202,14 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 
 		return nil
 	}, backoff.WithContext(b, ctx))
-	db.callLog(replacedQuery, normalizedParams, time.Since(start), false)
+	tx, _ := conn.(*sql.Tx)
+	db.callLog(LogDetail{
+		Query:    replacedQuery,
+		Params:   normalizedParams,
+		Duration: time.Since(start),
+		Tries:    tries,
+		Tx:       tx,
+	})
 	defer func() {
 		if rows != nil {
 			rows.Close()

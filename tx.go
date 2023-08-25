@@ -27,7 +27,11 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 		Time: time.Now(),
 	}
 
-	db.callLog("start transaction", nil, time.Since(start), false)
+	db.callLog(LogDetail{
+		Query:    "start transaction",
+		Duration: time.Since(start),
+		Tx:       tx.Tx,
+	})
 	if err != nil {
 		return nil, tx.Cancel, err
 	}
@@ -59,7 +63,11 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 func (tx *Tx) Commit() error {
 	start := time.Now()
 	err := tx.Tx.Commit()
-	tx.db.callLog("commit", nil, time.Since(start), false)
+	tx.db.callLog(LogDetail{
+		Query:    "commit",
+		Duration: time.Since(start),
+		Tx:       tx.Tx,
+	})
 
 	return err
 }
@@ -73,7 +81,11 @@ func (tx *Tx) Cancel() error {
 
 	start := time.Now()
 	err := tx.Tx.Rollback()
-	tx.db.callLog("rollback", nil, time.Since(start), false)
+	tx.db.callLog(LogDetail{
+		Query:    "rollback",
+		Duration: time.Since(start),
+		Tx:       tx.Tx,
+	})
 
 	return err
 }

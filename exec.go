@@ -32,9 +32,15 @@ func (db *Database) exec(conn commander, ctx context.Context, query string, opts
 
 	var b = backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
+	var tries int
+	var rowsAffected int64
 	err = backoff.Retry(func() error {
+		tries++
 		var err error
 		res, err = conn.ExecContext(ctx, replacedQuery)
+		if res != nil {
+			rowsAffected, _ = res.RowsAffected()
+		}
 		if err != nil {
 			if checkRetryError(err) {
 				return err
@@ -51,7 +57,15 @@ func (db *Database) exec(conn commander, ctx context.Context, query string, opts
 		return nil
 	}, backoff.WithContext(b, ctx))
 
-	db.callLog(replacedQuery, normalizedParams, time.Since(start), false)
+	tx, _ := conn.(*sql.Tx)
+	db.callLog(LogDetail{
+		Query:        replacedQuery,
+		Params:       normalizedParams,
+		Duration:     time.Since(start),
+		Tries:        tries,
+		RowsAffected: rowsAffected,
+		Tx:           tx,
+	})
 
 	if err != nil {
 		return nil, Error{
