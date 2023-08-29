@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"sync"
 	"time"
 )
 
@@ -13,6 +14,11 @@ type Tx struct {
 
 	Tx   *sql.Tx
 	Time time.Time
+
+	updates *struct {
+		sync.RWMutex
+		queries []string
+	}
 }
 
 type txCancelFunc func() error
@@ -25,6 +31,11 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 		db:   db,
 		Tx:   t,
 		Time: time.Now(),
+
+		updates: &struct {
+			sync.RWMutex
+			queries []string
+		}{queries: make([]string, 0)},
 	}
 
 	db.callLog(LogDetail{
@@ -100,6 +111,7 @@ func (tx *Tx) DefaultInsertOptions() *Inserter {
 	return &Inserter{
 		db:   tx.db,
 		conn: tx.Tx,
+		tx:   tx,
 	}
 }
 
@@ -117,7 +129,7 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return tx.db.exec(tx.Tx, ctx, query, marshalOptNone, params...)
+	return tx.db.exec(tx.Tx, ctx, tx, true, query, marshalOptNone, params...)
 }
 
 // ExecContext executes a query and nothing more

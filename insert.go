@@ -15,6 +15,7 @@ import (
 type Inserter struct {
 	db   *Database
 	conn commander
+	tx   *Tx
 
 	AfterChunkExec func(start time.Time)
 	AfterRowExec   func(start time.Time)
@@ -300,7 +301,7 @@ DUPE_KEY_SEARCH:
 
 		insertBuf.WriteString(onDuplicateKeyUpdate)
 
-		result, err := in.db.exec(in.conn, ctx, insertBuf.String(), marshalOptJSONSlice)
+		result, err := in.db.exec(in.conn, ctx, in.tx, true, insertBuf.String(), marshalOptJSONSlice)
 		if err != nil {
 			return err
 		}

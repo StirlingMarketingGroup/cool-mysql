@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	stdMysql "github.com/go-sql-driver/mysql"
@@ -34,17 +35,24 @@ func (v Error) Unwrap() error {
 }
 
 func checkRetryError(err error) (ok bool) {
-	switch err := err.(type) {
-	case *stdMysql.MySQLError:
-		switch err.Number {
-		case 1213, 2006, 2003, 1205, 1146, 1305, 1317, 1047, 1452:
+	var mysqlErr *stdMysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		switch mysqlErr.Number {
+		case 1213, 1205, 2006, 2003, 1047, 1452, 1317, 1146, 1305:
 			return true
 		default:
 			return false
 		}
-	default:
-		return false
 	}
+	return false
+}
+
+func checkDeadlockError(err error) (ok bool) {
+	var mysqlErr *stdMysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1213
+	}
+	return false
 }
 
 func Wrap(err error, originalQuery, replaceQuery string, params any) Error {
