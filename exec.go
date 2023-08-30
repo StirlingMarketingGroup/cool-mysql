@@ -14,7 +14,8 @@ import (
 )
 
 // exec executes a query and nothing more
-func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, retries bool, query string, opts marshalOpt, params ...any) (sql.Result, error) {
+// newQuery is true if this is a new query, false if it's a replay of a query in a transaction
+func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, newQuery bool, query string, opts marshalOpt, params ...any) (sql.Result, error) {
 	replacedQuery, normalizedParams, err := db.interpolateParams(query, opts, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to interpolate params: %w", err)
@@ -52,18 +53,38 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, retries bo
 			Error:        err,
 		})
 		if err != nil {
-			if tx != nil && checkDeadlockError(err) {
+			var handleDeadlock func(err error) error
+			handleDeadlock = func(err error) error {
+				if tx == nil || !checkDeadlockError(err) {
+					return nil
+				}
+
+				// if this is a tx replay query already, we don't want it running all of the queries back
+				// again, so we just return the error immediately to left the top level retry loop handle it
+				if !newQuery {
+					return backoff.Permanent(err)
+				}
+
 				// deadlock occurred, which means *every* query in this transaction
 				// was rolled back, so we need to run them all again
 				tx.updates.RLock()
 				defer tx.updates.RUnlock()
 
 				for _, q := range tx.updates.queries {
-					_, err2 := db.exec(conn, ctx, nil, false, q, marshalOptNone)
-					if err2 != nil {
-						err = err2
+					_, err := db.exec(conn, ctx, nil, false, q, marshalOptNone)
+					if err := handleDeadlock(err); err != nil {
+						return err
+					}
+					if err != nil {
+						return err
 					}
 				}
+
+				// return the original deadlock error to resume regular functionality of the retry loop
+				return err
+			}
+			if err := handleDeadlock(err); err != nil {
+				return err
 			}
 
 			if checkRetryError(err) {
@@ -78,11 +99,7 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, retries bo
 		return nil
 	}
 
-	if retries {
-		err = backoff.Retry(exec, backoff.WithContext(b, ctx))
-	} else {
-		err = exec()
-	}
+	backoff.Retry(exec, backoff.WithContext(b, ctx))
 
 	if err != nil {
 		return nil, Error{
@@ -93,7 +110,7 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, retries bo
 		}
 	}
 
-	if tx != nil {
+	if tx != nil && newQuery {
 		tx.updates.Lock()
 		defer tx.updates.Unlock()
 		tx.updates.queries = append(tx.updates.queries, replacedQuery)
