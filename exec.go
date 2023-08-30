@@ -59,13 +59,11 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, retries bo
 				defer tx.updates.RUnlock()
 
 				for _, q := range tx.updates.queries {
-					_, err := db.exec(conn, ctx, nil, false, q, marshalOptNone)
-					if err != nil {
-						return err
+					_, err2 := db.exec(conn, ctx, nil, false, q, marshalOptNone)
+					if err2 != nil {
+						err = err2
 					}
 				}
-
-				return err
 			}
 
 			if checkRetryError(err) {
