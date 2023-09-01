@@ -85,7 +85,7 @@ type FinishedFunc func(cached bool, replacedQuery string, params Params, execDur
 
 // HandleRedisError is executed on a redis error, so it can be handled by the user
 // return false to let the function return the error, or return to let the function continue executing despite the redis error
-type HandleRedisError func(err error) bool
+type HandleRedisError func(err error) error
 
 func (db *Database) callLog(detail LogDetail) {
 	if db.Log != nil {

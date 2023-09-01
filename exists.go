@@ -80,11 +80,10 @@ func (db *Database) exists(conn commander, ctx context.Context, query string, ca
 			defer unlock()
 		} else if err != nil {
 			err = fmt.Errorf("failed to get data from redis: %w", err)
-			ok := false
 			if db.HandleRedisError != nil {
-				ok = db.HandleRedisError(err)
+				err = db.HandleRedisError(err)
 			}
-			if !ok {
+			if err != nil {
 				return
 			}
 		} else {
