@@ -99,8 +99,7 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, newQuery b
 		return nil
 	}
 
-	backoff.Retry(exec, backoff.WithContext(b, ctx))
-
+	err = backoff.Retry(exec, backoff.WithContext(b, ctx))
 	if err != nil {
 		return nil, Error{
 			Err:           err,
