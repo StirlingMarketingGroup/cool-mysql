@@ -391,6 +391,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 
 	if valuerFuncs != nil {
 		fn, ok := valuerFuncs[pv.Type()]
+		pv := pv
 		if !ok {
 			fn, ok = valuerFuncs[reflectUnwrapType(pv.Type())]
 			pv = reflectUnwrap(pv)
