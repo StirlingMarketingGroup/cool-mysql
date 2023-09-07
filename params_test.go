@@ -1,11 +1,13 @@
 package mysql
 
 import (
+	"database/sql/driver"
 	"encoding/hex"
 	"reflect"
 	"testing"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/shopspring/decimal"
 )
 
@@ -173,7 +175,7 @@ func TestInterpolateParams(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotReplacedQuery, gotNormalizedParams, err := InterpolateParams(tt.args.query, nil, tt.args.params...)
+			gotReplacedQuery, gotNormalizedParams, err := InterpolateParams(tt.args.query, nil, nil, tt.args.params...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("InterpolateParams() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -262,8 +264,9 @@ func Test_parseName(t *testing.T) {
 
 func Test_marshal(t *testing.T) {
 	type args struct {
-		x   any
-		opt marshalOpt
+		x           any
+		opt         marshalOpt
+		valuerFuncs map[reflect.Type]reflect.Value
 	}
 	tests := []struct {
 		name    string
@@ -380,10 +383,49 @@ func Test_marshal(t *testing.T) {
 			},
 			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
 		},
+		{
+			name: "civil date",
+			args: args{
+				x: civil.Date{Year: 2020, Month: 1, Day: 1},
+				valuerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf(civil.Date{}): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
+						return d.In(time.UTC), nil
+					}),
+				},
+			},
+			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
+		},
+		{
+			name: "civil date ptr",
+			args: args{
+				x: p(civil.Date{Year: 2020, Month: 1, Day: 1}),
+				valuerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+						return d.In(time.UTC), nil
+					}),
+				},
+			},
+			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
+		},
+		{
+			name: "civil date nil ptr",
+			args: args{
+				x: (*civil.Date)(nil),
+				valuerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+						if d == nil {
+							return nil, nil
+						}
+						return d.In(time.UTC), nil
+					}),
+				},
+			},
+			want: []byte("null"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := marshal(tt.args.x, tt.args.opt)
+			got, err := marshal(tt.args.x, tt.args.opt, tt.args.valuerFuncs)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("marshal() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -481,7 +523,7 @@ func Test_execTemplate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := execTemplate(tt.args.q, tt.args.params, nil)
+			got, err := execTemplate(tt.args.q, tt.args.params, nil, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("execTemplate() error = %v, wantErr %v", err, tt.wantErr)
 				return

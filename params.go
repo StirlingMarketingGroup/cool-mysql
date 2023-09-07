@@ -54,18 +54,18 @@ func normalizeParams(caseSensitive bool, params ...Params) Params {
 // have to specify params if there aren't any, but each param will
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
-func InterpolateParams(query string, tmplFuncs template.FuncMap, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, marshalOptNone, tmplFuncs, params...)
+func InterpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	return interpolateParams(query, marshalOptNone, tmplFuncs, valuerFuncs, params...)
 }
 
-func interpolateParams(query string, opts marshalOpt, tmplFuncs template.FuncMap, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+func interpolateParams(query string, opts marshalOpt, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
 	if strings.Contains(query, "{{") {
 		convertedParams := make([]Params, 0, len(params))
 		for _, p := range params {
 			convertedParams = append(convertedParams, convertToParams("param", p))
 		}
 
-		query, err = execTemplate(query, convertToParams("params", normalizeParams(true, convertedParams...)), tmplFuncs)
+		query, err = execTemplate(query, convertToParams("params", normalizeParams(true, convertedParams...)), tmplFuncs, valuerFuncs)
 		if err != nil {
 			return "", nil, err
 		}
@@ -115,7 +115,7 @@ func interpolateParams(query string, opts marshalOpt, tmplFuncs template.FuncMap
 		case queryTokenKindParam:
 			k := strings.ToLower(t.string[2:])
 			if v, ok := normalizedParams[k]; ok {
-				b, err := marshal(v, 0)
+				b, err := marshal(v, 0, valuerFuncs)
 				if err != nil {
 					return "", nil, err
 				}
@@ -283,8 +283,8 @@ func parseQuery(query string) []queryToken {
 	return queryTokens
 }
 
-func Marshal(x any) ([]byte, error) {
-	return marshal(x, 0)
+func Marshal(x any, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
+	return marshal(x, 0, valuerFuncs)
 }
 
 type marshalOpt uint
@@ -298,7 +298,7 @@ const (
 // marshal returns the interpolated param, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func marshal(x any, opts marshalOpt) ([]byte, error) {
+func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
 	switch v := x.(type) {
 	case bool:
 		if !v {
@@ -367,7 +367,7 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 	v := reflect.ValueOf(x)
 	if v.IsValid() && (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) {
 		if v := v.Elem(); v.IsValid() {
-			return marshal(v.Interface(), opts)
+			return marshal(v.Interface(), opts, valuerFuncs)
 		}
 	}
 
@@ -389,6 +389,21 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 		pv.Elem().Set(v)
 	}
 
+	if valuerFuncs != nil {
+		fn, ok := valuerFuncs[pv.Type()]
+		if !ok {
+			fn, ok = valuerFuncs[reflectUnwrapType(pv.Type())]
+			pv = reflectUnwrap(pv)
+		}
+		if ok {
+			returns := fn.Call([]reflect.Value{pv})
+			if err := returns[1].Interface(); err != nil {
+				return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
+			}
+			return marshal(returns[0].Interface(), opts, valuerFuncs)
+		}
+	}
+
 	if v, ok := pv.Interface().(driver.Valuer); ok {
 		if pv.IsNil() {
 			// but, if the pointer is nil and we try to call a value method, we get a dereference panic
@@ -403,7 +418,7 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call Value on driver.Valuer: %w", err)
 		}
-		return marshal(v, opts)
+		return marshal(v, opts, valuerFuncs)
 	}
 
 	if vs, ok := pv.Interface().(Valueser); ok {
@@ -417,7 +432,7 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call MySQLValues on mysql.MySQLValues: %w", err)
 		}
-		return marshal(vs, opts)
+		return marshal(vs, opts, valuerFuncs)
 	}
 
 	if isNil(x) {
@@ -427,27 +442,27 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 	k := v.Kind()
 	switch k {
 	case reflect.Bool:
-		return marshal(v.Bool(), opts)
+		return marshal(v.Bool(), opts, valuerFuncs)
 	case reflect.String:
-		return marshal(v.String(), opts)
+		return marshal(v.String(), opts, valuerFuncs)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return marshal(v.Int(), opts)
+		return marshal(v.Int(), opts, valuerFuncs)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return marshal(v.Uint(), opts)
+		return marshal(v.Uint(), opts, valuerFuncs)
 	case reflect.Complex64, reflect.Complex128:
-		return marshal(v.Complex(), opts)
+		return marshal(v.Complex(), opts, valuerFuncs)
 	case reflect.Float32, reflect.Float64:
-		return marshal(v.Float(), opts)
+		return marshal(v.Float(), opts, valuerFuncs)
 	case reflect.Struct, reflect.Map:
 		j, err := json.Marshal(x)
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to marshal struct to json: %w", err)
 		}
 
-		return marshal(json.RawMessage(j), opts)
+		return marshal(json.RawMessage(j), opts, valuerFuncs)
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return marshal(v.Bytes(), opts)
+			return marshal(v.Bytes(), opts, valuerFuncs)
 		}
 
 		if opts&marshalOptJSONSlice != 0 {
@@ -456,7 +471,7 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 				return nil, fmt.Errorf("cool-mysql: failed to marshal slice to json: %w", err)
 			}
 
-			return marshal(json.RawMessage(j), opts)
+			return marshal(json.RawMessage(j), opts, valuerFuncs)
 		}
 
 		buf := new(bytes.Buffer)
@@ -474,7 +489,7 @@ func marshal(x any, opts marshalOpt) ([]byte, error) {
 				buf.WriteByte(',')
 			}
 
-			b, err := marshal(v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens)
+			b, err := marshal(v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens, valuerFuncs)
 			if err != nil {
 				return nil, err
 			}
@@ -578,9 +593,20 @@ func parseName(s string) string {
 	return backtickReplacer.Replace(s)
 }
 
-func execTemplate(q string, params Params, addlTmplFuncs template.FuncMap) (string, error) {
+func execTemplate(q string, params Params, addlTmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value) (string, error) {
 	if !strings.Contains(q, "{{") {
 		return q, nil
+	}
+
+	tmplFuncs := template.FuncMap{
+		"marshal": func(x any) (string, error) {
+			b, err := marshal(x, 0, valuerFuncs)
+			if err != nil {
+				return "", err
+			}
+
+			return string(b), nil
+		},
 	}
 
 	tmpl, err := template.New("query").Funcs(tmplFuncs).Funcs(addlTmplFuncs).Option("missingkey=error").Parse(q)

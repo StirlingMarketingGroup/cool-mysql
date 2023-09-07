@@ -213,7 +213,7 @@ DUPE_KEY_SEARCH:
 
 			v := r.Interface()
 
-			b, err := marshal(v, marshalOptJSONSlice)
+			b, err := marshal(v, marshalOptJSONSlice, in.db.valuerFuncs)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}

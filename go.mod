@@ -3,6 +3,7 @@ module github.com/StirlingMarketingGroup/cool-mysql
 go 1.19
 
 require (
+	cloud.google.com/go v0.110.7
 	github.com/cenkalti/backoff/v4 v4.2.1
 	github.com/fatih/structtag v1.2.0
 	github.com/go-redsync/redsync/v4 v4.8.1

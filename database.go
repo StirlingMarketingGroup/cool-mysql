@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"sync"
 	"text/template"
@@ -46,7 +47,8 @@ type Database struct {
 	Logger                      *zap.Logger
 	DisableUnusedColumnWarnings bool
 
-	tmplFuncs template.FuncMap
+	tmplFuncs   template.FuncMap
+	valuerFuncs map[reflect.Type]reflect.Value
 }
 
 // Clone returns a copy of the db with the same connections
@@ -192,6 +194,22 @@ func (db *Database) AddTemplateFuncs(funcs template.FuncMap) {
 
 	for k, v := range funcs {
 		db.tmplFuncs[k] = v
+	}
+}
+
+func (db *Database) AddValuerFuncs(funcs ...any) {
+	for _, f := range funcs {
+		r := reflect.ValueOf(f)
+		rt := r.Type()
+		if !isValuerFunc(rt) {
+			panic(fmt.Errorf("invalid valuer func: %T", f))
+		}
+
+		if db.valuerFuncs == nil {
+			db.valuerFuncs = make(map[reflect.Type]reflect.Value)
+		}
+
+		db.valuerFuncs[rt.In(0)] = r
 	}
 }
 
@@ -345,9 +363,9 @@ func (db *Database) UpsertContext(ctx context.Context, insert string, uniqueColu
 }
 
 func (db *Database) InterpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return InterpolateParams(query, db.tmplFuncs, params...)
+	return InterpolateParams(query, db.tmplFuncs, db.valuerFuncs, params...)
 }
 
 func (db *Database) interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, opts, db.tmplFuncs, params...)
+	return interpolateParams(query, opts, db.tmplFuncs, db.valuerFuncs, params...)
 }
