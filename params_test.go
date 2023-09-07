@@ -422,6 +422,45 @@ func Test_marshal(t *testing.T) {
 			},
 			want: []byte("null"),
 		},
+		{
+			name: "civil date with ptr func",
+			args: args{
+				x: civil.Date{Year: 2020, Month: 1, Day: 1},
+				valuerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+						if d == nil {
+							return nil, nil
+						}
+						return d.String(), nil
+					}),
+				},
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`2020-01-01`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "civil date ptr with value func",
+			args: args{
+				x: &civil.Date{Year: 2020, Month: 1, Day: 1},
+				valuerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf(civil.Date{}): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
+						return d.String(), nil
+					}),
+				},
+			},
+			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`2020-01-01`)) + " collate utf8mb4_unicode_ci"),
+		},
+		{
+			name: "nil civil date ptr with value func",
+			args: args{
+				x: (*civil.Date)(nil),
+				valuerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf(civil.Date{}): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
+						return d.String(), nil
+					}),
+				},
+			},
+			want: []byte("null"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
