@@ -5,6 +5,7 @@ go 1.19
 require (
 	cloud.google.com/go v0.110.7
 	github.com/cenkalti/backoff/v4 v4.2.1
+	github.com/davecgh/go-spew v1.1.1
 	github.com/fatih/structtag v1.2.0
 	github.com/go-redsync/redsync/v4 v4.8.1
 	github.com/go-sql-driver/mysql v1.7.1

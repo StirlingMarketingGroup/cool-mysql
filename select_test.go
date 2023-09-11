@@ -2,12 +2,14 @@ package mysql
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"os"
 	"reflect"
 	"testing"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/shopspring/decimal"
 )
 
@@ -40,6 +42,30 @@ func getTestDatabase(t *testing.T) *Database {
 
 func Test_query(t *testing.T) {
 	db := getTestDatabase(t)
+	db.AddScannerFuncs(func(dest *civil.Date, src any) error {
+		switch v := src.(type) {
+		case []byte:
+			if v == nil {
+				*dest = civil.Date{}
+				return nil
+			}
+			var err error
+			*dest, err = civil.ParseDate(string(v))
+			return err
+		case string:
+			var err error
+			*dest, err = civil.ParseDate(v)
+			return err
+		case time.Time:
+			*dest = civil.DateOf(v)
+			return nil
+		case nil:
+			*dest = civil.Date{}
+			return nil
+		default:
+			return fmt.Errorf("invalid type to scan into civil.Date: %T", src)
+		}
+	})
 
 	type args struct {
 		db            *Database
@@ -158,6 +184,132 @@ func Test_query(t *testing.T) {
 				},
 			}),
 		},
+		{
+			name: "decimal",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(decimal.Decimal{}),
+				query:         "SELECT '1.23'",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(decimal.RequireFromString("1.23")),
+		},
+		{
+			name: "decimal ptr",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(&decimal.Decimal{}),
+				query:         "SELECT '1.23'",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(p(decimal.RequireFromString("1.23"))),
+		},
+		{
+			name: "decimal in struct",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(struct{ Decimal decimal.Decimal }{}),
+				query:         "SELECT '1.23'`Decimal`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(struct{ Decimal decimal.Decimal }{decimal.RequireFromString("1.23")}),
+		},
+		{
+			name: "decimal ptr in struct",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(struct{ Decimal *decimal.Decimal }{}),
+				query:         "SELECT '1.23'`Decimal`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(struct{ Decimal *decimal.Decimal }{p(decimal.RequireFromString("1.23"))}),
+		},
+		{
+			name: "civil date",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(civil.Date{}),
+				query:         "SELECT '2020-01-01'",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(civil.Date{Year: 2020, Month: 1, Day: 1}),
+		},
+		{
+			name: "civil date ptr",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(&civil.Date{}),
+				query:         "SELECT '2020-01-01'",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(&civil.Date{Year: 2020, Month: 1, Day: 1}),
+		},
+		{
+			name: "civil date from nil",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(civil.Date{}),
+				query:         "SELECT null",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(civil.Date{}),
+		},
+		{
+			name: "civil date in struct",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(struct{ Date civil.Date }{}),
+				query:         "SELECT '2020-01-01' `Date`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(struct{ Date civil.Date }{civil.Date{Year: 2020, Month: 1, Day: 1}}),
+		},
+		{
+			name: "civil date ptr in struct",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(struct{ Date *civil.Date }{}),
+				query:         "SELECT '2020-01-01' `Date`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(struct{ Date *civil.Date }{&civil.Date{Year: 2020, Month: 1, Day: 1}}),
+		},
 	}
 
 	for _, tt := range tests {
@@ -175,7 +327,8 @@ func Test_query(t *testing.T) {
 
 func Test_isMultiValueElement(t *testing.T) {
 	type args struct {
-		t reflect.Type
+		t            reflect.Type
+		scannerFuncs map[reflect.Type]reflect.Value
 	}
 	tests := []struct {
 		name string
@@ -247,11 +400,139 @@ func Test_isMultiValueElement(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "civil date w/o scanner func",
+			args: args{
+				t: reflect.TypeOf(civil.Date{}),
+			},
+			want: true,
+		},
+		{
+			name: "civil date w/ scanner func",
+			args: args{
+				t: reflect.TypeOf(civil.Date{}),
+				scannerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+						return nil, nil
+					}),
+				},
+			},
+			want: false,
+		},
+		{
+			name: "civil date ptr w/o scanner func",
+			args: args{
+				t: reflect.TypeOf(&civil.Date{}),
+			},
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isMultiValueElement(tt.args.t); got != tt.want {
+			if got := isMultiValueElement(tt.args.t, tt.args.scannerFuncs); got != tt.want {
 				t.Errorf("isMultiValueElement() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_getElementTypeFromDest(t *testing.T) {
+	type args struct {
+		destRef      reflect.Value
+		scannerFuncs map[reflect.Type]reflect.Value
+	}
+	tests := []struct {
+		name         string
+		args         args
+		wantT        reflect.Type
+		wantMultiRow bool
+	}{
+		{
+			name: "slice",
+			args: args{
+				destRef: reflect.ValueOf(&[]int{}),
+			},
+			wantT:        reflect.TypeOf(int(0)),
+			wantMultiRow: true,
+		},
+		{
+			name: "slice of slices",
+			args: args{
+				destRef: reflect.ValueOf(&[][]int{}),
+			},
+			wantT:        reflect.TypeOf([]int{}),
+			wantMultiRow: true,
+		},
+		{
+			name: "int",
+			args: args{
+				destRef: reflect.ValueOf(p(int(0))),
+			},
+			wantT:        reflect.TypeOf(int(0)),
+			wantMultiRow: false,
+		},
+		{
+			name: "time",
+			args: args{
+				destRef: reflect.ValueOf(p(time.Time{})),
+			},
+			wantT:        reflect.TypeOf(time.Time{}),
+			wantMultiRow: false,
+		},
+		{
+			name: "decimal",
+			args: args{
+				destRef: reflect.ValueOf(p(decimal.Decimal{})),
+			},
+			wantT:        reflect.TypeOf(decimal.Decimal{}),
+			wantMultiRow: false,
+		},
+		{
+			name: "chan",
+			args: args{
+				destRef: reflect.ValueOf(p(make(chan int))),
+			},
+			wantT:        reflect.TypeOf(int(0)),
+			wantMultiRow: true,
+		},
+		{
+			name: "civil date",
+			args: args{
+				destRef: reflect.ValueOf(p(civil.Date{})),
+				scannerFuncs: map[reflect.Type]reflect.Value{
+					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date, src any) error {
+						return nil
+					}),
+				},
+			},
+			wantT:        reflect.TypeOf(civil.Date{}),
+			wantMultiRow: false,
+		},
+		{
+			name: "civil date w/o scanner func",
+			args: args{
+				destRef: reflect.ValueOf(p(civil.Date{})),
+			},
+			wantT:        reflect.TypeOf(civil.Date{}),
+			wantMultiRow: false,
+		},
+		{
+			name: "civil date ptr w/o scanner func",
+			args: args{
+				destRef: reflect.ValueOf(p(&civil.Date{})),
+			},
+			wantT:        reflect.TypeOf(&civil.Date{}),
+			wantMultiRow: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotT, gotMultiRow := getElementTypeFromDest(tt.args.destRef, tt.args.scannerFuncs)
+			if !reflect.DeepEqual(gotT, tt.wantT) {
+				t.Errorf("getElementTypeFromDest() gotT = %v, want %v", gotT, tt.wantT)
+			}
+			if gotMultiRow != tt.wantMultiRow {
+				t.Errorf("getElementTypeFromDest() gotMultiRow = %v, want %v", gotMultiRow, tt.wantMultiRow)
 			}
 		})
 	}

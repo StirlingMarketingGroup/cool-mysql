@@ -196,7 +196,7 @@ DUPE_KEY_SEARCH:
 		rowBuffered = false
 	}
 
-	multiCol := isMultiColumn(rt)
+	multiCol := isMultiColumn(rt, in.db.valuerFuncs)
 
 	buildRow := func(row reflect.Value) (string, error) {
 		rowBuf.Reset()

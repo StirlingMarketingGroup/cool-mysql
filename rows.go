@@ -23,7 +23,7 @@ type Rows = MapRows
 
 func Value[T any](v any) T {
 	dest := new(T)
-	convertAssignRows(dest, v)
+	convertAssignRows(dest, v, nil)
 
 	return *dest
 }
@@ -94,7 +94,7 @@ func Bytes(v any) []byte {
 
 var errNilPtr = errors.New("destination pointer is nil") // embedded in descriptive error
 
-func convertAssignRows(dest, src any) error {
+func convertAssignRows(dest, src any, scannerFuncs map[reflect.Type]reflect.Value) error {
 	// Common cases, without reflect.
 	switch s := src.(type) {
 	case string:
@@ -230,11 +230,20 @@ func convertAssignRows(dest, src any) error {
 		return nil
 	}
 
+	dpv := reflect.ValueOf(dest)
+
+	if fn, ok := fromScannerFuncs(dpv.Type(), scannerFuncs); ok {
+		err := fn.Call([]reflect.Value{dpv, reflect.ValueOf(src)})[0].Interface()
+		if err != nil {
+			return err.(error)
+		}
+		return nil
+	}
+
 	if scanner, ok := dest.(sql.Scanner); ok {
 		return scanner.Scan(src)
 	}
 
-	dpv := reflect.ValueOf(dest)
 	if dpv.Kind() != reflect.Pointer {
 		return errors.New("destination not a pointer")
 	}
@@ -247,7 +256,7 @@ func convertAssignRows(dest, src any) error {
 	}
 
 	if sv.Kind() == reflect.Ptr && !sv.IsNil() {
-		return convertAssignRows(dest, sv.Elem().Interface())
+		return convertAssignRows(dest, sv.Elem().Interface(), scannerFuncs)
 	}
 
 	dv := reflect.Indirect(dpv)
@@ -278,7 +287,7 @@ func convertAssignRows(dest, src any) error {
 			return nil
 		}
 		dv.Set(reflect.New(dv.Type().Elem()))
-		return convertAssignRows(dv.Interface(), src)
+		return convertAssignRows(dv.Interface(), src, scannerFuncs)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		if src == nil {
 			return fmt.Errorf("converting NULL to %s is unsupported", dv.Kind())

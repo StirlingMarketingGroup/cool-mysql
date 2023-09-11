@@ -389,23 +389,16 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 		pv.Elem().Set(v)
 	}
 
-	if valuerFuncs != nil {
-		fn, ok := valuerFuncs[pv.Type()]
-		pv := pv
-		if !ok {
-			fn, ok = valuerFuncs[reflectUnwrapType(pv.Type())]
-			pv = reflectUnwrap(pv)
-			if pv.Kind() == reflect.Ptr && pv.IsNil() && fn.Type().In(0).Kind() != reflect.Ptr {
-				return []byte("null"), nil
-			}
+	if pv, fn, ok := fromValuerFuncs(pv, valuerFuncs); ok {
+		if pv.Kind() == reflect.Ptr && pv.IsNil() && fn.Type().In(0).Kind() != reflect.Ptr {
+			return []byte("null"), nil
 		}
-		if ok {
-			returns := fn.Call([]reflect.Value{pv})
-			if err := returns[1].Interface(); err != nil {
-				return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
-			}
-			return marshal(returns[0].Interface(), opts, valuerFuncs)
+
+		returns := fn.Call([]reflect.Value{pv})
+		if err := returns[1].Interface(); err != nil {
+			return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
 		}
+		return marshal(returns[0].Interface(), opts, valuerFuncs)
 	}
 
 	if v, ok := pv.Interface().(driver.Valuer); ok {

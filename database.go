@@ -47,8 +47,9 @@ type Database struct {
 	Logger                      *zap.Logger
 	DisableUnusedColumnWarnings bool
 
-	tmplFuncs   template.FuncMap
-	valuerFuncs map[reflect.Type]reflect.Value
+	tmplFuncs    template.FuncMap
+	valuerFuncs  map[reflect.Type]reflect.Value
+	scannerFuncs map[reflect.Type]reflect.Value
 }
 
 // Clone returns a copy of the db with the same connections
@@ -210,6 +211,22 @@ func (db *Database) AddValuerFuncs(funcs ...any) {
 		}
 
 		db.valuerFuncs[rt.In(0)] = r
+	}
+}
+
+func (db *Database) AddScannerFuncs(funcs ...any) {
+	for _, f := range funcs {
+		r := reflect.ValueOf(f)
+		rt := r.Type()
+		if !isScannerFunc(rt) {
+			panic(fmt.Errorf("invalid scanner func: %T", f))
+		}
+
+		if db.scannerFuncs == nil {
+			db.scannerFuncs = make(map[reflect.Type]reflect.Value)
+		}
+
+		db.scannerFuncs[rt.In(0)] = r
 	}
 }
 

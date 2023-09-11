@@ -84,9 +84,12 @@ func isMultiRow(t reflect.Type) bool {
 
 // isMultiColumn returns true if the value should be interpreted as multiple values.
 // Expects an unwrapped reflect type.
-func isMultiColumn(t reflect.Type) bool {
+func isMultiColumn(t reflect.Type, valuerFuncs map[reflect.Type]reflect.Value) bool {
 	if t == timeType ||
-		reflect.New(t).Type().Implements(valuerType) {
+		reflect.PointerTo(t).Implements(valuerType) {
+		return false
+	}
+	if _, _, ok := fromValuerFuncs(reflect.New(t), valuerFuncs); ok {
 		return false
 	}
 

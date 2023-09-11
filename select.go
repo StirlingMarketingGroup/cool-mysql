@@ -52,7 +52,7 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 	destRef := reflect.ValueOf(dest)
 	destKind := reflect.Indirect(destRef).Kind()
 
-	t, multiRow := getElementTypeFromDest(destRef)
+	t, multiRow := getElementTypeFromDest(destRef, db.scannerFuncs)
 	ptrElements := t.Kind() == reflect.Pointer
 	if ptrElements {
 		t = t.Elem()
@@ -230,7 +230,7 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 		}
 	}
 
-	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns)
+	ptrs, jsonFields, customScannerFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns, db.scannerFuncs)
 	if err != nil {
 		return err
 	}
@@ -245,7 +245,7 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 			el.Elem().Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
 		}
 
-		updateElementPtrs(el.Elem(), &ptrs, jsonFields, columns, fieldsMap)
+		updateElementPtrs(el.Elem(), &ptrs, jsonFields, customScannerFields, columns, fieldsMap, db.scannerFuncs)
 
 		err = rows.Scan(ptrs...)
 		if err != nil {
@@ -264,20 +264,35 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 		}
 
 		for _, jsonField := range jsonFields {
-			if len(jsonField.j) == 0 {
+			if len(jsonField.b) == 0 {
 				continue
 			}
 
 			if !isStruct {
-				err = json.Unmarshal(jsonField.j, el.Interface())
+				err = json.Unmarshal(jsonField.b, el.Interface())
 				if err != nil {
 					return fmt.Errorf("failed to unmarshal json into dest: %w", err)
 				}
 			} else {
 				f := el.Elem().FieldByIndex(jsonField.index)
-				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
+				err = json.Unmarshal(jsonField.b, f.Addr().Interface())
 				if err != nil {
 					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", el.Elem().Type().FieldByIndex(jsonField.index).Name, err)
+				}
+			}
+		}
+
+		for _, customScannerField := range customScannerFields {
+			if !isStruct {
+				err = convertAssignRows(el.Interface(), customScannerField.b, db.scannerFuncs)
+				if err != nil {
+					return fmt.Errorf("failed to scan into dest: %w", err)
+				}
+			} else {
+				f := el.Elem().FieldByIndex(customScannerField.index)
+				err = convertAssignRows(f.Addr().Interface(), customScannerField.b, db.scannerFuncs)
+				if err != nil {
+					return fmt.Errorf("failed to scan into struct field %q: %w", el.Elem().Type().FieldByIndex(customScannerField.index).Name, err)
 				}
 			}
 		}
@@ -324,35 +339,45 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 	return nil
 }
 
-func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow bool) {
-	indirectDestRef := reflect.Indirect(destRef)
-	indirectDestRefType := indirectDestRef.Type()
+func getElementTypeFromDest(destRef reflect.Value, scannerFuncs map[reflect.Type]reflect.Value) (t reflect.Type, multiRow bool) {
+	r := reflectUnwrap(destRef)
+	rt := r.Type()
 
-	if !reflect.New(indirectDestRefType).Type().Implements(scannerType) &&
-		indirectDestRefType != timeType &&
-		indirectDestRefType != sliceRowType &&
-		indirectDestRefType != mapRowType {
-		switch k := indirectDestRef.Kind(); k {
+	if scannerFuncs != nil {
+		if _, ok := fromScannerFuncs(rt, scannerFuncs); ok {
+			return rt, false
+		}
+	}
+
+	if !reflect.PointerTo(rt).Implements(scannerType) &&
+		rt != timeType &&
+		rt != sliceRowType &&
+		rt != mapRowType {
+		switch k := r.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice:
-			if !((k == reflect.Array || k == reflect.Slice) && indirectDestRefType.Elem().Kind() == reflect.Uint8) {
-				return indirectDestRefType.Elem(), true
+			if !((k == reflect.Array || k == reflect.Slice) && rt.Elem().Kind() == reflect.Uint8) {
+				return rt.Elem(), true
 			}
 		}
 	}
 
-	if destRef.Kind() == reflect.Func && indirectDestRefType.NumIn() == 1 {
-		return indirectDestRefType.In(0), true
+	if destRef.Kind() == reflect.Func && rt.NumIn() == 1 {
+		return rt.In(0), true
 	}
 
-	return destRef.Type().Elem(), false
+	return rt, false
 }
 
-func isMultiValueElement(t reflect.Type) bool {
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
+func isMultiValueElement(t reflect.Type, scannerFuncs map[reflect.Type]reflect.Value) bool {
+	t = reflectUnwrapType(t)
+
+	if scannerFuncs != nil {
+		if _, ok := fromScannerFuncs(t, scannerFuncs); ok {
+			return false
+		}
 	}
 
-	if !reflect.New(t).Type().Implements(scannerType) && t != timeType {
+	if !reflect.PointerTo(t).Implements(scannerType) && t != timeType {
 		switch k := t.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.Struct:
 			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
@@ -364,14 +389,14 @@ func isMultiValueElement(t reflect.Type) bool {
 	return false
 }
 
-type jsonField struct {
+type bytesField struct {
 	index []int
-	j     []byte
+	b     []byte
 }
 
-func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
-	switch true {
-	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
+func setupElementPtrs(db *Database, t reflect.Type, columns []string, scannerFuncs map[reflect.Type]reflect.Value) (ptrs []any, jsonFields []bytesField, customScannerFields []bytesField, fieldsMap map[string][]int, isStruct bool, err error) {
+	switch {
+	case isMultiValueElement(t, scannerFuncs) && t.Kind() == reflect.Struct:
 		structFieldIndexes := StructFieldIndexes(t)
 
 		fieldsMap = make(map[string][]int, len(structFieldIndexes))
@@ -384,7 +409,7 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 
 			tags, err := structtag.Parse(string(f.Tag))
 			if err != nil {
-				return nil, nil, nil, false, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
+				return nil, nil, nil, nil, false, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
 			}
 
 			name := f.Name
@@ -392,7 +417,7 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
 				name, err = decodeHex(mysqlTag.Name)
 				if err != nil {
-					return nil, nil, nil, false, fmt.Errorf("failed to decode hex in struct tag name %q: %w", mysqlTag.Name, err)
+					return nil, nil, nil, nil, false, fmt.Errorf("failed to decode hex in struct tag name %q: %w", mysqlTag.Name, err)
 				}
 			}
 
@@ -409,27 +434,34 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 			}
 
 			f := t.FieldByIndex(fieldIndex)
-			if isMultiValueElement(f.Type) {
-				jsonFields = append(jsonFields, jsonField{
+			if isMultiValueElement(f.Type, scannerFuncs) {
+				jsonFields = append(jsonFields, bytesField{
+					index: fieldIndex,
+				})
+			} else if scannerFuncExists(f.Type, scannerFuncs) {
+				customScannerFields = append(customScannerFields, bytesField{
 					index: fieldIndex,
 				})
 			}
 		}
-		return make([]any, len(columns)), jsonFields, fieldsMap, true, nil
-	case isMultiValueElement(t):
-		return make([]any, len(columns)), make([]jsonField, 1), nil, false, nil
+		return make([]any, len(columns)), jsonFields, customScannerFields, fieldsMap, true, nil
+	case isMultiValueElement(t, scannerFuncs):
+		return make([]any, len(columns)), make([]bytesField, 1), nil, nil, false, nil
+	case scannerFuncExists(t, scannerFuncs):
+		return make([]any, len(columns)), nil, make([]bytesField, 1), nil, false, nil
 	default:
-		return make([]any, len(columns)), nil, nil, false, nil
+		return make([]any, len(columns)), nil, nil, nil, false, nil
 	}
 }
 
-func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
+func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []bytesField, customScannerFields []bytesField, columns []string, fieldsMap map[string][]int, scannerFuncs map[reflect.Type]reflect.Value) {
 	t := ref.Type()
 	x := new(any)
 
-	switch true {
-	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
+	switch {
+	case isMultiValueElement(t, scannerFuncs) && t.Kind() == reflect.Struct:
 		jsonIndex := 0
+		customScannerFieldsIndex := 0
 		for i, c := range columns {
 			fieldIndex, ok := fieldsMap[c]
 			if !ok {
@@ -438,10 +470,14 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 			}
 
 			f := t.FieldByIndex(fieldIndex)
-			if isMultiValueElement(f.Type) {
-				jsonFields[jsonIndex].j = jsonFields[jsonIndex].j[:0]
-				(*ptrs)[i] = &jsonFields[jsonIndex].j
+			if isMultiValueElement(f.Type, scannerFuncs) {
+				jsonFields[jsonIndex].b = jsonFields[jsonIndex].b[:0]
+				(*ptrs)[i] = &jsonFields[jsonIndex].b
 				jsonIndex++
+			} else if scannerFuncExists(t, scannerFuncs) {
+				customScannerFields[customScannerFieldsIndex].b = customScannerFields[customScannerFieldsIndex].b[:0]
+				(*ptrs)[i] = &customScannerFields[customScannerFieldsIndex].b
+				customScannerFieldsIndex++
 			} else {
 				(*ptrs)[i] = ref.FieldByIndex(fieldIndex).Addr().Interface()
 			}
@@ -464,16 +500,21 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 		for i := 0; i < len(columns); i++ {
 			(*ptrs)[i] = ref.Index(i).Addr().Interface()
 		}
-	case isMultiValueElement(t):
+	case isMultiValueElement(t, scannerFuncs):
 		// this is one element (single column row), but with multiple values, like a map or array.
 		// a struct is also technically a multi value element, but that's handled specially above
 
 		// so the first column from the query is the only one that's kept since we only have a single element
 		// making the first pointer in our slice of ptrs being scanned into a json byte sink
-		(*ptrs)[0] = &jsonFields[0].j
+		(*ptrs)[0] = &jsonFields[0].b
 
 		// and since we don't care about the rest of the column values, each of those will
 		// be scanned into the same dummy interface
+		for i := 1; i < len(columns); i++ {
+			(*ptrs)[i] = x
+		}
+	case scannerFuncExists(t, scannerFuncs):
+		(*ptrs)[0] = &customScannerFields[0].b
 		for i := 1; i < len(columns); i++ {
 			(*ptrs)[i] = x
 		}
