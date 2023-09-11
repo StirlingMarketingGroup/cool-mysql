@@ -311,7 +311,7 @@ DUPE_KEY_SEARCH:
 			chunkStart = time.Now()
 		}
 
-		if in.HandleResult != nil {
+		if in.HandleResult != nil && result != nil {
 			in.HandleResult(result)
 		}
 
