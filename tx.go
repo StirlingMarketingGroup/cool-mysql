@@ -4,8 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/cenkalti/backoff/v4"
+	"github.com/go-sql-driver/mysql"
 )
 
 // Tx is a cool MySQL transaction
@@ -74,17 +80,77 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 
 // Commit commits the transaction
 func (tx *Tx) Commit() error {
-	start := time.Now()
-	err := tx.Tx.Commit()
-	tx.db.callLog(LogDetail{
-		Query:    "commit",
-		Duration: time.Since(start),
-		Tx:       tx.Tx,
-		Attempt:  1,
-		Error:    err,
-	})
+	if tx.db.die {
+		fmt.Println("commit")
+		os.Exit(0)
+	}
 
-	return err
+	start := time.Now()
+
+	var attempt int
+	exec := func() error {
+		attempt++
+		err := tx.Tx.Commit()
+		tx.db.callLog(LogDetail{
+			Query:    "commit",
+			Duration: time.Since(start),
+			Tx:       tx.Tx,
+			Attempt:  attempt,
+			Error:    err,
+		})
+		if err != nil {
+			var handleDeadlock func(err error) error
+			handleDeadlock = func(err error) error {
+				if !checkDeadlockError(err) {
+					return nil
+				}
+
+				// deadlock occurred, which means *every* query in this transaction
+				// was rolled back, so we need to run them all again
+				tx.updates.RLock()
+				defer tx.updates.RUnlock()
+
+				for _, q := range tx.updates.queries {
+					_, err := tx.db.exec(tx.Tx, context.Background(), nil, false, q, marshalOptNone)
+					if err := handleDeadlock(err); err != nil {
+						return err
+					}
+					if err != nil {
+						return err
+					}
+				}
+
+				// return the original deadlock error to resume regular functionality of the retry loop
+				return err
+			}
+			if err := handleDeadlock(err); err != nil {
+				return err
+			}
+
+			if checkRetryError(err) {
+				return err
+			} else if errors.Is(err, mysql.ErrInvalidConn) {
+				return tx.db.Test()
+			} else {
+				return backoff.Permanent(err)
+			}
+		}
+
+		return nil
+	}
+
+	var b = backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = MaxExecutionTime
+	err := backoff.Retry(exec, backoff.WithContext(b, context.Background()))
+	if err != nil {
+		return Error{
+			Err:           err,
+			OriginalQuery: "commit",
+			ReplacedQuery: "commit",
+		}
+	}
+
+	return nil
 }
 
 // Cancel the transaction

@@ -31,8 +31,6 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, newQuery b
 	start := time.Now()
 	var res sql.Result
 
-	var b = backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = MaxExecutionTime
 	var attempt int
 	var rowsAffected int64
 	exec := func() error {
@@ -99,6 +97,8 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, newQuery b
 		return nil
 	}
 
+	var b = backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = MaxExecutionTime
 	err = backoff.Retry(exec, backoff.WithContext(b, ctx))
 	if err != nil {
 		return nil, Error{
