@@ -323,28 +323,28 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: decimal.NewFromFloat(1.23),
 			},
-			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`1.23`)) + " collate utf8mb4_unicode_ci"),
+			want: []byte("1.23"),
 		},
 		{
 			name: "decimal.Decimal ptr",
 			args: args{
 				x: p(decimal.NewFromFloat(1.23)),
 			},
-			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`1.23`)) + " collate utf8mb4_unicode_ci"),
+			want: []byte("1.23"),
 		},
 		{
 			name: "decimal.Decimal ptr zero",
 			args: args{
 				x: p(decimal.Zero),
 			},
-			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`0`)) + " collate utf8mb4_unicode_ci"),
+			want: []byte("0"),
 		},
 		{
 			name: "decimal.Decimal zero",
 			args: args{
 				x: decimal.Zero,
 			},
-			want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`0`)) + " collate utf8mb4_unicode_ci"),
+			want: []byte("0"),
 		},
 		{
 			name: "decimal.Decimal nil ptr",

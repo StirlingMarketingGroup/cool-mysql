@@ -11,6 +11,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // Params are a map of paramterer names to values
@@ -352,6 +354,8 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 			return []byte("null"), nil
 		}
 		return []byte(fmt.Sprintf("convert_tz('%s','UTC',@@session.time_zone)", v.UTC().Format("2006-01-02 15:04:05.000000"))), nil
+	case decimal.Decimal:
+		return []byte(v.String()), nil
 	case json.RawMessage:
 		if v == nil {
 			return []byte("null"), nil
