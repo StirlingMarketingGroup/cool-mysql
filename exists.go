@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/sha3"
 )
 
 // exists efficiently checks if there are any rows in the given query
@@ -51,7 +53,8 @@ func (db *Database) exists(conn commander, ctx context.Context, query string, ca
 		key.WriteByte(':')
 		key.WriteString(strconv.FormatInt(int64(cacheDuration), 10))
 
-		cacheKey = key.String()
+		h := sha3.Sum224([]byte(key.String()))
+		cacheKey = hex.EncodeToString(h[:])
 
 		start := time.Now()
 

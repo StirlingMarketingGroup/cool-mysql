@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
 	"github.com/vmihailenco/msgpack/v5"
+	"golang.org/x/crypto/sha3"
 )
 
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
@@ -107,7 +109,8 @@ func (db *Database) query(conn commander, ctx context.Context, dest any, query s
 		key.WriteByte(':')
 		key.WriteString(strconv.FormatInt(int64(cacheDuration), 10))
 
-		cacheKey = key.String()
+		h := sha3.Sum224([]byte(key.String()))
+		cacheKey = hex.EncodeToString(h[:])
 
 		start := time.Now()
 
