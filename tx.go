@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 )
@@ -96,6 +97,9 @@ func (tx *Tx) Cancel() error {
 
 	start := time.Now()
 	err := tx.Tx.Rollback()
+	if errors.Is(err, sql.ErrTxDone) {
+		err = nil
+	}
 	tx.db.callLog(LogDetail{
 		Query:    "rollback",
 		Duration: time.Since(start),
