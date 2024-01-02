@@ -19,10 +19,10 @@ type Error struct {
 
 // QueryErrorLoggingLength is the size of the query
 // characters that are logged when an error occurs
-var QueryErrorLoggingLength = 1 << 12 // 4kB
+var QueryErrorLoggingLength = getenvInt("COOL_MYSQL_MAX_QUERY_LOG_LENGTH", 1<<12) // 4kB
 
 func (v Error) Error() string {
-	if len(v.ReplacedQuery) > QueryErrorLoggingLength {
+	if QueryErrorLoggingLength > 0 && len(v.ReplacedQuery) > QueryErrorLoggingLength {
 		half := QueryErrorLoggingLength >> 1
 		v.ReplacedQuery = v.ReplacedQuery[:half] + fmt.Sprintf("\n/* %d characters hidden */\n", len(v.ReplacedQuery)-QueryErrorLoggingLength) + v.ReplacedQuery[len(v.ReplacedQuery)-half:]
 	}

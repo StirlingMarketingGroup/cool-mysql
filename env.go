@@ -18,7 +18,18 @@ func getenvInt64(key string, fallback int64) int64 {
 	if value, ok := os.LookupEnv(key); ok {
 		i, err := strconv.ParseInt(value, 10, 64)
 		if err == nil {
-			return int64(i)
+			return i
+		}
+	}
+	return fallback
+}
+
+// getenvInt gets an environment variable with a default int64
+func getenvInt(key string, fallback int) int {
+	if value, ok := os.LookupEnv(key); ok {
+		i, err := strconv.Atoi(value)
+		if err == nil {
+			return i
 		}
 	}
 	return fallback
