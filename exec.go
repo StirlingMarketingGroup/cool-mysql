@@ -71,7 +71,7 @@ func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, newQuery b
 				defer tx.updates.RUnlock()
 
 				for _, q := range tx.updates.queries {
-					_, err := db.exec(conn, ctx, nil, false, q, marshalOptNone)
+					_, err := db.exec(conn, ctx, nil, false, q)
 					if err := handleDeadlock(err); err != nil {
 						return err
 					}

@@ -206,7 +206,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 			}
 
 			if len(updateColumns) != 0 {
-				res, err := in.db.exec(in.conn, ctx, in.tx, true, q, marshalOptJSONSlice, r)
+				res, err := in.db.exec(in.conn, ctx, in.tx, true, q, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to update: %w", err), query, q, r)
 				}
@@ -215,7 +215,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 					goto NEXT
 				}
 			} else {
-				ok, err := in.db.exists(in.conn, ctx, q, 0, marshalOptJSONSlice, r)
+				ok, err := in.db.exists(in.conn, ctx, q, 0, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to check if exists: %w", err), query, q, r)
 				}
