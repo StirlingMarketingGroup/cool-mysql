@@ -269,7 +269,7 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 
 // ExecContext executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return db.exec(db.Writes, ctx, nil, true, query, marshalOptNone, params...)
+	return db.exec(db.Writes, ctx, nil, true, query, params...)
 }
 
 // ExecContext executes a query and nothing more
@@ -336,22 +336,22 @@ func (db *Database) SelectJSONContext(ctx context.Context, dest any, query strin
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) Exists(query string, cache time.Duration, params ...any) (bool, error) {
-	return db.exists(db.Reads, context.Background(), query, cache, marshalOptNone, params...)
+	return db.exists(db.Reads, context.Background(), query, cache, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return db.exists(db.Reads, ctx, query, cache, marshalOptNone, params...)
+	return db.exists(db.Reads, ctx, query, cache, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWrites(query string, cache time.Duration, params ...any) (bool, error) {
-	return db.exists(db.Writes, context.Background(), query, cache, marshalOptNone, params...)
+	return db.exists(db.Writes, context.Background(), query, cache, params...)
 }
 
 // ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return db.exists(db.Writes, ctx, query, cache, marshalOptNone, params...)
+	return db.exists(db.Writes, ctx, query, cache, params...)
 }
 
 func (db *Database) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {
@@ -366,6 +366,6 @@ func (db *Database) InterpolateParams(query string, params ...any) (replacedQuer
 	return InterpolateParams(query, db.tmplFuncs, db.valuerFuncs, params...)
 }
 
-func (db *Database) interpolateParams(query string, opts marshalOpt, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, opts, db.tmplFuncs, db.valuerFuncs, params...)
+func (db *Database) interpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+	return interpolateParams(query, db.tmplFuncs, db.valuerFuncs, params...)
 }

@@ -57,10 +57,10 @@ func normalizeParams(caseSensitive bool, params ...Params) Params {
 // override the values of the previous. If there are 2 maps given,
 // both with the key "ID", the last one will be used
 func InterpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, marshalOptNone, tmplFuncs, valuerFuncs, params...)
+	return interpolateParams(query, tmplFuncs, valuerFuncs, params...)
 }
 
-func interpolateParams(query string, opts marshalOpt, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
 	if strings.Contains(query, "{{") {
 		convertedParams := make([]Params, 0, len(params))
 		for _, p := range params {

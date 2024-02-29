@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -20,6 +21,8 @@ type Tx struct {
 		sync.RWMutex
 		queries []string
 	}
+
+	PostCommitHooks []func() error
 }
 
 type txCancelFunc func() error
@@ -85,6 +88,16 @@ func (tx *Tx) Commit() error {
 		Error:    err,
 	})
 
+	if err == nil {
+		for _, hook := range tx.PostCommitHooks {
+			err = hook()
+			if err != nil {
+				err = fmt.Errorf("post commit hook failed: %w", err)
+				break
+			}
+		}
+	}
+
 	return err
 }
 
@@ -133,7 +146,7 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return tx.db.exec(tx.Tx, ctx, tx, true, query, marshalOptNone, params...)
+	return tx.db.exec(tx.Tx, ctx, tx, true, query, params...)
 }
 
 // ExecContext executes a query and nothing more
@@ -182,12 +195,12 @@ func (tx *Tx) SelectJSONContext(ctx context.Context, dest any, query string, cac
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (tx *Tx) Exists(query string, cache time.Duration, params ...any) (bool, error) {
-	return tx.db.exists(tx.Tx, context.Background(), query, cache, marshalOptNone, params...)
+	return tx.db.exists(tx.Tx, context.Background(), query, cache, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (tx *Tx) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return tx.db.exists(tx.Tx, ctx, query, cache, marshalOptNone, params...)
+	return tx.db.exists(tx.Tx, ctx, query, cache, params...)
 }
 
 func (tx *Tx) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {

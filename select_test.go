@@ -11,7 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func getTestDatabase(t *testing.T) *Database {
+func getTestDatabase() *Database {
 	tz, err := time.LoadLocation(os.Getenv("TZ"))
 	if err != nil {
 		panic(fmt.Sprintf("failed to get current tz: %v", err))
@@ -39,7 +39,7 @@ func getTestDatabase(t *testing.T) *Database {
 }
 
 func Test_query(t *testing.T) {
-	db := getTestDatabase(t)
+	db := getTestDatabase()
 
 	type args struct {
 		db            *Database
