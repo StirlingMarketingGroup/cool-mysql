@@ -90,10 +90,9 @@ func (tx *Tx) Commit() error {
 
 	if err == nil {
 		for _, hook := range tx.PostCommitHooks {
-			err = hook()
+			err := hook()
 			if err != nil {
-				err = fmt.Errorf("post commit hook failed: %w", err)
-				break
+				return fmt.Errorf("post commit hook failed: %w", err)
 			}
 		}
 	}
