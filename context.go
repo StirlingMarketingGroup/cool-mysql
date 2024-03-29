@@ -47,10 +47,15 @@ func NewContextWithTx(ctx context.Context, tx *Tx) context.Context {
 //	tx, commit, cancel, err := GetOrCreateTxFromContext(ctx)
 //	defer cancel()
 //	if err != nil {
-//	  return fmt.Errorf("failed to get or create tx: %w", err)
+//	    return fmt.Errorf("failed to get or create tx: %w", err)
 //	}
 //	ctx = NewContextWithTx(ctx, tx) // if you want to pass tx to other functions
+//
 //	// do something with tx
+//
+//	if err := commit(); err != nil {
+//	    return fmt.Errorf("failed to commit tx: %w", err)
+//	}
 func GetOrCreateTxFromContext(ctx context.Context) (tx *Tx, commit, cancel func() error, err error) {
 	tx = TxFromContext(ctx)
 	if tx == nil {
