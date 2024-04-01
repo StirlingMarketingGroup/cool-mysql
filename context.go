@@ -7,7 +7,7 @@ import (
 
 type key int
 
-var dbKey key
+var dbKey = key(0)
 
 // FromContext returns a *Database from a context.Context
 // or nil if none is present.
@@ -21,7 +21,7 @@ func NewContext(ctx context.Context, db *Database) context.Context {
 	return context.WithValue(ctx, dbKey, db)
 }
 
-var txKey key
+var txKey = key(1)
 
 // TxFromContext returns a *Tx from a context.Context
 // or nil if none is present.
