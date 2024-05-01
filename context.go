@@ -9,30 +9,51 @@ type key int
 
 var dbKey = key(0)
 
-// FromContext returns a *Database from a context.Context
-// or nil if none is present.
-func FromContext(ctx context.Context) *Database {
-	db, _ := ctx.Value(dbKey).(*Database)
-	return db
-}
-
 // NewContext returns a new context.Context with the given *Database
 func NewContext(ctx context.Context, db *Database) context.Context {
 	return context.WithValue(ctx, dbKey, db)
 }
 
+// NewContextWithFunc returns a new context.Context with the given func () *Database
+// This can be useful if you only want to initialize the database when it is actually needed.
+// Combine with sync.OnceValue to ensure the database is only initialized once.
+//
+// Example:
+//
+//	ctx := NewContextWithFunc(context.Background(), sync.OnceValue(func() *Database {
+//		db, err := NewDatabase()
+//		if err != nil {
+//			panic(err)
+//		}
+//		return db
+//	}))
+func NewContextWithFunc(ctx context.Context, f func() *Database) context.Context {
+	return context.WithValue(ctx, dbKey, f)
+}
+
+// FromContext returns a *Database from a context.Context
+// or nil if none is present.
+func FromContext(ctx context.Context) *Database {
+	if f, ok := ctx.Value(dbKey).(func() *Database); ok {
+		return f()
+	}
+
+	db, _ := ctx.Value(dbKey).(*Database)
+	return db
+}
+
 var txKey = key(1)
+
+// NewContextWithTx returns a new context.Context with the given *Tx
+func NewContextWithTx(ctx context.Context, tx *Tx) context.Context {
+	return context.WithValue(ctx, txKey, tx)
+}
 
 // TxFromContext returns a *Tx from a context.Context
 // or nil if none is present.
 func TxFromContext(ctx context.Context) *Tx {
 	tx, _ := ctx.Value(txKey).(*Tx)
 	return tx
-}
-
-// NewContextWithTx returns a new context.Context with the given *Tx
-func NewContextWithTx(ctx context.Context, tx *Tx) context.Context {
-	return context.WithValue(ctx, txKey, tx)
 }
 
 // GetOrCreateTxFromContext returns a *Tx from a context.Context
