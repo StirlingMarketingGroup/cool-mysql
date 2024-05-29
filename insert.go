@@ -14,7 +14,7 @@ import (
 
 type Inserter struct {
 	db   *Database
-	conn commander
+	conn handlerWithContext
 	tx   *Tx
 
 	AfterChunkExec func(start time.Time)
@@ -40,7 +40,7 @@ func (in *Inserter) SetResultHandler(fn func(sql.Result)) *Inserter {
 	return in
 }
 
-func (in *Inserter) SetExecutor(conn commander) *Inserter {
+func (in *Inserter) SetExecutor(conn handlerWithContext) *Inserter {
 	in.conn = conn
 
 	return in

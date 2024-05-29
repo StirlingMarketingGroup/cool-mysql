@@ -168,6 +168,16 @@ func (tx *Tx) Select(dest any, q string, cache time.Duration, params ...any) err
 	return tx.db.query(tx.Tx, context.Background(), dest, q, cache, params...)
 }
 
+func (tx *Tx) SelectRows(q string, cache time.Duration, params ...any) (Rows, error) {
+	var rows Rows
+	err := tx.db.query(tx.Tx, context.Background(), &rows, q, cache, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	return rows, nil
+}
+
 func (tx *Tx) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return tx.db.query(tx.Tx, ctx, dest, q, cache, params...)
 }

@@ -15,7 +15,7 @@ import (
 
 // exec executes a query and nothing more
 // newQuery is true if this is a new query, false if it's a replay of a query in a transaction
-func (db *Database) exec(conn commander, ctx context.Context, tx *Tx, newQuery bool, query string, params ...any) (sql.Result, error) {
+func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, newQuery bool, query string, params ...any) (sql.Result, error) {
 	replacedQuery, normalizedParams, err := db.interpolateParams(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to interpolate params: %w", err)

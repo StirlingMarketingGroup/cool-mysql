@@ -19,7 +19,7 @@ import (
 )
 
 // exists efficiently checks if there are any rows in the given query
-func (db *Database) exists(conn commander, ctx context.Context, query string, cacheDuration time.Duration, params ...any) (exists bool, err error) {
+func (db *Database) exists(conn handlerWithContext, ctx context.Context, query string, cacheDuration time.Duration, params ...any) (exists bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

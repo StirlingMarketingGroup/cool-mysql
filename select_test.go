@@ -43,7 +43,7 @@ func Test_query(t *testing.T) {
 
 	type args struct {
 		db            *Database
-		conn          commander
+		conn          handlerWithContext
 		ctx           context.Context
 		dest          any
 		query         string

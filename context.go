@@ -91,3 +91,10 @@ func GetOrCreateTxFromContext(ctx context.Context) (tx *Tx, commit, cancel func(
 	}
 	return tx, func() error { return nil }, func() error { return nil }, nil
 }
+
+func TxOrDatabaseFromContext(ctx context.Context) Handler {
+	if tx := TxFromContext(ctx); tx != nil {
+		return tx
+	}
+	return FromContext(ctx)
+}

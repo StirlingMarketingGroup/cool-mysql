@@ -24,7 +24,7 @@ import (
 
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
 
-func (db *Database) query(conn commander, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
+func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
