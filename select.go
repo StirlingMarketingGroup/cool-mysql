@@ -163,7 +163,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			}
 
 			for i := 0; i < l; i++ {
-				err = sendElement(cacheSlice.Index(i).Addr())
+				err = sendElement(cacheSlice.Index(i))
 				if err != nil {
 					return err
 				}
