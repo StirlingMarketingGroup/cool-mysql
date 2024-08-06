@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"reflect"
@@ -41,6 +42,12 @@ func getTestDatabase() *Database {
 func Test_query(t *testing.T) {
 	db := getTestDatabase()
 
+	var timeVal time.Time
+	var timePtr *time.Time
+
+	var decimalVal decimal.Decimal
+	var decimalPtr *decimal.Decimal
+
 	type args struct {
 		db            *Database
 		conn          handlerWithContext
@@ -62,7 +69,7 @@ func Test_query(t *testing.T) {
 				db:            db,
 				conn:          db.Writes,
 				ctx:           context.Background(),
-				dest:          p(time.Time{}),
+				dest:          &timeVal,
 				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)",
 				cacheDuration: 0,
 				params:        nil,
@@ -71,18 +78,134 @@ func Test_query(t *testing.T) {
 			wantDest: p(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
-			name: "decimal",
+			name: "time null",
 			args: args{
 				db:            db,
 				conn:          db.Writes,
 				ctx:           context.Background(),
-				dest:          p(decimal.Decimal{}),
-				query:         "SELECT '1.23'",
+				dest:          &timeVal,
+				query:         "SELECT null",
 				cacheDuration: 0,
 				params:        nil,
 			},
 			wantErr:  false,
-			wantDest: p(decimal.RequireFromString("1.23")),
+			wantDest: p(time.Time{}),
+		},
+		{
+			name: "time ptr",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &timePtr,
+				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(p(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))),
+		},
+		{
+			name: "time ptr nil",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &timePtr,
+				query:         "SELECT null",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p((*time.Time)(nil)),
+		},
+		{
+			name: "null time",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(sql.NullTime{}),
+				query:         "SELECT null",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(sql.NullTime{}),
+		},
+		{
+			name: "time ptr ptr",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(&timePtr),
+				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(p(p(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)))),
+		},
+		{
+			name: "time ptr ptr nil",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          p(&timePtr),
+				query:         "SELECT null",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p((**time.Time)(nil)),
+		},
+		{
+			name: "struct times",
+			args: args{
+				db:   db,
+				conn: db.Writes,
+				ctx:  context.Background(),
+				dest: p(struct {
+					Time1 time.Time  `mysql:"Time1"`
+					Time2 *time.Time `mysql:"Time2"`
+				}{}),
+				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)`Time1`,cast('2021-01-01 00:00:00' as datetime)`Time2`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr: false,
+			wantDest: p(struct {
+				Time1 time.Time  `mysql:"Time1"`
+				Time2 *time.Time `mysql:"Time2"`
+			}{
+				Time1: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+				Time2: p(time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)),
+			}),
+		},
+		{
+			name: "struct times w/ nil",
+			args: args{
+				db:   db,
+				conn: db.Writes,
+				ctx:  context.Background(),
+				dest: p(struct {
+					Time1 time.Time  `mysql:"Time1"`
+					Time2 *time.Time `mysql:"Time2"`
+				}{}),
+				query:         "SELECT null`Time1`,null`Time2`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr: false,
+			wantDest: p(struct {
+				Time1 time.Time  `mysql:"Time1"`
+				Time2 *time.Time `mysql:"Time2"`
+			}{
+				Time1: time.Time{},
+				Time2: nil,
+			}),
 		},
 		{
 			name: "string",
@@ -157,6 +280,132 @@ func Test_query(t *testing.T) {
 					[]byte("d"),
 				},
 			}),
+		},
+		{
+			name: "decimal",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &decimalVal,
+				query:         "SELECT '1.23'",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(decimal.RequireFromString("1.23")),
+		},
+		{
+			name: "null decimal to value",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &decimalVal,
+				query:         "SELECT null",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(decimal.Decimal{}),
+		},
+		{
+			name: "decimal ptr",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &decimalPtr,
+				query:         "SELECT '1.23'",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(p(decimal.RequireFromString("1.23"))),
+		},
+		{
+			name: "null decimal to ptr",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &decimalPtr,
+				query:         "SELECT null",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p((*decimal.Decimal)(nil)),
+		},
+		{
+			name: "strings slice",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &[]string{},
+				query:         "select * from json_table('[ {\"hello\": \"world\"},{\"hello\": null},{\"hello\": \"bar\"} ]', '$[*]' COLUMNS( hello varchar(255) PATH '$.hello' ERROR ON ERROR )) a;",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p([]string{"world", "", "bar"}),
+		},
+		{
+			name: "strings ptrs slice",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &[]*string{},
+				query:         "select * from json_table('[ {\"hello\": \"world\"},{\"hello\": null},{\"hello\": \"bar\"} ]', '$[*]' COLUMNS( hello varchar(255) PATH '$.hello' ERROR ON ERROR )) a;",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p([]*string{p("world"), nil, p("bar")}),
+		},
+		{
+			name: "json array",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &struct{ Strings []string }{},
+				query:         "select json_array('world',null,'bar') `Strings`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: &struct{ Strings []string }{Strings: []string{"world", "", "bar"}},
+		},
+		{
+			name: "json array slice",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &[]struct{ Strings []string }{},
+				query:         "select json_array('world',null,'bar') `Strings`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: &[]struct{ Strings []string }{{Strings: []string{"world", "", "bar"}}},
+		},
+		{
+			name: "json array ptr slice",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &[]struct{ Strings *[]string }{},
+				query:         "select json_array('world',null,'bar') `Strings`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: &[]struct{ Strings *[]string }{{Strings: &[]string{"world", "", "bar"}}},
 		},
 	}
 

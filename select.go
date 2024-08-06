@@ -55,16 +55,12 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	destKind := reflect.Indirect(destRef).Kind()
 
 	t, multiRow := getElementTypeFromDest(destRef)
-	ptrElements := t.Kind() == reflect.Pointer
-	if ptrElements {
-		t = t.Elem()
+	indirectType := t
+	if t.Kind() == reflect.Ptr {
+		indirectType = t.Elem()
 	}
 
 	sendElement := func(el reflect.Value) error {
-		if !ptrElements {
-			el = reflect.Indirect(el)
-		}
-
 		if multiRow {
 			switch destKind {
 			case reflect.Chan:
@@ -233,36 +229,44 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		}
 	}
 
-	ptrs, jsonFields, fieldsMap, isStruct, err := setupElementPtrs(db, t, columns)
+	ptrs, jsonFields, fieldsMap, ptrDests, isStruct, err := setupElementPtrs(db, t, indirectType, columns)
 	if err != nil {
 		return err
 	}
 
 	i := 0
 	for rows.Next() {
-		el := reflect.New(t)
-		switch t {
+		el := reflect.New(t).Elem()
+		switch indirectType {
 		case mapRowType:
-			el.Elem().Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
+			el.Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
 		case sliceRowType:
-			el.Elem().Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
+			el.Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
 		}
 
-		updateElementPtrs(el.Elem(), &ptrs, jsonFields, columns, fieldsMap)
+		updateElementPtrs(el, &ptrs, jsonFields, columns, fieldsMap, ptrDests)
 
 		err = rows.Scan(ptrs...)
 		if err != nil {
 			return err
 		}
 
-		switch t {
-		case mapRowType:
+		for _, dest := range ptrDests {
+			v := dest.tempDest.Elem()
+			if !v.IsNil() {
+				dest.finalDest.Elem().Set(v.Elem())
+			} else {
+				dest.finalDest.Elem().Set(reflect.Zero(dest.finalDest.Type().Elem()))
+			}
+		}
+
+		if indirectType == mapRowType {
 			// our map row is actually a map to pointers, not actual values, since
 			// you can't take the address of a value by map and key, so we need to fix that here
 			// to make usage intuitive
 
-			for _, k := range el.Elem().MapKeys() {
-				el.Elem().SetMapIndex(k, el.Elem().MapIndex(k).Elem().Elem())
+			for _, k := range el.MapKeys() {
+				el.SetMapIndex(k, el.MapIndex(k).Elem().Elem())
 			}
 		}
 
@@ -277,16 +281,16 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 					return fmt.Errorf("failed to unmarshal json into dest: %w", err)
 				}
 			} else {
-				f := el.Elem().FieldByIndex(jsonField.index)
+				f := el.FieldByIndex(jsonField.index)
 				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
 				if err != nil {
-					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", el.Elem().Type().FieldByIndex(jsonField.index).Name, err)
+					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", el.Type().FieldByIndex(jsonField.index).Name, err)
 				}
 			}
 		}
 
 		if len(cacheKey) != 0 {
-			cacheSlice = reflect.Append(cacheSlice, el.Elem())
+			cacheSlice = reflect.Append(cacheSlice, el)
 		}
 
 		i++
@@ -372,14 +376,19 @@ type jsonField struct {
 	j     []byte
 }
 
-func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, isStruct bool, err error) {
-	switch true {
-	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
-		structFieldIndexes := StructFieldIndexes(t)
+type ptrDest struct {
+	finalDest reflect.Value
+	tempDest  reflect.Value
+}
+
+func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, ptrDests map[int]*ptrDest, isStruct bool, err error) {
+	switch {
+	case isMultiValueElement(indirectType) && indirectType.Kind() == reflect.Struct:
+		structFieldIndexes := StructFieldIndexes(indirectType)
 
 		fieldsMap = make(map[string][]int, len(structFieldIndexes))
 		for _, i := range structFieldIndexes {
-			f := t.FieldByIndex(i)
+			f := indirectType.FieldByIndex(i)
 
 			if !f.IsExported() {
 				continue
@@ -387,7 +396,7 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 
 			tags, err := structtag.Parse(string(f.Tag))
 			if err != nil {
-				return nil, nil, nil, false, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
+				return nil, nil, nil, nil, false, fmt.Errorf("failed to parse struct tag %q: %w", f.Tag, err)
 			}
 
 			name := f.Name
@@ -395,14 +404,14 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
 				name, err = decodeHex(mysqlTag.Name)
 				if err != nil {
-					return nil, nil, nil, false, fmt.Errorf("failed to decode hex in struct tag name %q: %w", mysqlTag.Name, err)
+					return nil, nil, nil, nil, false, fmt.Errorf("failed to decode hex in struct tag name %q: %w", mysqlTag.Name, err)
 				}
 			}
 
 			fieldsMap[strings.ToLower(name)] = i
 		}
 
-		for _, c := range columns {
+		for i, c := range columns {
 			fieldIndex, ok := fieldsMap[c]
 			if !ok {
 				if !db.DisableUnusedColumnWarnings {
@@ -416,21 +425,28 @@ func setupElementPtrs(db *Database, t reflect.Type, columns []string) (ptrs []an
 				jsonFields = append(jsonFields, jsonField{
 					index: fieldIndex,
 				})
+			} else {
+				if ptrDests == nil {
+					ptrDests = make(map[int]*ptrDest)
+				}
+				ptrDests[i] = &ptrDest{
+					tempDest: reflect.New(reflect.PointerTo(f.Type)),
+				}
 			}
 		}
-		return make([]any, len(columns)), jsonFields, fieldsMap, true, nil
-	case isMultiValueElement(t):
-		return make([]any, len(columns)), make([]jsonField, 1), nil, false, nil
+		return make([]any, len(columns)), jsonFields, fieldsMap, ptrDests, true, nil
+	case isMultiValueElement(indirectType):
+		return make([]any, len(columns)), make([]jsonField, 1), nil, nil, false, nil
 	default:
-		return make([]any, len(columns)), nil, nil, false, nil
+		return make([]any, len(columns)), nil, nil, map[int]*ptrDest{0: {tempDest: reflect.New(reflect.PointerTo(t))}}, false, nil
 	}
 }
 
-func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int) {
+func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int, ptrDests map[int]*ptrDest) {
 	t := ref.Type()
 	x := new(any)
 
-	switch true {
+	switch {
 	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
 		jsonIndex := 0
 		for i, c := range columns {
@@ -446,7 +462,8 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 				(*ptrs)[i] = &jsonFields[jsonIndex].j
 				jsonIndex++
 			} else {
-				(*ptrs)[i] = ref.FieldByIndex(fieldIndex).Addr().Interface()
+				(*ptrs)[i] = ptrDests[i].tempDest.Interface()
+				ptrDests[i].finalDest = ref.FieldByIndex(fieldIndex).Addr()
 			}
 		}
 	case t == mapRowType:
@@ -482,7 +499,8 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 		}
 	default:
 		// this is one element (row), like a time, number, or string
-		(*ptrs)[0] = ref.Addr().Interface()
+		(*ptrs)[0] = ptrDests[0].tempDest.Interface()
+		ptrDests[0].finalDest = ref.Addr()
 		for i := 1; i < len(columns); i++ {
 			(*ptrs)[i] = x
 		}

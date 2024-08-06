@@ -87,7 +87,7 @@ func (in *Inserter) insert(ctx context.Context, query string, source any) (err e
 	var prevToken *queryToken
 DUPE_KEY_SEARCH:
 	for _, t := range queryTokens {
-		switch true {
+		switch {
 		case t.kind == queryTokenKindMisc:
 			// skip
 		case prevToken == nil && t.kind == queryTokenKindWord && strings.EqualFold(t.string, "on"):
