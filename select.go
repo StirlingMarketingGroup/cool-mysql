@@ -260,13 +260,15 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			}
 		}
 
+		indirectEl := reflect.Indirect(el)
+
 		if indirectType == mapRowType {
 			// our map row is actually a map to pointers, not actual values, since
 			// you can't take the address of a value by map and key, so we need to fix that here
 			// to make usage intuitive
 
-			for _, k := range el.MapKeys() {
-				el.SetMapIndex(k, el.MapIndex(k).Elem().Elem())
+			for _, k := range indirectEl.MapKeys() {
+				indirectEl.SetMapIndex(k, indirectEl.MapIndex(k).Elem().Elem())
 			}
 		}
 
@@ -281,7 +283,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 					return fmt.Errorf("failed to unmarshal json into dest: %w", err)
 				}
 			} else {
-				f := el.FieldByIndex(jsonField.index)
+				f := indirectEl.FieldByIndex(jsonField.index)
 				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
 				if err != nil {
 					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", el.Type().FieldByIndex(jsonField.index).Name, err)
