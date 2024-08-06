@@ -420,7 +420,7 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 				continue
 			}
 
-			f := t.FieldByIndex(fieldIndex)
+			f := indirectType.FieldByIndex(fieldIndex)
 			if isMultiValueElement(f.Type) {
 				jsonFields = append(jsonFields, jsonField{
 					index: fieldIndex,
@@ -443,11 +443,17 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 }
 
 func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int, ptrDests map[int]*ptrDest) {
-	t := ref.Type()
+	indirectType := ref.Type()
+	indirectRef := ref
+	if indirectType.Kind() == reflect.Ptr {
+		ref.Set(reflect.New(indirectType.Elem()))
+		indirectRef = ref.Elem()
+		indirectType = indirectType.Elem()
+	}
 	x := new(any)
 
 	switch {
-	case isMultiValueElement(t) && t.Kind() == reflect.Struct:
+	case isMultiValueElement(indirectType) && indirectType.Kind() == reflect.Struct:
 		jsonIndex := 0
 		for i, c := range columns {
 			fieldIndex, ok := fieldsMap[c]
@@ -456,17 +462,17 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 				continue
 			}
 
-			f := t.FieldByIndex(fieldIndex)
+			f := indirectType.FieldByIndex(fieldIndex)
 			if isMultiValueElement(f.Type) {
 				jsonFields[jsonIndex].j = jsonFields[jsonIndex].j[:0]
 				(*ptrs)[i] = &jsonFields[jsonIndex].j
 				jsonIndex++
 			} else {
 				(*ptrs)[i] = ptrDests[i].tempDest.Interface()
-				ptrDests[i].finalDest = ref.FieldByIndex(fieldIndex).Addr()
+				ptrDests[i].finalDest = indirectRef.FieldByIndex(fieldIndex).Addr()
 			}
 		}
-	case t == mapRowType:
+	case indirectType == mapRowType:
 		// map row is a special type that allows us to select all the columns from the query into
 		// a map of colname => interfaces, letting us do what we want with the data later
 
@@ -475,16 +481,16 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 
 		for i := 0; i < len(columns); i++ {
 			v := reflect.ValueOf(new(any))
-			ref.SetMapIndex(reflect.ValueOf(columns[i]), v)
+			indirectRef.SetMapIndex(reflect.ValueOf(columns[i]), v)
 			(*ptrs)[i] = v.Interface()
 		}
-	case t == sliceRowType:
+	case indirectType == sliceRowType:
 		// slice row is a special type that allows us to select all the columns from the query into
 		// a slice of interfaces
 		for i := 0; i < len(columns); i++ {
-			(*ptrs)[i] = ref.Index(i).Addr().Interface()
+			(*ptrs)[i] = indirectRef.Index(i).Addr().Interface()
 		}
-	case isMultiValueElement(t):
+	case isMultiValueElement(indirectType):
 		// this is one element (single column row), but with multiple values, like a map or array.
 		// a struct is also technically a multi value element, but that's handled specially above
 

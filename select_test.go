@@ -185,6 +185,29 @@ func Test_query(t *testing.T) {
 			}),
 		},
 		{
+			name: "ptr struct times",
+			args: args{
+				db:   db,
+				conn: db.Writes,
+				ctx:  context.Background(),
+				dest: p(&struct {
+					Time1 time.Time  `mysql:"Time1"`
+					Time2 *time.Time `mysql:"Time2"`
+				}{}),
+				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)`Time1`,cast('2021-01-01 00:00:00' as datetime)`Time2`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr: false,
+			wantDest: p(&struct {
+				Time1 time.Time  `mysql:"Time1"`
+				Time2 *time.Time `mysql:"Time2"`
+			}{
+				Time1: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+				Time2: p(time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)),
+			}),
+		},
+		{
 			name: "struct times w/ nil",
 			args: args{
 				db:   db,
