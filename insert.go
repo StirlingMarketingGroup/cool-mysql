@@ -203,7 +203,7 @@ DUPE_KEY_SEARCH:
 
 		rowBuf.WriteByte('(')
 
-		writeValue := func(r reflect.Value) error {
+		writeValue := func(r reflect.Value, opts marshalOpt) error {
 			r = reflectUnwrap(r)
 
 			if !r.IsValid() {
@@ -213,7 +213,7 @@ DUPE_KEY_SEARCH:
 
 			v := r.Interface()
 
-			b, err := marshal(v, marshalOptJSONSlice, in.db.valuerFuncs)
+			b, err := marshal(v, opts|marshalOptJSONSlice, in.db.valuerFuncs)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}
@@ -224,7 +224,7 @@ DUPE_KEY_SEARCH:
 
 		switch k := row.Kind(); true {
 		case !multiCol:
-			writeValue(row)
+			writeValue(row, marshalOptNone)
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
@@ -261,7 +261,11 @@ DUPE_KEY_SEARCH:
 					}
 				}
 
-				writeValue(v)
+				marshalOpts := marshalOptNone
+				if colOpts[col].defaultZero {
+					marshalOpts |= marshalOptDefaultZero
+				}
+				writeValue(v, marshalOpts)
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
@@ -275,7 +279,7 @@ DUPE_KEY_SEARCH:
 					continue
 				}
 
-				writeValue(v)
+				writeValue(v, marshalOptNone)
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
@@ -283,7 +287,7 @@ DUPE_KEY_SEARCH:
 					rowBuf.WriteByte(',')
 				}
 
-				writeValue(row.Index(i))
+				writeValue(row.Index(i), marshalOptNone)
 			}
 		}
 
@@ -370,6 +374,7 @@ func colNamesFromMap(v reflect.Value) (columns []string) {
 type insertColOpts struct {
 	index         []int
 	insertDefault bool
+	defaultZero   bool
 }
 
 func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]insertColOpts, colFieldMap map[string]string, err error) {
@@ -402,6 +407,7 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 			}
 
 			opts.insertDefault = t.HasOption("insertDefault") || t.HasOption("omitempty")
+			opts.defaultZero = t.HasOption("defaultzero")
 		}
 
 		columns = append(columns, column)

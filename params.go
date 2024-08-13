@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/fatih/structtag"
 	"github.com/shopspring/decimal"
 )
 
@@ -31,23 +32,34 @@ var BuiltInParams = Params{
 	"MaxTime": MaxTime,
 }
 
-func normalizeParams(caseSensitive bool, params ...Params) Params {
+func mergeParams(caseSensitive bool, params []Params, paramMetas []map[string]paramMeta) (Params, map[string]paramMeta) {
 	if len(params) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	normalizedParams := make(Params)
+	mergeParams := make(Params)
 	for _, p := range params {
 		for k, v := range p {
 			if !caseSensitive {
-				normalizedParams[strings.ToLower(k)] = v
+				mergeParams[strings.ToLower(k)] = v
 			} else {
-				normalizedParams[k] = v
+				mergeParams[k] = v
 			}
 		}
 	}
 
-	return normalizedParams
+	mergedParamMetas := make(map[string]paramMeta)
+	for _, pm := range paramMetas {
+		for k, v := range pm {
+			if !caseSensitive {
+				mergedParamMetas[strings.ToLower(k)] = v
+			} else {
+				mergedParamMetas[k] = v
+			}
+		}
+	}
+
+	return mergeParams, mergedParamMetas
 }
 
 // InterpolateParams replaces the `@@` parameters in a query
@@ -60,14 +72,17 @@ func InterpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 	return interpolateParams(query, tmplFuncs, valuerFuncs, params...)
 }
 
-func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
+func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, mergedParams Params, err error) {
 	if strings.Contains(query, "{{") {
 		convertedParams := make([]Params, 0, len(params))
 		for _, p := range params {
-			convertedParams = append(convertedParams, convertToParams("param", p))
+			cp, _ := convertToParams("param", p)
+			convertedParams = append(convertedParams, cp)
 		}
 
-		query, err = execTemplate(query, convertToParams("params", normalizeParams(true, convertedParams...)), tmplFuncs, valuerFuncs)
+		mp, _ := mergeParams(true, convertedParams, nil)
+		cp, _ := convertToParams("params", mp)
+		query, err = execTemplate(query, cp, tmplFuncs, valuerFuncs)
 		if err != nil {
 			return "", nil, err
 		}
@@ -93,16 +108,20 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 	}
 
 	convertedParams := make([]Params, 0, len(params))
+	paramMetas := make([]map[string]paramMeta, 0, len(params))
 	for _, p := range params {
-		convertedParams = append(convertedParams, convertToParams(firstParamName, p))
+		cp, pm := convertToParams(firstParamName, p)
+		convertedParams = append(convertedParams, cp)
+		paramMetas = append(paramMetas, pm)
 	}
 
 	allParams := append(make([]Params, 0, len(params)+2), Params{"now": time.Now()}, BuiltInParams)
 	allParams = append(allParams, convertedParams...)
 
-	normalizedParams = normalizeParams(false, allParams...)
+	var mergedParamMetas map[string]paramMeta
+	mergedParams, mergedParamMetas = mergeParams(false, allParams, paramMetas)
 
-	if len(normalizedParams) == 0 {
+	if len(mergedParams) == 0 {
 		return query, nil, nil
 	}
 
@@ -116,8 +135,14 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 		switch t.kind {
 		case queryTokenKindParam:
 			k := strings.ToLower(t.string[2:])
-			if v, ok := normalizedParams[k]; ok {
-				b, err := marshal(v, 0, valuerFuncs)
+			if v, ok := mergedParams[k]; ok {
+				var opts marshalOpt
+				if mergedParamMetas != nil {
+					if mergedParamMetas[k].defaultZero {
+						opts |= marshalOptDefaultZero
+					}
+				}
+				b, err := marshal(v, opts, valuerFuncs)
 				if err != nil {
 					return "", nil, err
 				}
@@ -134,13 +159,13 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 		}
 	}
 
-	for k := range normalizedParams {
+	for k := range mergedParams {
 		if _, ok := usedParams[k]; !ok {
-			delete(normalizedParams, k)
+			delete(mergedParams, k)
 		}
 	}
 
-	return s.String(), normalizedParams, nil
+	return s.String(), mergedParams, nil
 }
 
 type queryToken struct {
@@ -295,12 +320,17 @@ const (
 	marshalOptNone marshalOpt = 1 << iota
 	marshalOptWrapSliceWithParens
 	marshalOptJSONSlice
+	marshalOptDefaultZero
 )
 
 // marshal returns the interpolated param, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
 func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
+	if (opts&marshalOptDefaultZero) != 0 && isZero(x) {
+		return []byte("default"), nil
+	}
+
 	switch v := x.(type) {
 	case bool:
 		if !v {
@@ -514,11 +544,15 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 	return nil, fmt.Errorf("cool-mysql: not sure how to interpret %q of type %T", x, x)
 }
 
-func convertToParams(firstParamName string, v any) Params {
+type paramMeta struct {
+	defaultZero bool
+}
+
+func convertToParams(firstParamName string, v any) (Params, map[string]paramMeta) {
 	r := reflect.ValueOf(v)
 
 	if !r.IsValid() {
-		return Params{firstParamName: v}
+		return Params{firstParamName: v}, nil
 	}
 
 	rv := reflect.Indirect(r)
@@ -528,11 +562,11 @@ func convertToParams(firstParamName string, v any) Params {
 	}
 
 	if isSingleParam(t) || isNil(v) {
-		return Params{firstParamName: v}
+		return Params{firstParamName: v}, nil
 	}
 
 	if t == paramsType {
-		return rv.Interface().(Params)
+		return rv.Interface().(Params), nil
 	}
 
 	switch k := t.Kind(); k {
@@ -540,6 +574,7 @@ func convertToParams(firstParamName string, v any) Params {
 		structFieldIndexes := StructFieldIndexes(t)
 
 		p := make(Params, len(structFieldIndexes))
+		meta := make(map[string]paramMeta, len(structFieldIndexes))
 
 		for _, i := range structFieldIndexes {
 			f := t.FieldByIndex(i)
@@ -549,16 +584,23 @@ func convertToParams(firstParamName string, v any) Params {
 			}
 
 			p[f.Name] = rv.FieldByIndex(i).Interface()
+
+			t, _ := structtag.Parse(string(f.Tag))
+			if t, _ := t.Get("mysql"); t != nil {
+				meta[f.Name] = paramMeta{
+					defaultZero: t.HasOption("defaultzero"),
+				}
+			}
 		}
 
-		return p
+		return p, meta
 	case reflect.Map:
 		p := make(Params)
 		for _, k := range rv.MapKeys() {
 			p[fmt.Sprint(k.Interface())] = rv.MapIndex(k).Interface()
 		}
 
-		return p
+		return p, nil
 	case reflect.Slice, reflect.Array:
 		l := rv.Len()
 		p := make(Params, l)
@@ -566,10 +608,10 @@ func convertToParams(firstParamName string, v any) Params {
 			p[strconv.Itoa(i)] = rv.Index(i).Interface()
 		}
 
-		return p
+		return p, nil
 	}
 
-	return nil
+	return nil, nil
 }
 
 func isSingleParam(t reflect.Type) bool {

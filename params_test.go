@@ -54,7 +54,7 @@ func Test_normalizeParams(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeParams(tt.args.caseSensitive, tt.args.params...); !reflect.DeepEqual(got, tt.want) {
+			if got, _ := mergeParams(tt.args.caseSensitive, tt.args.params, nil); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("normalizeParams() = %v, want %v", got, tt.want)
 			}
 		})
@@ -119,14 +119,22 @@ func Test_convertToParams(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := convertToParams(tt.args.firstParamName, tt.args.v); !reflect.DeepEqual(got, tt.want) {
+			if got, _ := convertToParams(tt.args.firstParamName, tt.args.v); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("convertToParams() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
+type testDefaultStruct struct {
+	Hello string `mysql:"hello,defaultzero"`
+	World string `mysql:"world,omitempty"`
+}
+
 func TestInterpolateParams(t *testing.T) {
+	simpleNormalizedParams, _ := mergeParams(false, []Params{{"1": "hello", "2": "world"}}, nil)
+	sliceOfStringsNormalizedParams, _ := mergeParams(false, []Params{{"1": []string{"hello", "world"}}}, nil)
+
 	type args struct {
 		query  string
 		params []any
@@ -145,7 +153,7 @@ func TestInterpolateParams(t *testing.T) {
 				params: []any{Params{"1": "hello", "2": "world"}},
 			},
 			wantReplacedQuery:    "SELECT * FROM `test` WHERE `foo` = _utf8mb4 0x68656c6c6f collate utf8mb4_unicode_ci AND `bar` = _utf8mb4 0x776f726c64 collate utf8mb4_unicode_ci",
-			wantNormalizedParams: normalizeParams(false, Params{"1": "hello", "2": "world"}),
+			wantNormalizedParams: simpleNormalizedParams,
 		},
 		{
 			name: "slice of strings",
@@ -154,7 +162,7 @@ func TestInterpolateParams(t *testing.T) {
 				params: []any{[]string{"hello", "world"}},
 			},
 			wantReplacedQuery:    "SELECT * FROM `test` WHERE `foo` IN (_utf8mb4 0x68656c6c6f collate utf8mb4_unicode_ci,_utf8mb4 0x776f726c64 collate utf8mb4_unicode_ci)",
-			wantNormalizedParams: normalizeParams(false, Params{"1": []string{"hello", "world"}}),
+			wantNormalizedParams: sliceOfStringsNormalizedParams,
 		},
 		{
 			name: "template error",
@@ -171,6 +179,33 @@ func TestInterpolateParams(t *testing.T) {
 				params: []any{Params{"foo": "bar"}},
 			},
 			wantErr: true,
+		},
+		{
+			name: "struct defaultzero w/ value",
+			args: args{
+				query:  "SELECT * FROM `test` WHERE `hello` = @@hello",
+				params: []any{testDefaultStruct{Hello: "hello"}},
+			},
+			wantReplacedQuery:    "SELECT * FROM `test` WHERE `hello` = _utf8mb4 0x68656c6c6f collate utf8mb4_unicode_ci",
+			wantNormalizedParams: Params{"hello": "hello"},
+		},
+		{
+			name: "struct defaultzero w/ empty",
+			args: args{
+				query:  "SELECT * FROM `test` WHERE `hello` = @@hello",
+				params: []any{testDefaultStruct{}},
+			},
+			wantReplacedQuery:    "SELECT * FROM `test` WHERE `hello` = default",
+			wantNormalizedParams: Params{"hello": ""},
+		},
+		{
+			name: "struct defaultzero omitempty w/ empty",
+			args: args{
+				query:  "SELECT * FROM `test` WHERE `hello` = @@world",
+				params: []any{testDefaultStruct{}},
+			},
+			wantReplacedQuery:    "SELECT * FROM `test` WHERE `hello` = ''",
+			wantNormalizedParams: Params{"world": ""},
 		},
 	}
 	for _, tt := range tests {
