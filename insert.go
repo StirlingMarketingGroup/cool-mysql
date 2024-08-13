@@ -203,7 +203,7 @@ DUPE_KEY_SEARCH:
 
 		rowBuf.WriteByte('(')
 
-		writeValue := func(r reflect.Value, opts marshalOpt) error {
+		writeValue := func(r reflect.Value, opts marshalOpt, fieldName string) error {
 			r = reflectUnwrap(r)
 
 			if !r.IsValid() {
@@ -213,7 +213,7 @@ DUPE_KEY_SEARCH:
 
 			v := r.Interface()
 
-			b, err := marshal(v, opts|marshalOptJSONSlice, in.db.valuerFuncs)
+			b, err := marshal(v, opts|marshalOptJSONSlice, fieldName, in.db.valuerFuncs)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}
@@ -224,7 +224,7 @@ DUPE_KEY_SEARCH:
 
 		switch k := row.Kind(); true {
 		case !multiCol:
-			writeValue(row, marshalOptNone)
+			writeValue(row, marshalOptNone, "")
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
@@ -265,7 +265,7 @@ DUPE_KEY_SEARCH:
 				if colOpts[col].defaultZero {
 					marshalOpts |= marshalOptDefaultZero
 				}
-				writeValue(v, marshalOpts)
+				writeValue(v, marshalOpts, col)
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
@@ -279,7 +279,7 @@ DUPE_KEY_SEARCH:
 					continue
 				}
 
-				writeValue(v, marshalOptNone)
+				writeValue(v, marshalOptNone, col)
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
@@ -287,7 +287,7 @@ DUPE_KEY_SEARCH:
 					rowBuf.WriteByte(',')
 				}
 
-				writeValue(row.Index(i), marshalOptNone)
+				writeValue(row.Index(i), marshalOptNone, "")
 			}
 		}
 

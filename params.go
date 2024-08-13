@@ -142,7 +142,7 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 						opts |= marshalOptDefaultZero
 					}
 				}
-				b, err := marshal(v, opts, valuerFuncs)
+				b, err := marshal(v, opts, k, valuerFuncs)
 				if err != nil {
 					return "", nil, err
 				}
@@ -311,7 +311,7 @@ func parseQuery(query string) []queryToken {
 }
 
 func Marshal(x any, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
-	return marshal(x, 0, valuerFuncs)
+	return marshal(x, 0, "", valuerFuncs)
 }
 
 type marshalOpt uint
@@ -326,9 +326,13 @@ const (
 // marshal returns the interpolated param, encoding values that could have escaping issues.
 // Strings and []byte are hex encoded so as to make extra sure nothing
 // bad is let through
-func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
+func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
 	if (opts&marshalOptDefaultZero) != 0 && isZero(x) {
-		return []byte("default"), nil
+		if len(fieldName) != 0 {
+			return []byte("default(`" + fieldName + "`)"), nil
+		} else {
+			return []byte("default"), nil
+		}
 	}
 
 	switch v := x.(type) {
@@ -401,7 +405,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 	v := reflect.ValueOf(x)
 	if v.IsValid() && (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) {
 		if v := v.Elem(); v.IsValid() {
-			return marshal(v.Interface(), opts, valuerFuncs)
+			return marshal(v.Interface(), opts, fieldName, valuerFuncs)
 		}
 	}
 
@@ -438,7 +442,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 			if err := returns[1].Interface(); err != nil {
 				return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
 			}
-			return marshal(returns[0].Interface(), opts, valuerFuncs)
+			return marshal(returns[0].Interface(), opts, fieldName, valuerFuncs)
 		}
 	}
 
@@ -456,7 +460,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call Value on driver.Valuer: %w", err)
 		}
-		return marshal(v, opts, valuerFuncs)
+		return marshal(v, opts, fieldName, valuerFuncs)
 	}
 
 	if vs, ok := pv.Interface().(Valueser); ok {
@@ -470,7 +474,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call MySQLValues on mysql.MySQLValues: %w", err)
 		}
-		return marshal(vs, opts, valuerFuncs)
+		return marshal(vs, opts, fieldName, valuerFuncs)
 	}
 
 	if isNil(x) {
@@ -480,27 +484,27 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 	k := v.Kind()
 	switch k {
 	case reflect.Bool:
-		return marshal(v.Bool(), opts, valuerFuncs)
+		return marshal(v.Bool(), opts, fieldName, valuerFuncs)
 	case reflect.String:
-		return marshal(v.String(), opts, valuerFuncs)
+		return marshal(v.String(), opts, fieldName, valuerFuncs)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return marshal(v.Int(), opts, valuerFuncs)
+		return marshal(v.Int(), opts, fieldName, valuerFuncs)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return marshal(v.Uint(), opts, valuerFuncs)
+		return marshal(v.Uint(), opts, fieldName, valuerFuncs)
 	case reflect.Complex64, reflect.Complex128:
-		return marshal(v.Complex(), opts, valuerFuncs)
+		return marshal(v.Complex(), opts, fieldName, valuerFuncs)
 	case reflect.Float32, reflect.Float64:
-		return marshal(v.Float(), opts, valuerFuncs)
+		return marshal(v.Float(), opts, fieldName, valuerFuncs)
 	case reflect.Struct, reflect.Map:
 		j, err := json.Marshal(x)
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to marshal struct to json: %w", err)
 		}
 
-		return marshal(json.RawMessage(j), opts, valuerFuncs)
+		return marshal(json.RawMessage(j), opts, fieldName, valuerFuncs)
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return marshal(v.Bytes(), opts, valuerFuncs)
+			return marshal(v.Bytes(), opts, fieldName, valuerFuncs)
 		}
 
 		if opts&marshalOptJSONSlice != 0 {
@@ -509,7 +513,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 				return nil, fmt.Errorf("cool-mysql: failed to marshal slice to json: %w", err)
 			}
 
-			return marshal(json.RawMessage(j), opts, valuerFuncs)
+			return marshal(json.RawMessage(j), opts, fieldName, valuerFuncs)
 		}
 
 		buf := new(bytes.Buffer)
@@ -527,7 +531,7 @@ func marshal(x any, opts marshalOpt, valuerFuncs map[reflect.Type]reflect.Value)
 				buf.WriteByte(',')
 			}
 
-			b, err := marshal(v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens, valuerFuncs)
+			b, err := marshal(v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens, fieldName, valuerFuncs)
 			if err != nil {
 				return nil, err
 			}
@@ -650,7 +654,7 @@ func execTemplate(q string, params Params, addlTmplFuncs template.FuncMap, value
 
 	tmplFuncs := template.FuncMap{
 		"marshal": func(x any) (string, error) {
-			b, err := marshal(x, 0, valuerFuncs)
+			b, err := marshal(x, 0, "", valuerFuncs)
 			if err != nil {
 				return "", err
 			}

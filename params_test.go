@@ -195,7 +195,7 @@ func TestInterpolateParams(t *testing.T) {
 				query:  "SELECT * FROM `test` WHERE `hello` = @@hello",
 				params: []any{testDefaultStruct{}},
 			},
-			wantReplacedQuery:    "SELECT * FROM `test` WHERE `hello` = default",
+			wantReplacedQuery:    "SELECT * FROM `test` WHERE `hello` = default(`hello`)",
 			wantNormalizedParams: Params{"hello": ""},
 		},
 		{
@@ -301,6 +301,7 @@ func Test_marshal(t *testing.T) {
 	type args struct {
 		x           any
 		opt         marshalOpt
+		fieldName   string
 		valuerFuncs map[reflect.Type]reflect.Value
 	}
 	tests := []struct {
@@ -499,7 +500,7 @@ func Test_marshal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := marshal(tt.args.x, tt.args.opt, tt.args.valuerFuncs)
+			got, err := marshal(tt.args.x, tt.args.opt, tt.args.fieldName, tt.args.valuerFuncs)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("marshal() error = %v, wantErr %v", err, tt.wantErr)
 				return
