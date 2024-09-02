@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strconv"
 	"time"
+
+	"cloud.google.com/go/civil"
 )
 
 type SliceRow []any
@@ -164,6 +166,27 @@ func convertAssignRows(dest, src any) error {
 				return errNilPtr
 			}
 			*d = s.AppendFormat((*d)[:0], time.RFC3339Nano)
+			return nil
+		}
+	case civil.Date:
+		switch d := dest.(type) {
+		case *civil.Date:
+			*d = s
+			return nil
+		case *string:
+			*d = s.String()
+			return nil
+		case *[]byte:
+			if d == nil {
+				return errNilPtr
+			}
+			*d = []byte(s.String())
+			return nil
+		case *sql.RawBytes:
+			if d == nil {
+				return errNilPtr
+			}
+			*d = append((*d)[:0], s.String()...)
 			return nil
 		}
 	case decimalDecompose:

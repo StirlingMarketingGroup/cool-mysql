@@ -339,6 +339,7 @@ func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow boo
 
 	if !reflect.New(indirectDestRefType).Type().Implements(scannerType) &&
 		indirectDestRefType != timeType &&
+		indirectDestRefType != civilDateType &&
 		indirectDestRefType != sliceRowType &&
 		indirectDestRefType != mapRowType {
 		switch k := indirectDestRef.Kind(); k {
@@ -361,7 +362,7 @@ func isMultiValueElement(t reflect.Type) bool {
 		t = t.Elem()
 	}
 
-	if !reflect.New(t).Type().Implements(scannerType) && t != timeType {
+	if !reflect.New(t).Type().Implements(scannerType) && t != timeType && t != civilDateType {
 		switch k := t.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.Struct:
 			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {

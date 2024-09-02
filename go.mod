@@ -3,7 +3,7 @@ module github.com/StirlingMarketingGroup/cool-mysql
 go 1.19
 
 require (
-	cloud.google.com/go v0.110.7
+	cloud.google.com/go v0.115.1
 	github.com/cenkalti/backoff/v4 v4.2.1
 	github.com/fatih/structtag v1.2.0
 	github.com/go-redsync/redsync/v4 v4.8.1
@@ -12,8 +12,8 @@ require (
 	github.com/shopspring/decimal v1.3.1
 	github.com/vmihailenco/msgpack/v5 v5.3.5
 	go.uber.org/zap v1.24.0
-	golang.org/x/crypto v0.17.0
-	golang.org/x/sync v0.2.0
+	golang.org/x/crypto v0.25.0
+	golang.org/x/sync v0.8.0
 )
 
 require (
@@ -26,5 +26,5 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/sys v0.22.0 // indirect
 )

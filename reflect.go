@@ -5,6 +5,8 @@ import (
 	"database/sql/driver"
 	"reflect"
 	"time"
+
+	"cloud.google.com/go/civil"
 )
 
 var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
@@ -15,6 +17,7 @@ var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
 var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
 
 var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
+var civilDateType = reflect.TypeOf((*civil.Date)(nil)).Elem()
 
 // StructFieldIndexes recursively gets all the struct field index,
 // including the indexes from embedded structs
@@ -86,6 +89,7 @@ func isMultiRow(t reflect.Type) bool {
 // Expects an unwrapped reflect type.
 func isMultiColumn(t reflect.Type) bool {
 	if t == timeType ||
+		t == civilDateType ||
 		reflect.New(t).Type().Implements(valuerType) {
 		return false
 	}

@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/fatih/structtag"
 	"github.com/shopspring/decimal"
 )
@@ -388,6 +389,11 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 			return []byte("null"), nil
 		}
 		return []byte(fmt.Sprintf("convert_tz('%s','UTC',@@session.time_zone)", v.UTC().Format("2006-01-02 15:04:05.000000"))), nil
+	case civil.Date:
+		if v.IsZero() {
+			return []byte("null"), nil
+		}
+		return []byte(fmt.Sprintf("'%s'", v.String())), nil
 	case decimal.Decimal:
 		return []byte(v.String()), nil
 	case json.RawMessage:
@@ -619,7 +625,7 @@ func convertToParams(firstParamName string, v any) (Params, map[string]paramMeta
 }
 
 func isSingleParam(t reflect.Type) bool {
-	if t.Implements(valuerType) || t == timeType {
+	if t.Implements(valuerType) || t == timeType || t == civilDateType {
 		return true
 	}
 
