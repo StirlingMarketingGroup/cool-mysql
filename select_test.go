@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/shopspring/decimal"
 )
 
@@ -429,6 +430,48 @@ func Test_query(t *testing.T) {
 			},
 			wantErr:  false,
 			wantDest: &[]struct{ Strings *[]string }{{Strings: &[]string{"world", "", "bar"}}},
+		},
+		{
+			name: "date",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &civil.Date{},
+				query:         "SELECT date('2024-09-02')",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(civil.DateOf(time.Date(2024, 9, 2, 0, 0, 0, 0, time.UTC))),
+		},
+		{
+			name: "date nil",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &civil.Date{},
+				query:         "SELECT date(null)",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: p(civil.Date{}),
+		},
+		{
+			name: "slice of struct ptrs",
+			args: args{
+				db:            db,
+				conn:          db.Writes,
+				ctx:           context.Background(),
+				dest:          &[]*struct{ Strings *[]string }{},
+				query:         "select json_array('world',null,'bar') `Strings`",
+				cacheDuration: 0,
+				params:        nil,
+			},
+			wantErr:  false,
+			wantDest: &[]*struct{ Strings *[]string }{{Strings: &[]string{"world", "", "bar"}}},
 		},
 	}
 

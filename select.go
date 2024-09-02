@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/structtag"
 	"github.com/go-redsync/redsync/v4"
@@ -253,10 +254,22 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 		for _, dest := range ptrDests {
 			v := dest.tempDest.Elem()
-			if !v.IsNil() {
-				dest.finalDest.Elem().Set(v.Elem())
+
+			// special case: if we're scanning into a civil.Date, we need to convert the time.Time
+			// we need to convert the time.Time we got from the db to a civil.Date
+			if dest.finalDest.Type() == reflect.PointerTo(civilDateType) {
+				if !v.IsNil() {
+					d := civil.DateOf(v.Elem().Interface().(time.Time))
+					dest.finalDest.Elem().Set(reflect.ValueOf(d))
+				} else {
+					dest.finalDest.Elem().Set(reflect.Zero(civilDateType))
+				}
 			} else {
-				dest.finalDest.Elem().Set(reflect.Zero(dest.finalDest.Type().Elem()))
+				if !v.IsNil() {
+					dest.finalDest.Elem().Set(v.Elem())
+				} else {
+					dest.finalDest.Elem().Set(reflect.Zero(dest.finalDest.Type().Elem()))
+				}
 			}
 		}
 
@@ -432,8 +445,16 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 				if ptrDests == nil {
 					ptrDests = make(map[int]*ptrDest)
 				}
+
+				var tempDest reflect.Value
+				if f.Type == civilDateType {
+					tempDest = reflect.New(reflect.PointerTo(timeType))
+				} else {
+					tempDest = reflect.New(reflect.PointerTo(f.Type))
+				}
+
 				ptrDests[i] = &ptrDest{
-					tempDest: reflect.New(reflect.PointerTo(f.Type)),
+					tempDest: tempDest,
 				}
 			}
 		}
@@ -441,7 +462,14 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 	case isMultiValueElement(indirectType):
 		return make([]any, len(columns)), make([]jsonField, 1), nil, nil, false, nil
 	default:
-		return make([]any, len(columns)), nil, nil, map[int]*ptrDest{0: {tempDest: reflect.New(reflect.PointerTo(t))}}, false, nil
+		var tempDest reflect.Value
+		if t == civilDateType {
+			tempDest = reflect.New(reflect.PointerTo(timeType))
+		} else {
+			tempDest = reflect.New(reflect.PointerTo(t))
+		}
+
+		return make([]any, len(columns)), nil, nil, map[int]*ptrDest{0: {tempDest: tempDest}}, false, nil
 	}
 }
 
