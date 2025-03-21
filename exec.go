@@ -42,6 +42,7 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, n
 		if res != nil {
 			rowsAffected, _ = res.RowsAffected()
 		}
+
 		realTx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
 			Query:        replacedQuery,

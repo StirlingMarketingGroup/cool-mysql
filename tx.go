@@ -58,12 +58,12 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 
 // BeginTx begins and returns a new transaction on the writes connection
 func (db *Database) BeginTx() (tx *Tx, cancel func() error, err error) {
-	return db.beginTx(db.Writes, context.Background())
+	return db.beginTx(db.Writes.(*sql.DB), context.Background())
 }
 
 // BeginTxContext begins and returns a new transaction on the writes connection
 func (db *Database) BeginTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
-	return db.beginTx(db.Writes, ctx)
+	return db.beginTx(db.Writes.(*sql.DB), ctx)
 }
 
 // BeginReadsTx begins and returns a new transaction on the writes connection

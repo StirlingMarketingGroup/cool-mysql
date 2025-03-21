@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
@@ -22,7 +23,7 @@ import (
 
 // Database is a cool MySQL connection
 type Database struct {
-	Writes *sql.DB
+	Writes handlerWithContext
 	Reads  *sql.DB
 
 	WritesDSN string
@@ -56,6 +57,16 @@ type Database struct {
 func (db *Database) Clone() *Database {
 	clone := *db
 	return &clone
+}
+
+func (db *Database) WriterWithSubdir(subdir string) *Database {
+	db = db.Clone()
+	db.Writes = &sqlWriter{
+		path:  filepath.Join(db.Writes.(*sqlWriter).path, subdir),
+		index: new(synct[int]),
+	}
+
+	return db
 }
 
 // EnableRedis enables redis cache for select queries with cache times
@@ -141,12 +152,13 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db.testMx = new(sync.Mutex)
 
 	db.WritesDSN = writes
-	db.Writes, err = sql.Open("mysql", writes)
+	var writesConn *sql.DB
+	writesConn, err = sql.Open("mysql", writes)
 	if err != nil {
 		return nil, err
 	}
 
-	err = db.Writes.Ping()
+	err = writesConn.Ping()
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +167,9 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
-	db.Writes.SetConnMaxLifetime(MaxConnectionTime)
+	writesConn.SetConnMaxLifetime(MaxConnectionTime)
+
+	db.Writes = writesConn
 
 	if reads != writes {
 		db.ReadsDSN = reads
@@ -172,7 +186,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		db.Reads.SetConnMaxLifetime(MaxConnectionTime)
 	} else {
 		db.ReadsDSN = writes
-		db.Reads = db.Writes
+		db.Reads = writesConn
 	}
 
 	config := zap.NewDevelopmentConfig()
@@ -184,6 +198,30 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db.Logger = l.Named("cool-mysql")
 
 	return
+}
+
+func NewLocalWriter(path string) (*Database, error) {
+	db := new(Database)
+	sqlWriter := &sqlWriter{
+		path:  path,
+		index: new(synct[int]),
+	}
+	db.Writes = sqlWriter
+
+	db.testMx = new(sync.Mutex)
+
+	db.MaxInsertSize = new(synct[int])
+	db.MaxInsertSize.Set(1 << 20)
+
+	config := zap.NewDevelopmentConfig()
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	l, err := config.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+	db.Logger = l.Named("cool-mysql")
+
+	return db, nil
 }
 
 // AddTemplateFuncs adds template functions to the database
@@ -233,8 +271,16 @@ func (db *Database) Test() error {
 	db.testMx.Lock()
 	defer db.testMx.Unlock()
 
-	if db.Writes.Ping() != nil || db.Reads.Ping() != nil {
-		return db.Reconnect()
+	if writesConn, ok := db.Writes.(*sql.DB); ok {
+		if writesConn.Ping() != nil {
+			return db.Reconnect()
+		}
+	}
+
+	if db.Reads != nil {
+		if db.Reads.Ping() != nil {
+			return db.Reconnect()
+		}
 	}
 
 	return nil
