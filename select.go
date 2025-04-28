@@ -163,7 +163,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				return sql.ErrNoRows
 			}
 
-			for i := 0; i < l; i++ {
+			for i := range l {
 				err = sendElement(cacheSlice.Index(i))
 				if err != nil {
 					return err
@@ -175,6 +175,17 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 			return nil
 		}
+	}
+
+	if c, ok := conn.(*sql.DB); ok {
+		c2, err := c.Conn(ctx)
+		if c2 != nil {
+			defer c2.Close()
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get connection: %w", err)
+		}
+		conn = c2
 	}
 
 	var rows *sql.Rows
@@ -515,7 +526,7 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 		// a normal slice of interfaces will be treated like json normally, and will try to unmarshal the
 		// first column as json into that slice.
 
-		for i := 0; i < len(columns); i++ {
+		for i := range columns {
 			v := reflect.ValueOf(new(any))
 			indirectRef.SetMapIndex(reflect.ValueOf(columns[i]), v)
 			(*ptrs)[i] = v.Interface()
@@ -523,7 +534,7 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 	case indirectType == sliceRowType:
 		// slice row is a special type that allows us to select all the columns from the query into
 		// a slice of interfaces
-		for i := 0; i < len(columns); i++ {
+		for i := range columns {
 			(*ptrs)[i] = indirectRef.Index(i).Addr().Interface()
 		}
 	case isMultiValueElement(indirectType):
