@@ -185,8 +185,8 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	var attempt int
 	err = backoff.Retry(func() error {
 		attempt++
-		var err error
-		rows, err = conn.QueryContext(ctx, replacedQuery)
+		rows2, err := conn.QueryContext(ctx, replacedQuery)
+
 		tx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
 			Query:    replacedQuery,
@@ -196,26 +196,31 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			Attempt:  attempt,
 			Error:    err,
 		})
+
 		if err != nil {
+			if rows2 != nil {
+				rows2.Close()
+			}
+
 			if checkRetryError(err) {
 				return err
-			} else if errors.Is(err, mysql.ErrInvalidConn) {
+			}
+			if errors.Is(err, mysql.ErrInvalidConn) {
 				return db.Test()
-			} else {
+			}
+			{
 				return backoff.Permanent(err)
 			}
 		}
 
+		rows = rows2
 		return nil
 	}, backoff.WithContext(b, ctx))
-	defer func() {
-		if rows != nil {
-			rows.Close()
-		}
-	}()
 	if err != nil {
 		return err
 	}
+
+	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {

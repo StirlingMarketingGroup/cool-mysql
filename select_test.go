@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"cloud.google.com/go/civil"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/require"
 )
 
 func getTestDatabase() *Database {
@@ -570,4 +572,36 @@ func Test_isMultiValueElement(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSelectRetriesAndCloses(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	// 1) Expect the max_allowed_packet lookup
+	mock.ExpectQuery("^SELECT @@max_allowed_packet$").
+		WillReturnRows(sqlmock.NewRows([]string{"@@max_allowed_packet"}).
+			AddRow(int64(4194304)))
+
+	// 2) Simulate first SELECT foo FROM bar failing
+	mock.ExpectQuery("^SELECT foo FROM bar$").
+		WillReturnError(errMockRetry)
+	// 3) Then simulate it succeeding with 2 rows
+	rows := sqlmock.NewRows([]string{"foo"}).
+		AddRow("a").
+		AddRow("b")
+	mock.ExpectQuery("^SELECT foo FROM bar$").
+		WillReturnRows(rows)
+
+	db, err := NewFromConn(mockDB, mockDB)
+	require.NoError(t, err)
+
+	err = db.Select(func(scanDest any) {
+		// no-op row processor
+	}, "SELECT foo FROM bar", 0)
+	require.NoError(t, err)
+
+	// verify we closed the failed-attempt rows and met all expectations
+	require.NoError(t, mock.ExpectationsWereMet())
 }

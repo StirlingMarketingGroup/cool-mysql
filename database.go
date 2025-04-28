@@ -200,6 +200,49 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	return
 }
 
+// NewFromConn creates a new Database given existing *sql.DB connections.
+// It will query the writesConn for @@max_allowed_packet to set MaxInsertSize.
+// If readsConn == writesConn, both Reads and Writes share the same pool.
+func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
+	db := new(Database)
+	db.testMx = new(sync.Mutex)
+
+	// 1) Pull the server's max_allowed_packet value
+	var maxPacket int64
+	if err := writesConn.
+		QueryRow("SELECT @@max_allowed_packet").
+		Scan(&maxPacket); err != nil {
+		return nil, fmt.Errorf("failed to query max_allowed_packet: %w", err)
+	}
+	db.MaxInsertSize = new(synct[int])
+	db.MaxInsertSize.Set(int(maxPacket))
+
+	// 2) Wire up Writes
+	db.Writes = writesConn
+	db.WritesDSN = "" // not known from *sql.DB
+	writesConn.SetConnMaxLifetime(MaxConnectionTime)
+
+	// 3) Wire up Reads (may be same as Writes)
+	db.Reads = readsConn
+	if readsConn == writesConn {
+		db.ReadsDSN = ""
+	} else {
+		db.ReadsDSN = ""
+		readsConn.SetConnMaxLifetime(MaxConnectionTime)
+	}
+
+	// 4) Logger setup (identical to NewFromDSN)
+	config := zap.NewDevelopmentConfig()
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	l, err := config.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+	db.Logger = l.Named("cool-mysql")
+
+	return db, nil
+}
+
 func NewLocalWriter(path string) (*Database, error) {
 	db := new(Database)
 	sqlWriter := &sqlWriter{
