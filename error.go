@@ -34,7 +34,13 @@ func (v Error) Unwrap() error {
 	return v.Err
 }
 
+var errMockRetry = errors.New("mock retry error")
+
 func checkRetryError(err error) (ok bool) {
+	if errors.Is(err, errMockRetry) {
+		return true
+	}
+
 	var mysqlErr *stdMysql.MySQLError
 	if errors.As(err, &mysqlErr) {
 		switch mysqlErr.Number {
