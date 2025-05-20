@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"path/filepath"
 	"reflect"
@@ -250,6 +251,29 @@ func NewLocalWriter(path string) (*Database, error) {
 		index: new(synct[int]),
 	}
 	db.Writes = sqlWriter
+
+	db.testMx = new(sync.Mutex)
+
+	db.MaxInsertSize = new(synct[int])
+	db.MaxInsertSize.Set(1 << 20)
+
+	config := zap.NewDevelopmentConfig()
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	l, err := config.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+	db.Logger = l.Named("cool-mysql")
+
+	return db, nil
+}
+
+func NewWriter(w io.Writer) (*Database, error) {
+	db := new(Database)
+	writer := &writer{
+		Writer: w,
+	}
+	db.Writes = writer
 
 	db.testMx = new(sync.Mutex)
 
