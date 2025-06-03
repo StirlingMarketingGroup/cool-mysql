@@ -434,8 +434,8 @@ func Test_query(t *testing.T) {
 				rows = sqlmock.NewRows([]string{"col"}).AddRow("hello")
 			case "map rows", "slice rows":
 				rows = sqlmock.NewRows([]string{"One", "Two"}).
-					AddRow("a", "b").
-					AddRow("c", "d")
+					AddRow([]byte("a"), []byte("b")).
+					AddRow([]byte("c"), []byte("d"))
 			case "decimal", "decimal ptr":
 				rows = sqlmock.NewRows([]string{"col"}).AddRow("1.23")
 			case "strings slice", "strings ptrs slice":
