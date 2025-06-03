@@ -11,6 +11,26 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Upsert performs an "insert or update" style operation on the given table.
+//
+// The `query` parameter should normally just be the table name.  If only a
+// single token is passed (e.g. `people`), the function will internally build an
+// `INSERT INTO` statement for that table.  A full INSERT statement may also be
+// provided if desired.
+//
+// `uniqueColumns` represents the columns used to determine whether a row
+// already exists.  These columns are compared against the incoming row values in
+// the WHERE clause of the generated UPDATE/SELECT statement.
+//
+// `updateColumns` are the columns that will be updated when a matching row is
+// found.  If no columns are supplied then the function will simply check for the
+// existence of a row using a SELECT query and perform an INSERT if none is
+// found.
+//
+// `where` is an optional additional WHERE predicate that is appended after the
+// uniqueness checks.  It is commonly used for soft delete filters such as
+// `"Deleted=0"`.
+
 func (in *Inserter) Upsert(query string, uniqueColumns, updateColumns []string, where string, source any) error {
 	return in.upsert(context.Background(), query, uniqueColumns, updateColumns, where, source)
 }
@@ -119,6 +139,10 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 		return Wrap(ErrNoColumnNames, query, modifiedQuery, source)
 	}
 
+	// Build the initial UPDATE or SELECT statement used to determine if the
+	// row already exists. When updateColumns are provided we issue an UPDATE
+	// and check the rows affected. Otherwise we issue a simple SELECT to
+	// test for existence.
 	s := new(strings.Builder)
 	if len(updateColumns) != 0 {
 		s.WriteString("update ")
@@ -225,6 +249,8 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 				}
 			}
 
+			// If the UPDATE affected no rows (or nothing exists), send the
+			// row down the channel so that insert() can add it.
 			ch.Send(currentRow)
 
 		NEXT:
