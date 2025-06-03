@@ -3,9 +3,8 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"os"
 	"reflect"
+	"regexp"
 	"testing"
 	"time"
 
@@ -15,35 +14,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func getTestDatabase() *Database {
-	tz, err := time.LoadLocation(os.Getenv("TZ"))
-	if err != nil {
-		panic(fmt.Sprintf("failed to get current tz: %v", err))
+func getTestDatabase(t *testing.T) (*Database, sqlmock.Sqlmock, func()) {
+	mockDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	mock.ExpectQuery("^SELECT @@max_allowed_packet$").
+		WillReturnRows(sqlmock.NewRows([]string{"@@max_allowed_packet"}).
+			AddRow(int64(4194304)))
+
+	db, err := NewFromConn(mockDB, mockDB)
+	require.NoError(t, err)
+
+	cleanup := func() {
+		require.NoError(t, mock.ExpectationsWereMet())
+		mockDB.Close()
 	}
 
-	db, err := New(
-		getenv("MYSQL_TEST_USER", "root"),
-		getenv("MYSQL_TEST_PASS", ""),
-		getenv("MYSQL_TEST_DBNAME", "test"),
-		getenv("MYSQL_TEST_HOST", "127.0.0.1"),
-		int(getenvInt64("MYSQL_TEST_PORT", 3306)),
-
-		getenv("MYSQL_TEST_USER", "root"),
-		getenv("MYSQL_TEST_PASS", ""),
-		getenv("MYSQL_TEST_DBNAME", "test"),
-		getenv("MYSQL_TEST_HOST", "127.0.0.1"),
-		int(getenvInt64("MYSQL_TEST_PORT", 3306)),
-		"utf8_unicode_ci", tz,
-	)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create database: %v", err))
-	}
-
-	return db
+	return db, mock, cleanup
 }
 
 func Test_query(t *testing.T) {
-	db := getTestDatabase()
 
 	var timeVal time.Time
 	var timePtr *time.Time
@@ -52,8 +42,6 @@ func Test_query(t *testing.T) {
 	var decimalPtr *decimal.Decimal
 
 	type args struct {
-		db            *Database
-		conn          handlerWithContext
 		ctx           context.Context
 		dest          any
 		query         string
@@ -69,8 +57,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "time",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &timeVal,
 				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)",
@@ -83,8 +69,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "time null",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &timeVal,
 				query:         "SELECT null",
@@ -97,8 +81,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "time ptr",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &timePtr,
 				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)",
@@ -111,8 +93,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "time ptr nil",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &timePtr,
 				query:         "SELECT null",
@@ -125,8 +105,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "null time",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          p(sql.NullTime{}),
 				query:         "SELECT null",
@@ -139,8 +117,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "time ptr ptr",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          p(&timePtr),
 				query:         "SELECT cast('2020-01-01 00:00:00' as datetime)",
@@ -153,8 +129,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "time ptr ptr nil",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          p(&timePtr),
 				query:         "SELECT null",
@@ -167,9 +141,7 @@ func Test_query(t *testing.T) {
 		{
 			name: "struct times",
 			args: args{
-				db:   db,
-				conn: db.Writes,
-				ctx:  context.Background(),
+				ctx: context.Background(),
 				dest: p(struct {
 					Time1 time.Time  `mysql:"Time1"`
 					Time2 *time.Time `mysql:"Time2"`
@@ -190,9 +162,7 @@ func Test_query(t *testing.T) {
 		{
 			name: "ptr struct times",
 			args: args{
-				db:   db,
-				conn: db.Writes,
-				ctx:  context.Background(),
+				ctx: context.Background(),
 				dest: p(&struct {
 					Time1 time.Time  `mysql:"Time1"`
 					Time2 *time.Time `mysql:"Time2"`
@@ -213,9 +183,7 @@ func Test_query(t *testing.T) {
 		{
 			name: "struct times w/ nil",
 			args: args{
-				db:   db,
-				conn: db.Writes,
-				ctx:  context.Background(),
+				ctx: context.Background(),
 				dest: p(struct {
 					Time1 time.Time  `mysql:"Time1"`
 					Time2 *time.Time `mysql:"Time2"`
@@ -236,8 +204,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "string",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          p("yeet"),
 				query:         "SELECT 'hello'",
@@ -250,8 +216,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "string",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          p("yeet"),
 				query:         "SELECT 'hello'",
@@ -264,8 +228,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "map rows",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &MapRows{},
 				query:         "select 'a' `One`, 'b' `Two` union select 'c' `One`, 'd' `Two`",
@@ -287,8 +249,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "slice rows",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &SliceRows{},
 				query:         "select 'a' `One`, 'b' `Two` union select 'c' `One`, 'd' `Two`",
@@ -310,8 +270,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "decimal",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &decimalVal,
 				query:         "SELECT '1.23'",
@@ -324,8 +282,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "null decimal to value",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &decimalVal,
 				query:         "SELECT null",
@@ -338,8 +294,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "decimal ptr",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &decimalPtr,
 				query:         "SELECT '1.23'",
@@ -352,8 +306,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "null decimal to ptr",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &decimalPtr,
 				query:         "SELECT null",
@@ -366,8 +318,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "strings slice",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &[]string{},
 				query:         "select * from json_table('[ {\"hello\": \"world\"},{\"hello\": null},{\"hello\": \"bar\"} ]', '$[*]' COLUMNS( hello varchar(255) PATH '$.hello' ERROR ON ERROR )) a;",
@@ -380,8 +330,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "strings ptrs slice",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &[]*string{},
 				query:         "select * from json_table('[ {\"hello\": \"world\"},{\"hello\": null},{\"hello\": \"bar\"} ]', '$[*]' COLUMNS( hello varchar(255) PATH '$.hello' ERROR ON ERROR )) a;",
@@ -394,8 +342,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "json array",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &struct{ Strings []string }{},
 				query:         "select json_array('world',null,'bar') `Strings`",
@@ -408,8 +354,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "json array slice",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &[]struct{ Strings []string }{},
 				query:         "select json_array('world',null,'bar') `Strings`",
@@ -422,8 +366,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "json array ptr slice",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &[]struct{ Strings *[]string }{},
 				query:         "select json_array('world',null,'bar') `Strings`",
@@ -436,8 +378,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "date",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &civil.Date{},
 				query:         "SELECT date('2024-09-02')",
@@ -450,8 +390,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "date nil",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &civil.Date{},
 				query:         "SELECT date(null)",
@@ -464,8 +402,6 @@ func Test_query(t *testing.T) {
 		{
 			name: "slice of struct ptrs",
 			args: args{
-				db:            db,
-				conn:          db.Writes,
 				ctx:           context.Background(),
 				dest:          &[]*struct{ Strings *[]string }{},
 				query:         "select json_array('world',null,'bar') `Strings`",
@@ -478,8 +414,47 @@ func Test_query(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.args.db.query(tt.args.conn, tt.args.ctx, tt.args.dest, tt.args.query, tt.args.cacheDuration, tt.args.params...); (err != nil) != tt.wantErr {
+			db, mock, cleanup := getTestDatabase(t)
+			defer cleanup()
+
+			var rows *sqlmock.Rows
+			switch tt.name {
+			case "time", "time ptr", "time ptr ptr":
+				rows = sqlmock.NewRows([]string{"col"}).AddRow(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+			case "time null", "time ptr nil", "null time", "time ptr ptr nil", "null decimal to value", "null decimal to ptr", "date nil":
+				rows = sqlmock.NewRows([]string{"col"}).AddRow(nil)
+			case "struct times", "ptr struct times":
+				rows = sqlmock.NewRows([]string{"Time1", "Time2"}).
+					AddRow(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC))
+			case "struct times w/ nil":
+				rows = sqlmock.NewRows([]string{"Time1", "Time2"}).AddRow(nil, nil)
+			case "string":
+				rows = sqlmock.NewRows([]string{"col"}).AddRow("hello")
+			case "map rows", "slice rows":
+				rows = sqlmock.NewRows([]string{"One", "Two"}).
+					AddRow([]byte("a"), []byte("b")).
+					AddRow([]byte("c"), []byte("d"))
+			case "decimal", "decimal ptr":
+				rows = sqlmock.NewRows([]string{"col"}).AddRow("1.23")
+			case "strings slice", "strings ptrs slice":
+				rows = sqlmock.NewRows([]string{"hello"}).
+					AddRow("world").
+					AddRow(nil).
+					AddRow("bar")
+			case "json array", "json array slice", "json array ptr slice", "slice of struct ptrs":
+				rows = sqlmock.NewRows([]string{"Strings"}).
+					AddRow([]byte(`["world",null,"bar"]`))
+			case "date":
+				rows = sqlmock.NewRows([]string{"col"}).AddRow(time.Date(2024, 9, 2, 0, 0, 0, 0, time.UTC))
+			default:
+				rows = sqlmock.NewRows([]string{"col"}).AddRow(nil)
+			}
+
+			mock.ExpectQuery(regexp.QuoteMeta(tt.args.query)).WillReturnRows(rows)
+
+			if err := db.query(db.Writes, tt.args.ctx, tt.args.dest, tt.args.query, tt.args.cacheDuration, tt.args.params...); (err != nil) != tt.wantErr {
 				t.Errorf("query() error = %v, wantErr %v", err, tt.wantErr)
 			}
 

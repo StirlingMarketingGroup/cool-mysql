@@ -331,8 +331,34 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 	if (opts&marshalOptDefaultZero) != 0 && isZero(x) {
 		if len(fieldName) != 0 {
 			return []byte("default(`" + fieldName + "`)"), nil
-		} else {
-			return []byte("default"), nil
+		}
+		return []byte("default"), nil
+	}
+
+	v := reflect.ValueOf(x)
+	if valuerFuncs != nil && v.IsValid() {
+		pv := v
+		if v.IsValid() && v.Kind() != reflect.Ptr {
+			pv = reflect.New(v.Type())
+			pv.Elem().Set(v)
+		}
+
+		fn, ok := valuerFuncs[pv.Type()]
+		arg := pv
+		if !ok {
+			fn, ok = valuerFuncs[reflectUnwrapType(pv.Type())]
+			arg = reflectUnwrap(pv)
+			if arg.Kind() == reflect.Ptr && arg.IsNil() && fn.Type().In(0).Kind() != reflect.Ptr {
+				return []byte("null"), nil
+			}
+		}
+		if ok {
+			returns := fn.Call([]reflect.Value{arg})
+			if err := returns[1].Interface(); err != nil {
+				return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
+			}
+
+			return marshal(returns[0].Interface(), opts, fieldName, valuerFuncs)
 		}
 	}
 
@@ -408,7 +434,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		return []byte(v), nil
 	}
 
-	v := reflect.ValueOf(x)
+	v = reflect.ValueOf(x)
 	if v.IsValid() && (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) {
 		if v := v.Elem(); v.IsValid() {
 			return marshal(v.Interface(), opts, fieldName, valuerFuncs)
