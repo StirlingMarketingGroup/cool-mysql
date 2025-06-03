@@ -18,6 +18,7 @@
 - **JSON columns** can unmarshal directly into struct fields
 - **Channels** supported for selecting and inserting
 - Optional **query logging** and transaction helpers
+- **Pluggable logging** using `log/slog` by default with a Zap adapter
 
 ## Installation
 

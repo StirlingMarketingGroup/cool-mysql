@@ -18,8 +18,6 @@ import (
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // Database is a cool MySQL connection
@@ -46,7 +44,7 @@ type Database struct {
 
 	testMx *sync.Mutex
 
-	Logger                      *zap.Logger
+	Logger                      Logger
 	DisableUnusedColumnWarnings bool
 
 	tmplFuncs   template.FuncMap
@@ -190,13 +188,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		db.Reads = writesConn
 	}
 
-	config := zap.NewDevelopmentConfig()
-	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	l, err := config.Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %w", err)
-	}
-	db.Logger = l.Named("cool-mysql")
+	db.Logger = DefaultLogger()
 
 	return
 }
@@ -233,13 +225,7 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	}
 
 	// 4) Logger setup (identical to NewFromDSN)
-	config := zap.NewDevelopmentConfig()
-	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	l, err := config.Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %w", err)
-	}
-	db.Logger = l.Named("cool-mysql")
+	db.Logger = DefaultLogger()
 
 	return db, nil
 }
@@ -257,13 +243,7 @@ func NewLocalWriter(path string) (*Database, error) {
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(1 << 20)
 
-	config := zap.NewDevelopmentConfig()
-	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	l, err := config.Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %w", err)
-	}
-	db.Logger = l.Named("cool-mysql")
+	db.Logger = DefaultLogger()
 
 	return db, nil
 }
@@ -280,13 +260,7 @@ func NewWriter(w io.Writer) (*Database, error) {
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(1 << 20)
 
-	config := zap.NewDevelopmentConfig()
-	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	l, err := config.Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %w", err)
-	}
-	db.Logger = l.Named("cool-mysql")
+	db.Logger = DefaultLogger()
 
 	return db, nil
 }
