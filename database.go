@@ -14,8 +14,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/go-redsync/redsync/v4"
-	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
+	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
 )
@@ -30,14 +29,14 @@ type Database struct {
 
 	Log              LogFunc
 	Finished         FinishedFunc
-	HandleRedisError HandleRedisError
+	HandleCacheError HandleCacheError
 
 	die bool
 
 	MaxInsertSize *synct[int]
 
-	redis redis.UniversalClient
-	rs    *redsync.Redsync
+	cache  Cache
+	locker Locker
 
 	// DisableForeignKeyChecks only affects foreign keys for transactions
 	DisableForeignKeyChecks bool
@@ -71,9 +70,22 @@ func (db *Database) WriterWithSubdir(subdir string) *Database {
 // EnableRedis enables redis cache for select queries with cache times
 // with the given connection information
 func (db *Database) EnableRedis(redisClient redis.UniversalClient) *Database {
-	db.redis = redisClient
-	db.rs = redsync.New(goredis.NewPool(db.redis))
+	db.UseCache(NewRedisCache(redisClient))
+	return db
+}
 
+// EnableMemcache configures memcached as the cache backend.
+func (db *Database) EnableMemcache(mc *memcache.Client) *Database {
+	db.UseCache(NewMemcacheCache(mc))
+	return db
+}
+
+// UseCache sets a custom cache implementation.
+func (db *Database) UseCache(c Cache) *Database {
+	db.cache = c
+	if l, ok := c.(Locker); ok {
+		db.locker = l
+	}
 	return db
 }
 
@@ -95,9 +107,12 @@ type LogFunc func(detail LogDetail)
 // including being read from the channel if used
 type FinishedFunc func(cached bool, replacedQuery string, params Params, execDuration time.Duration, fetchDuration time.Duration)
 
-// HandleRedisError is executed on a redis error, so it can be handled by the user
-// return false to let the function return the error, or return to let the function continue executing despite the redis error
-type HandleRedisError func(err error) error
+// HandleCacheError is executed on a cache error so it can be handled by the user.
+// Returning a non-nil error will abort execution.
+type HandleCacheError func(err error) error
+
+// HandleRedisError is kept for backwards compatibility.
+type HandleRedisError = HandleCacheError
 
 func (db *Database) callLog(detail LogDetail) {
 	if db.Log != nil {

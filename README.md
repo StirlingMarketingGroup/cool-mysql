@@ -10,7 +10,7 @@
 - **Dual pools** for reads and writes
 - **Named template parameters** using `@@name` tokens
 - **Automatic retries** with exponential backoff
-- **Redis backed caching** with optional distributed locks
+- **Pluggable caching** (Redis, Memcached, or in-memory weak pointers) with optional distributed locks
 - **Insert/Upsert helpers** that chunk large sets to respect `max_allowed_packet`
 - **Go template syntax** in queries for conditional logic
 - **Flexible selection** into structs, slices, maps, channels or functions
@@ -56,7 +56,7 @@ func main() {
     var users []User
     err = db.Select(&users,
         "SELECT id, name FROM users WHERE created_at > @@since",
-        time.Minute, // cache TTL when Redis is configured
+        time.Minute, // cache TTL when caching is configured
         mysql.Params{"since": time.Now().Add(-24 * time.Hour)},
     )
     if err != nil {
@@ -65,6 +65,23 @@ func main() {
 
     log.Printf("loaded %d users", len(users))
 }
+```
+
+### Enabling caching
+
+```go
+// use Redis
+r := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+db.EnableRedis(r)
+
+// or Memcached
+db.EnableMemcache(memcache.New("localhost:11211"))
+
+// or a simple in-memory cache using weak pointers
+db.UseCache(mysql.NewWeakCache())
+
+// caches can be stacked
+db.UseCache(mysql.NewMultiCache(mysql.NewWeakCache(), mysql.NewRedisCache(r)))
 ```
 
 ## Usage
