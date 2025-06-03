@@ -112,6 +112,19 @@ var name string
 err := db.Select(&name, "SELECT name FROM users WHERE id=@@id", 0, 5) // single param value
 ```
 
+### Typed selects with generics
+
+```go
+// fetch one row as a typed value
+user, err := mysql.SelectOne[User](db, "SELECT id, name FROM users WHERE id=1", 0)
+if err != nil {
+    log.Fatal(err)
+}
+
+// fetch many rows as a typed slice
+users, err := mysql.SelectSlice[User](db, "SELECT id, name FROM users", 0)
+```
+
 ### Selecting into channels
 
 ```go
