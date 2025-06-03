@@ -24,6 +24,7 @@ import (
 )
 
 var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
+var ErrUnexportedField = fmt.Errorf("cool-mysql: struct has unexported fields and cannot be used with channels")
 
 func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -59,6 +60,10 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	indirectType := t
 	if t.Kind() == reflect.Ptr {
 		indirectType = t.Elem()
+	}
+
+	if destKind == reflect.Chan && hasUnexportedField(indirectType) {
+		return ErrUnexportedField
 	}
 
 	sendElement := func(el reflect.Value) error {
@@ -400,6 +405,27 @@ func isMultiValueElement(t reflect.Type) bool {
 		}
 	}
 
+	return false
+}
+
+func hasUnexportedField(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			return true
+		}
+		if f.Anonymous {
+			if hasUnexportedField(f.Type) {
+				return true
+			}
+		}
+	}
 	return false
 }
 
