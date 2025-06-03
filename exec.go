@@ -32,7 +32,7 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, n
 	var res sql.Result
 
 	var b = backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = MaxExecutionTime
+	b.MaxElapsedTime = db.maxExecutionTime
 	var attempt int
 	var rowsAffected int64
 	exec := func() error {

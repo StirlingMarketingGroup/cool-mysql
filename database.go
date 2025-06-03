@@ -42,6 +42,11 @@ type Database struct {
 	// DisableForeignKeyChecks only affects foreign keys for transactions
 	DisableForeignKeyChecks bool
 
+	maxExecutionTime     time.Duration
+	maxConnectionTime    time.Duration
+	redisLockRetryDelay  time.Duration
+	defaultCacheDuration time.Duration
+
 	testMx *sync.Mutex
 
 	Logger                      Logger
@@ -108,7 +113,7 @@ func (db *Database) callLog(detail LogDetail) {
 // New creates a new Database
 func New(wUser, wPass, wSchema, wHost string, wPort int,
 	rUser, rPass, rSchema, rHost string, rPort int,
-	collation string, timeZone *time.Location) (db *Database, err error) {
+	collation string, timeZone *time.Location, opts ...Option) (db *Database, err error) {
 	writes := mysql.NewConfig()
 	writes.User = wUser
 	writes.Passwd = wPass
@@ -141,14 +146,17 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 		reads.Collation = collation
 	}
 
-	return NewFromDSN(writes.FormatDSN(), reads.FormatDSN())
+	return NewFromDSN(writes.FormatDSN(), reads.FormatDSN(), opts...)
 }
 
 // NewFromDSN creates a new Database from config
 // DSN strings for both connections
-func NewFromDSN(writes, reads string) (db *Database, err error) {
+func NewFromDSN(writes, reads string, opts ...Option) (db *Database, err error) {
 	db = new(Database)
 	db.testMx = new(sync.Mutex)
+	db.maxExecutionTime = defaultMaxExecutionTime
+	db.maxConnectionTime = defaultConnectionTime
+	db.redisLockRetryDelay = defaultRedisLockRetryDelay
 
 	db.WritesDSN = writes
 	var writesConn *sql.DB
@@ -166,7 +174,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
-	writesConn.SetConnMaxLifetime(MaxConnectionTime)
+	writesConn.SetConnMaxLifetime(db.maxConnectionTime)
 
 	db.Writes = writesConn
 
@@ -182,7 +190,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 			return nil, err
 		}
 
-		db.Reads.SetConnMaxLifetime(MaxConnectionTime)
+		db.Reads.SetConnMaxLifetime(db.maxConnectionTime)
 	} else {
 		db.ReadsDSN = writes
 		db.Reads = writesConn
@@ -190,15 +198,22 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 
 	db.Logger = DefaultLogger()
 
+	for _, o := range opts {
+		o(db)
+	}
+
 	return
 }
 
 // NewFromConn creates a new Database given existing *sql.DB connections.
 // It will query the writesConn for @@max_allowed_packet to set MaxInsertSize.
 // If readsConn == writesConn, both Reads and Writes share the same pool.
-func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
+func NewFromConn(writesConn, readsConn *sql.DB, opts ...Option) (*Database, error) {
 	db := new(Database)
 	db.testMx = new(sync.Mutex)
+	db.maxExecutionTime = defaultMaxExecutionTime
+	db.maxConnectionTime = defaultConnectionTime
+	db.redisLockRetryDelay = defaultRedisLockRetryDelay
 
 	// 1) Pull the server's max_allowed_packet value
 	var maxPacket int64
@@ -213,7 +228,7 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	// 2) Wire up Writes
 	db.Writes = writesConn
 	db.WritesDSN = "" // not known from *sql.DB
-	writesConn.SetConnMaxLifetime(MaxConnectionTime)
+	writesConn.SetConnMaxLifetime(db.maxConnectionTime)
 
 	// 3) Wire up Reads (may be same as Writes)
 	db.Reads = readsConn
@@ -221,16 +236,20 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 		db.ReadsDSN = ""
 	} else {
 		db.ReadsDSN = ""
-		readsConn.SetConnMaxLifetime(MaxConnectionTime)
+		readsConn.SetConnMaxLifetime(db.maxConnectionTime)
 	}
 
 	// 4) Logger setup (identical to NewFromDSN)
 	db.Logger = DefaultLogger()
 
+	for _, o := range opts {
+		o(db)
+	}
+
 	return db, nil
 }
 
-func NewLocalWriter(path string) (*Database, error) {
+func NewLocalWriter(path string, opts ...Option) (*Database, error) {
 	db := new(Database)
 	sqlWriter := &sqlWriter{
 		path:  path,
@@ -245,10 +264,18 @@ func NewLocalWriter(path string) (*Database, error) {
 
 	db.Logger = DefaultLogger()
 
+	db.maxExecutionTime = defaultMaxExecutionTime
+	db.maxConnectionTime = defaultConnectionTime
+	db.redisLockRetryDelay = defaultRedisLockRetryDelay
+
+	for _, o := range opts {
+		o(db)
+	}
+
 	return db, nil
 }
 
-func NewWriter(w io.Writer) (*Database, error) {
+func NewWriter(w io.Writer, opts ...Option) (*Database, error) {
 	db := new(Database)
 	writer := &writer{
 		Writer: w,
@@ -261,6 +288,14 @@ func NewWriter(w io.Writer) (*Database, error) {
 	db.MaxInsertSize.Set(1 << 20)
 
 	db.Logger = DefaultLogger()
+
+	db.maxExecutionTime = defaultMaxExecutionTime
+	db.maxConnectionTime = defaultConnectionTime
+	db.redisLockRetryDelay = defaultRedisLockRetryDelay
+
+	for _, o := range opts {
+		o(db)
+	}
 
 	return db, nil
 }
@@ -295,7 +330,14 @@ func (db *Database) AddValuerFuncs(funcs ...any) {
 // Reconnect creates new connection(s) for writes and reads
 // and replaces the existing connections with the new ones
 func (db *Database) Reconnect() error {
-	new, err := NewFromDSN(db.WritesDSN, db.ReadsDSN)
+	new, err := NewFromDSN(
+		db.WritesDSN,
+		db.ReadsDSN,
+		WithMaxExecutionTime(db.maxExecutionTime),
+		WithConnectionLifetime(db.maxConnectionTime),
+		WithRedisLockRetryDelay(db.redisLockRetryDelay),
+		WithDefaultCacheDuration(db.defaultCacheDuration),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to reconnect: %w", err)
 	}
@@ -380,6 +422,11 @@ func (db *Database) Select(dest any, q string, cache time.Duration, params ...an
 	return db.query(db.Reads, context.Background(), dest, q, cache, params...)
 }
 
+// SelectCached runs a SELECT query using the database's default cache duration.
+func (db *Database) SelectCached(dest any, q string, params ...any) error {
+	return db.query(db.Reads, context.Background(), dest, q, db.defaultCacheDuration, params...)
+}
+
 func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Rows, error) {
 	var rows Rows
 	err := db.query(db.Reads, context.Background(), &rows, q, cache, params...)
@@ -390,6 +437,16 @@ func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Ro
 	return rows, nil
 }
 
+// SelectRowsCached runs a SELECT query returning Rows using the default cache duration.
+func (db *Database) SelectRowsCached(q string, params ...any) (Rows, error) {
+	return db.SelectRows(q, db.defaultCacheDuration, params...)
+}
+
+// SelectContextCached runs SelectContext using the default cache duration.
+func (db *Database) SelectContextCached(ctx context.Context, dest any, q string, params ...any) error {
+	return db.SelectContext(ctx, dest, q, db.defaultCacheDuration, params...)
+}
+
 func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return db.query(db.Reads, ctx, dest, q, cache, params...)
 }
@@ -398,12 +455,27 @@ func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params
 	return db.query(db.Writes, context.Background(), dest, q, cache, params...)
 }
 
+// SelectWritesCached runs a SELECT on the Writes connection with the default cache duration.
+func (db *Database) SelectWritesCached(dest any, q string, params ...any) error {
+	return db.query(db.Writes, context.Background(), dest, q, db.defaultCacheDuration, params...)
+}
+
 func (db *Database) SelectWritesContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
 	return db.query(db.Writes, ctx, dest, q, cache, params...)
 }
 
+// SelectWritesContextCached runs a SELECT on the Writes connection with context and default cache duration.
+func (db *Database) SelectWritesContextCached(ctx context.Context, dest any, q string, params ...any) error {
+	return db.query(db.Writes, ctx, dest, q, db.defaultCacheDuration, params...)
+}
+
 func (db *Database) SelectJSON(dest any, query string, cache time.Duration, params ...any) error {
 	return db.SelectJSONContext(context.Background(), dest, query, cache, params...)
+}
+
+// SelectJSONCached runs SelectJSON using the default cache duration.
+func (db *Database) SelectJSONCached(dest any, query string, params ...any) error {
+	return db.SelectJSON(dest, query, db.defaultCacheDuration, params...)
 }
 
 func (db *Database) SelectJSONContext(ctx context.Context, dest any, query string, cache time.Duration, params ...any) error {
@@ -426,9 +498,19 @@ func (db *Database) Exists(query string, cache time.Duration, params ...any) (bo
 	return db.exists(db.Reads, context.Background(), query, cache, params...)
 }
 
+// ExistsCached checks for rows using the default cache duration.
+func (db *Database) ExistsCached(query string, params ...any) (bool, error) {
+	return db.exists(db.Reads, context.Background(), query, db.defaultCacheDuration, params...)
+}
+
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return db.exists(db.Reads, ctx, query, cache, params...)
+}
+
+// ExistsContextCached checks for rows with context using the default cache duration.
+func (db *Database) ExistsContextCached(ctx context.Context, query string, params ...any) (bool, error) {
+	return db.exists(db.Reads, ctx, query, db.defaultCacheDuration, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection
@@ -436,9 +518,19 @@ func (db *Database) ExistsWrites(query string, cache time.Duration, params ...an
 	return db.exists(db.Writes, context.Background(), query, cache, params...)
 }
 
+// ExistsWritesCached checks for rows on the Writes connection using the default cache duration.
+func (db *Database) ExistsWritesCached(query string, params ...any) (bool, error) {
+	return db.exists(db.Writes, context.Background(), query, db.defaultCacheDuration, params...)
+}
+
 // ExistsWritesContext efficiently checks if there are any rows in the given query using the `Writes` connection
 func (db *Database) ExistsWritesContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
 	return db.exists(db.Writes, ctx, query, cache, params...)
+}
+
+// ExistsWritesContextCached checks for rows on the Writes connection with context using the default cache duration.
+func (db *Database) ExistsWritesContextCached(ctx context.Context, query string, params ...any) (bool, error) {
+	return db.exists(db.Writes, ctx, query, db.defaultCacheDuration, params...)
 }
 
 func (db *Database) Upsert(insert string, uniqueColumns, updateColumns []string, where string, source any) error {

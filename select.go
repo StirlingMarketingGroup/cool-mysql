@@ -126,7 +126,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 			if err = mutex.Lock(); err != nil {
 				// if we couldn't get the lock, then just check the cache again
-				time.Sleep(RedisLockRetryDelay)
+				time.Sleep(db.redisLockRetryDelay)
 				goto CHECK_CACHE
 			}
 
@@ -197,7 +197,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	start := time.Now()
 
 	var b = backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = MaxExecutionTime
+	b.MaxElapsedTime = db.maxExecutionTime
 	var attempt int
 	err = backoff.Retry(func() error {
 		attempt++
