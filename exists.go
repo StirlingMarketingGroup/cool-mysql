@@ -12,9 +12,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	"github.com/go-redsync/redsync/v4"
 	"github.com/go-sql-driver/mysql"
-	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -59,37 +57,37 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		start := time.Now()
 
 	CHECK_CACHE:
-		exists, err = db.redis.Get(ctx, cacheKey).Bool()
-		if errors.Is(err, redis.Nil) {
+		var buf []byte
+		buf, err = db.cache.Get(ctx, cacheKey)
+		if errors.Is(err, ErrCacheMiss) {
 			// cache miss!
 
-			// grab a lock so we can update the cache
-			mutex := db.rs.NewMutex(cacheKey+":mutex", redsync.WithTries(1))
-
-			if err = mutex.Lock(); err != nil {
-				// if we couldn't get the lock, then just check the cache again
-				time.Sleep(RedisLockRetryDelay)
-				goto CHECK_CACHE
-			}
-
-			unlock := func() {
-				if mutex != nil && len(mutex.Value()) != 0 {
-					if _, err = mutex.Unlock(); err != nil {
-						db.Logger.Warn(fmt.Sprintf("failed to unlock redis mutex: %v", err))
-					}
+			var unlockFn func() error
+			if db.locker != nil {
+				unlockFn, err = db.locker.Lock(ctx, cacheKey+":mutex")
+				if err != nil {
+					time.Sleep(RedisLockRetryDelay)
+					goto CHECK_CACHE
 				}
 			}
 
-			defer unlock()
+			defer func() {
+				if unlockFn != nil {
+					if err := unlockFn(); err != nil {
+						db.Logger.Warn(fmt.Sprintf("failed to unlock cache mutex: %v", err))
+					}
+				}
+			}()
 		} else if err != nil {
-			err = fmt.Errorf("failed to get data from redis: %w", err)
-			if db.HandleRedisError != nil {
-				err = db.HandleRedisError(err)
+			err = fmt.Errorf("failed to get data from cache: %w", err)
+			if db.HandleCacheError != nil {
+				err = db.HandleCacheError(err)
 			}
 			if err != nil {
 				return
 			}
 		} else {
+			exists = len(buf) > 0 && buf[0] == 1
 			tx, _ := conn.(*sql.Tx)
 			db.callLog(LogDetail{
 				Query:    replacedQuery,
@@ -150,11 +148,15 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 	}
 
 	if len(cacheKey) != 0 {
-		err = db.redis.Set(ctx, cacheKey, exists, cacheDuration).Err()
+		var val byte
+		if exists {
+			val = 1
+		}
+		err = db.cache.Set(ctx, cacheKey, []byte{val}, cacheDuration)
 		if err != nil {
-			err = fmt.Errorf("failed to set redis cache: %w", err)
-			if db.HandleRedisError != nil {
-				db.HandleRedisError(err)
+			err = fmt.Errorf("failed to set cache: %w", err)
+			if db.HandleCacheError != nil {
+				db.HandleCacheError(err)
 			}
 		}
 	}
