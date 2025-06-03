@@ -207,6 +207,15 @@ func TestInterpolateParams(t *testing.T) {
 			wantReplacedQuery:    "SELECT * FROM `test` WHERE `hello` = ''",
 			wantNormalizedParams: Params{"world": ""},
 		},
+		{
+			name: "param touching alias",
+			args: args{
+				query:  "SELECT @@foo`bar`",
+				params: []any{Params{"foo": 1}},
+			},
+			wantReplacedQuery:    "SELECT 1 `bar`",
+			wantNormalizedParams: Params{"foo": 1},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

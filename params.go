@@ -132,7 +132,7 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 	defer stringsBuilderPool.Put(s)
 	s.Reset()
 
-	for _, t := range queryTokens {
+	for i, t := range queryTokens {
 		switch t.kind {
 		case queryTokenKindParam:
 			k := strings.ToLower(t.string[2:])
@@ -149,6 +149,16 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 				}
 
 				s.Write(b)
+
+				if next := i + 1; next < len(queryTokens) {
+					nt := queryTokens[next]
+					if nt.pos == t.end+1 {
+						switch nt.kind {
+						case queryTokenKindString, queryTokenKindWord, queryTokenKindVar, queryTokenKindParam:
+							s.WriteByte(' ')
+						}
+					}
+				}
 
 				usedParams[k] = struct{}{}
 				break
