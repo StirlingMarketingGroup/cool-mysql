@@ -580,3 +580,16 @@ func TestSelectRetriesAndCloses(t *testing.T) {
 	// verify we closed the failed-attempt rows and met all expectations
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestSelectChannelUnexportedField(t *testing.T) {
+	db, _, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	type row struct {
+		Foo string
+		bar int
+	}
+	ch := make(chan row)
+	err := db.Select(ch, "SELECT foo FROM bar", 0)
+	require.Error(t, err)
+}
