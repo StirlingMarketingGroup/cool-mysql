@@ -8,26 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// test struct reused
-// (use testPerson from insert_test.go maybe same package so accessible?)
-
-func getTestDatabase(t *testing.T) (*Database, sqlmock.Sqlmock, func()) {
-	mockDB, mock, err := sqlmock.New()
-	require.NoError(t, err)
-
-	mock.ExpectQuery("^SELECT @@max_allowed_packet$").
-		WillReturnRows(sqlmock.NewRows([]string{"@@max_allowed_packet"}).AddRow(int64(4194304)))
-
-	db, err := NewFromConn(mockDB, mockDB)
-	require.NoError(t, err)
-
-	cleanup := func() {
-		require.NoError(t, mock.ExpectationsWereMet())
-		mockDB.Close()
-	}
-
-	return db, mock, cleanup
-}
+// upsert tests reuse the helper function and the testPerson struct defined in
+// other test files. getTestDatabase is declared in select_test.go, so we use
+// that here rather than re-defining it.
 
 // TestUpsertUpdateOnly verifies that when the UPDATE affects a row no INSERT is issued.
 func TestUpsertUpdateOnly(t *testing.T) {
@@ -36,7 +19,7 @@ func TestUpsertUpdateOnly(t *testing.T) {
 
 	p := testPerson{ID: 1, Name: "Alice"}
 
-	updateQ := "update people set `name`=@@name where `id`<=>@@id"
+	updateQ := "update `people` set`name`=@@name where`id`<=>@@id"
 	replaced, _, err := db.InterpolateParams(updateQ, p)
 	require.NoError(t, err)
 
@@ -53,7 +36,7 @@ func TestUpsertUpdateWithInsertAndWhere(t *testing.T) {
 
 	p := testPerson{ID: 2, Name: "Bob"}
 
-	updateQ := "update people set `name`=@@name where `id`<=>@@id and (deleted=0)"
+	updateQ := "update `people` set`name`=@@name where`id`<=>@@id and(deleted=0)"
 	replacedUpdate, _, err := db.InterpolateParams(updateQ, p)
 	require.NoError(t, err)
 
@@ -75,7 +58,7 @@ func TestUpsertExistsNoInsert(t *testing.T) {
 
 	p := testPerson{ID: 3, Name: "Carl"}
 
-	existsQ := "select 0 from people where `id`<=>@@id"
+	existsQ := "select 0 from `people` where`id`<=>@@id"
 	replacedExists, _, err := db.InterpolateParams(existsQ, p)
 	require.NoError(t, err)
 
@@ -93,7 +76,7 @@ func TestUpsertExistsInsertWithWhere(t *testing.T) {
 
 	p := testPerson{ID: 4, Name: "Dave"}
 
-	existsQ := "select 0 from people where `id`<=>@@id and (deleted=0)"
+	existsQ := "select 0 from `people` where`id`<=>@@id and(deleted=0)"
 	replacedExists, _, err := db.InterpolateParams(existsQ, p)
 	require.NoError(t, err)
 
