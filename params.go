@@ -17,7 +17,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Params are a map of paramterer names to values
+// Params are a map of parameter names to values
 // use in the query like `select @@Name`
 type Params map[string]any
 
