@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"reflect"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/civil"
@@ -19,10 +20,18 @@ var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
 var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
 var civilDateType = reflect.TypeOf((*civil.Date)(nil)).Elem()
 
+var structFieldIndexesCache sync.Map
+
 // StructFieldIndexes recursively gets all the struct field index,
 // including the indexes from embedded structs
 func StructFieldIndexes(t reflect.Type) [][]int {
-	return structFieldIndexes(t, nil)
+	if v, ok := structFieldIndexesCache.Load(t); ok {
+		return v.([][]int)
+	}
+
+	indexes := structFieldIndexes(t, nil)
+	structFieldIndexesCache.Store(t, indexes)
+	return indexes
 }
 
 func structFieldIndexes(t reflect.Type, indexPrefix []int) [][]int {
