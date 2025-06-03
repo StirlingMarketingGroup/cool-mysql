@@ -12,6 +12,7 @@
 - **Automatic retries** with exponential backoff
 - **Redis backed caching** with optional distributed locks
 - **Insert/Upsert helpers** that chunk large sets to respect `max_allowed_packet`
+- **Go template syntax** in queries for conditional logic
 - **Flexible selection** into structs, slices, maps, channels or functions
 - **Select single values** (e.g. `string`, `time.Time`)
 - **JSON columns** can unmarshal directly into struct fields
@@ -54,7 +55,7 @@ func main() {
     var users []User
     err = db.Select(&users,
         "SELECT id, name FROM users WHERE created_at > @@since",
-        time.Minute,
+        time.Minute, // cache TTL when Redis is configured
         mysql.Params{"since": time.Now().Add(-24 * time.Hour)},
     )
     if err != nil {
@@ -107,7 +108,7 @@ log.Println(len(all))
 
 ```go
 var name string
-err := db.Select(&name, "SELECT name FROM users WHERE id=@@id", 0, mysql.Params{"id": 5})
+err := db.Select(&name, "SELECT name FROM users WHERE id=@@id", 0, 5) // single param value
 ```
 
 ### Selecting into channels
@@ -133,11 +134,19 @@ err = db.Select(func(u User) {
 }, "SELECT id, name FROM users WHERE active=1", 0)
 ```
 
+### Conditional queries with templates
+
+```go
+var since *time.Time
+query := `SELECT id, name FROM users WHERE 1=1 {{ if .since }}AND created_at > @@since{{ end }}`
+err = db.Select(&users, query, 0, mysql.Params{"since": since})
+```
+
 ### Insert helper
 
 ```go
 newUser := User{ID: 123, Name: "Alice"}
-err = db.Insert("INSERT INTO users (id, name) VALUES (@@id, @@name)", newUser)
+err = db.Insert("users", newUser) // query is built automatically
 ```
 
 The source can also be a channel of structs for batch inserts.
@@ -150,7 +159,7 @@ go func() {
     }
     close(ch)
 }()
-if err := db.Insert("INSERT INTO users (id, name) VALUES (@@id, @@name)", ch); err != nil {
+if err := db.Insert("users", ch); err != nil { // batch insert
     log.Fatal(err)
 }
 ```
@@ -160,12 +169,29 @@ if err := db.Insert("INSERT INTO users (id, name) VALUES (@@id, @@name)", ch); e
 ```go
 up := User{ID: 123, Name: "Alice"}
 err = db.Upsert(
-    "INSERT INTO users (id, name) VALUES (@@id, @@name)",
+    "users",            // table name only
     []string{"id"},    // unique columns
     []string{"name"},  // columns to update on conflict
     "",                // additional WHERE clause
     up,
 )
+```
+
+### Transactions
+
+```go
+tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+defer cancel()
+if err != nil {
+    return fmt.Errorf("failed to create transaction: %w", err)
+}
+ctx = mysql.NewContextWithTx(ctx, tx)
+
+// do DB work with tx in context
+
+if err := commit(); err != nil {
+    return fmt.Errorf("failed to commit tx: %w", err)
+}
 ```
 
 ## License
