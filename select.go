@@ -132,7 +132,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			defer func() {
 				if unlockFn != nil {
 					if err := unlockFn(); err != nil {
-						db.Logger.Warn(fmt.Sprintf("failed to unlock cache mutex: %v", err))
+						db.Logger.Warn("failed to unlock cache mutex", "err", err)
 					}
 				}
 			}()
@@ -470,7 +470,7 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 			fieldIndex, ok := fieldsMap[c]
 			if !ok {
 				if !db.DisableUnusedColumnWarnings {
-					db.Logger.Warn(fmt.Sprintf("column %q from query doesn't belong to any struct fields", c))
+					db.Logger.Warn("unused column", "column", c)
 				}
 				continue
 			}

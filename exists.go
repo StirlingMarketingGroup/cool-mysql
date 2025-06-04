@@ -74,7 +74,7 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 			defer func() {
 				if unlockFn != nil {
 					if err := unlockFn(); err != nil {
-						db.Logger.Warn(fmt.Sprintf("failed to unlock cache mutex: %v", err))
+						db.Logger.Warn("failed to unlock cache mutex", "err", err)
 					}
 				}
 			}()
