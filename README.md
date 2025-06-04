@@ -195,6 +195,33 @@ err = db.Upsert(
 )
 ```
 
+### Struct tags
+
+Fields in a struct can include a `mysql` tag to control how they map to the database. The tag name overrides the column name used by the insert and upsert helpers and when scanning query results. One option modifies how zero values are marshaled:
+
+- `defaultzero` – write `default(column)` instead of the zero value.
+
+This option is also honored when a struct is passed to `InterpolateParams`.
+
+```go
+type Person struct {
+    ID   int    `mysql:"id"`
+    Name string `mysql:"name,defaultzero"`
+}
+
+db.Insert("people", Person{}) // name becomes default(`name`)
+
+_, _, _ = mysql.InterpolateParams(
+    "SELECT * FROM people WHERE name = @@Name",
+    Person{},
+) // produces: SELECT * FROM people WHERE name = default(`name`)
+
+tmpl := `SELECT * FROM people {{ if .Name }}WHERE name=@@Name{{ end }}`
+```
+
+When using template syntax the struct field name (`.Name` above) is used for
+lookups, not the column name from the `mysql` tag.
+
 ### Transactions
 
 ```go
