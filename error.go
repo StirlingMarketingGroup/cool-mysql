@@ -44,7 +44,7 @@ func checkRetryError(err error) (ok bool) {
 	var mysqlErr *stdMysql.MySQLError
 	if errors.As(err, &mysqlErr) {
 		switch mysqlErr.Number {
-		case 1213, 1205, 2006, 2003, 1047, 1452, 1317, 1146, 1305:
+		case 1213, 1205, 2006, 2003, 1047, 1452, 1317, 1146, 1305, 1105:
 			return true
 		default:
 			return false
