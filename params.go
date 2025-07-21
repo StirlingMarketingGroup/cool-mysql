@@ -345,6 +345,18 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		return []byte("default"), nil
 	}
 
+	// The decision whether to render a default value is scoped to the top-level
+	// value associated with a struct field carrying the `defaultzero` option.
+	// Once we have evaluated that value (and found that it should not be
+	// rendered as DEFAULT) the flag must be cleared before we recurse further.
+	//
+	// Keeping the flag for nested marshal calls results in incorrect behavior
+	// for user-defined types that implement driver.Valuer. For example, with a
+	// bool-like Valuer that returns `false`, the recursive marshal call would
+	// see the zero value of `false` and incorrectly output `DEFAULT`. Clearing
+	// the flag here ensures the decision is made exactly once.
+	opts &^= marshalOptDefaultZero
+
 	v := reflect.ValueOf(x)
 	if valuerFuncs != nil && v.IsValid() {
 		pv := v
