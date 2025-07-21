@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/hex"
 	"reflect"
 	"sort"
@@ -120,6 +121,70 @@ func TestInsert_DefaultZero(t *testing.T) {
 	require.NoError(t, err)
 
 	expected := "insert into`t`(`a`)values(default(`a`));\n\n"
+	require.Equal(t, expected, buf.String())
+}
+
+func TestInsert_DefaultZero_NotZero(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type s struct {
+		A int `mysql:"a,defaultzero"`
+	}
+
+	err = db.Insert("t", s{A: 1})
+	require.NoError(t, err)
+
+	expected := "insert into`t`(`a`)values(1);\n\n"
+	require.Equal(t, expected, buf.String())
+}
+
+type zeroer struct {
+	Bool bool
+	Set  bool
+}
+
+func (z zeroer) IsZero() bool {
+	return !z.Set
+}
+
+func (z zeroer) Value() (driver.Value, error) {
+	if !z.Set {
+		return nil, nil
+	}
+	return z.Bool, nil
+}
+
+func TestInsert_DefaultZero_Zeroer(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type s struct {
+		A zeroer `mysql:"a,defaultzero"`
+	}
+
+	err = db.Insert("t", s{})
+	require.NoError(t, err)
+
+	expected := "insert into`t`(`a`)values(default(`a`));\n\n"
+	require.Equal(t, expected, buf.String())
+}
+
+func TestInsert_DefaultZero_ZeroerSetToFalse(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type s struct {
+		A zeroer `mysql:"a,defaultzero"`
+	}
+
+	err = db.Insert("t", s{A: zeroer{Bool: false, Set: true}})
+	require.NoError(t, err)
+
+	expected := "insert into`t`(`a`)values(0);\n\n"
 	require.Equal(t, expected, buf.String())
 }
 
