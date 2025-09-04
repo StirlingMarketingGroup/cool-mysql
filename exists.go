@@ -28,6 +28,7 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 
 	if db.die {
 		fmt.Println(replacedQuery)
+		cancel()
 		os.Exit(0)
 	}
 
@@ -84,7 +85,7 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 				err = db.HandleCacheError(err)
 			}
 			if err != nil {
-				return
+				return exists, err
 			}
 		} else {
 			exists = len(buf) > 0 && buf[0] == 1
@@ -97,20 +98,22 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 				Tx:       tx,
 				Attempt:  1,
 			})
-			return
+			return exists, err
 		}
 	}
 
 	var rows *sql.Rows
 	defer func() {
 		if rows != nil {
-			rows.Close()
+			if err := rows.Close(); err != nil {
+				db.Logger.Warn("failed to close rows", "err", err)
+			}
 		}
 	}()
 
 	start := time.Now()
 
-	var b = backoff.NewExponentialBackOff()
+	b := backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
 	var attempt int
 	err = backoff.Retry(func() error {
@@ -139,12 +142,12 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		return nil
 	}, backoff.WithContext(b, ctx))
 	if err != nil {
-		return
+		return exists, err
 	}
 
 	exists = rows.Next()
 	if err = rows.Err(); err != nil {
-		return
+		return exists, err
 	}
 
 	if len(cacheKey) != 0 {
@@ -156,10 +159,12 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		if err != nil {
 			err = fmt.Errorf("failed to set cache: %w", err)
 			if db.HandleCacheError != nil {
-				db.HandleCacheError(err)
+				if handleErr := db.HandleCacheError(err); handleErr != nil {
+					db.Logger.Warn("failed to handle cache error", "err", handleErr)
+				}
 			}
 		}
 	}
 
-	return
+	return exists, err
 }

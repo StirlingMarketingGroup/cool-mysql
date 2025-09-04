@@ -285,7 +285,7 @@ func parseQuery(query string) []queryToken {
 
 	for i < l {
 		start = i
-		switch b := query[i]; true {
+		switch b := query[i]; {
 		case b == '\'', b == '"', b == '`':
 			next()
 			consumeUntilEsc(b)
@@ -360,7 +360,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 	v := reflect.ValueOf(x)
 	if valuerFuncs != nil && v.IsValid() {
 		pv := v
-		if v.IsValid() && v.Kind() != reflect.Ptr {
+		if v.IsValid() && v.Kind() != reflect.Pointer {
 			pv = reflect.New(v.Type())
 			pv.Elem().Set(v)
 		}
@@ -370,7 +370,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		if !ok {
 			fn, ok = valuerFuncs[reflectUnwrapType(pv.Type())]
 			arg = reflectUnwrap(pv)
-			if arg.Kind() == reflect.Ptr && arg.IsNil() && fn.Type().In(0).Kind() != reflect.Ptr {
+			if arg.Kind() == reflect.Pointer && arg.IsNil() && fn.Type().In(0).Kind() != reflect.Pointer {
 				return []byte("null"), nil
 			}
 		}
@@ -388,14 +388,13 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 	case bool:
 		if !v {
 			return []byte("0"), nil
-
 		}
 		return []byte("1"), nil
 	case string:
 		if len(v) == 0 {
 			return []byte("''"), nil
 		}
-		return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
+		return fmt.Appendf(nil, "_utf8mb4 0x%x collate utf8mb4_unicode_ci", v), nil
 	case []byte:
 		if v == nil {
 			return []byte("null"), nil
@@ -403,7 +402,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		if len(v) == 0 {
 			return []byte("''"), nil
 		}
-		return []byte(fmt.Sprintf("0x%x", v)), nil
+		return fmt.Appendf(nil, "0x%x", v), nil
 	case int:
 		return []byte(strconv.FormatInt(int64(v), 10)), nil
 	case int8:
@@ -436,12 +435,12 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		if v.IsZero() {
 			return []byte("null"), nil
 		}
-		return []byte(fmt.Sprintf("convert_tz('%s','UTC',@@session.time_zone)", v.UTC().Format("2006-01-02 15:04:05.000000"))), nil
+		return fmt.Appendf(nil, "convert_tz('%s','UTC',@@session.time_zone)", v.UTC().Format("2006-01-02 15:04:05.000000")), nil
 	case civil.Date:
 		if v.IsZero() {
 			return []byte("null"), nil
 		}
-		return []byte(fmt.Sprintf("'%s'", v.String())), nil
+		return fmt.Appendf(nil, "'%s'", v.String()), nil
 	case decimal.Decimal:
 		return []byte(v.String()), nil
 	case json.RawMessage:
@@ -451,13 +450,13 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		if len(v) == 0 {
 			return []byte("''"), nil
 		}
-		return []byte(fmt.Sprintf("_utf8mb4 0x%x collate utf8mb4_unicode_ci", v)), nil
+		return fmt.Appendf(nil, "_utf8mb4 0x%x collate utf8mb4_unicode_ci", v), nil
 	case Raw:
 		return []byte(v), nil
 	}
 
 	v = reflect.ValueOf(x)
-	if v.IsValid() && (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) {
+	if v.IsValid() && (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) {
 		if v := v.Elem(); v.IsValid() {
 			return marshal(v.Interface(), opts, fieldName, valuerFuncs)
 		}
@@ -476,7 +475,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 	// a pointer to something can call pointer methods or value methods,
 	// but a value can only call value methods
 	pv := v
-	if v.Kind() != reflect.Ptr {
+	if v.Kind() != reflect.Pointer {
 		pv = reflect.New(v.Type())
 		pv.Elem().Set(v)
 	}
@@ -487,7 +486,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		if !ok {
 			fn, ok = valuerFuncs[reflectUnwrapType(pv.Type())]
 			pv = reflectUnwrap(pv)
-			if pv.Kind() == reflect.Ptr && pv.IsNil() && fn.Type().In(0).Kind() != reflect.Ptr {
+			if pv.Kind() == reflect.Pointer && pv.IsNil() && fn.Type().In(0).Kind() != reflect.Pointer {
 				return []byte("null"), nil
 			}
 		}
@@ -580,7 +579,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 		if refLen == 0 {
 			buf.WriteString("null")
 		}
-		for i := 0; i < refLen; i++ {
+		for i := range refLen {
 			if i != 0 {
 				buf.WriteByte(',')
 			}
@@ -662,7 +661,7 @@ func convertToParams(firstParamName string, v any) (Params, map[string]paramMeta
 	case reflect.Slice, reflect.Array:
 		l := rv.Len()
 		p := make(Params, l)
-		for i := 0; i < l; i++ {
+		for i := range l {
 			p[strconv.Itoa(i)] = rv.Index(i).Interface()
 		}
 
@@ -701,7 +700,7 @@ func parseName(s string) string {
 	return backtickReplacer.Replace(s)
 }
 
-func execTemplate(q string, params Params, addlTmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value) (string, error) {
+func execTemplate(q string, params Params, additionalTmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value) (string, error) {
 	if !strings.Contains(q, "{{") {
 		return q, nil
 	}
@@ -717,7 +716,7 @@ func execTemplate(q string, params Params, addlTmplFuncs template.FuncMap, value
 		},
 	}
 
-	tmpl, err := template.New("query").Funcs(tmplFuncs).Funcs(addlTmplFuncs).Option("missingkey=error").Parse(q)
+	tmpl, err := template.New("query").Funcs(tmplFuncs).Funcs(additionalTmplFuncs).Option("missingkey=error").Parse(q)
 	if err != nil {
 		return "", fmt.Errorf("cool-mysql: failed to parse query template: %w", err)
 	}

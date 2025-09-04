@@ -170,19 +170,16 @@ DUPE_KEY_SEARCH:
 		}
 		s.WriteByte(')')
 		insertPart += s.String()
-	} else {
-		switch rt.Kind() {
-		case reflect.Struct:
-			_, colOpts, _, err = colNamesFromStruct(rt)
-			if err != nil {
-				return err
-			}
+	} else if rt.Kind() == reflect.Struct {
+		_, colOpts, _, err = colNamesFromStruct(rt)
+		if err != nil {
+			return err
 		}
 	}
 
 	if len(columnNames) == 0 {
 		err = ErrNoColumnNames
-		return
+		return err
 	}
 
 	insertPart += "values"
@@ -222,9 +219,11 @@ DUPE_KEY_SEARCH:
 			return nil
 		}
 
-		switch k := row.Kind(); true {
+		switch k := row.Kind(); {
 		case !multiCol:
-			writeValue(row, marshalOptNone, "")
+			if err := writeValue(row, marshalOptNone, ""); err != nil {
+				return "", err
+			}
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
@@ -265,7 +264,9 @@ DUPE_KEY_SEARCH:
 				if colOpts[col].defaultZero {
 					marshalOpts |= marshalOptDefaultZero
 				}
-				writeValue(v, marshalOpts, col)
+				if err := writeValue(v, marshalOpts, col); err != nil {
+					return "", err
+				}
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
@@ -279,7 +280,9 @@ DUPE_KEY_SEARCH:
 					continue
 				}
 
-				writeValue(v, marshalOptNone, col)
+				if err := writeValue(v, marshalOptNone, col); err != nil {
+					return "", err
+				}
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
@@ -287,7 +290,9 @@ DUPE_KEY_SEARCH:
 					rowBuf.WriteByte(',')
 				}
 
-				writeValue(row.Index(i), marshalOptNone, "")
+				if err := writeValue(row.Index(i), marshalOptNone, ""); err != nil {
+					return "", err
+				}
 			}
 		}
 
@@ -335,7 +340,7 @@ DUPE_KEY_SEARCH:
 		// buffer will be too big with this row, exec first and reset buffer
 		if insertBuf.Len()+len(row)+len(onDuplicateKeyUpdate) > int(float64(in.db.MaxInsertSize.Get())*0.80) {
 			if err = insert(); err != nil {
-				return
+				return err
 			}
 		}
 
@@ -357,7 +362,7 @@ DUPE_KEY_SEARCH:
 	}
 
 	if err = insert(); err != nil {
-		return
+		return err
 	}
 
 	return nil
@@ -415,7 +420,7 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 		colFieldMap[column] = f.Name
 	}
 
-	return
+	return columns, colOpts, colFieldMap, err
 }
 
 func colNamesFromQuery(queryTokens []queryToken) (columns []string) {
@@ -426,7 +431,7 @@ func colNamesFromQuery(queryTokens []queryToken) (columns []string) {
 			for i, t := range queryTokens {
 				// if we found an end paren then we are done
 				if t.kind == queryTokenKindParen && t.string == ")" {
-					return
+					return columns
 				}
 
 				if t.kind != queryTokenKindWord && t.kind != queryTokenKindString {
@@ -449,5 +454,5 @@ func colNamesFromQuery(queryTokens []queryToken) (columns []string) {
 		}
 	}
 
-	return
+	return columns
 }

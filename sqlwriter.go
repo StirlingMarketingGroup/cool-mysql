@@ -10,8 +10,9 @@ import (
 )
 
 type sqlWriter struct {
-	path  string
-	index *synct[int]
+	path   string
+	index  *synct[int]
+	logger Logger
 }
 
 var _ handlerWithContext = &sqlWriter{}
@@ -29,14 +30,26 @@ func (w *sqlWriter) ExecContext(ctx context.Context, query string, args ...any) 
 	name = filepath.Join(w.path, name)
 	f, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, os.ModePerm)
 	if f != nil {
-		defer f.Close()
+		defer func() {
+			if err := f.Close(); err != nil {
+				if w.logger != nil {
+					w.logger.Warn("failed to close file", "err", err)
+				}
+			}
+		}()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file %q: %w", w.path, err)
 	}
 
 	gz := gzip.NewWriter(f)
-	defer gz.Close()
+	defer func() {
+		if err := gz.Close(); err != nil {
+			if w.logger != nil {
+				w.logger.Warn("failed to close gzip writer", "err", err)
+			}
+		}
+	}()
 
 	if _, err := gz.Write([]byte(query)); err != nil {
 		return nil, fmt.Errorf("failed to write to file %q: %w", w.path, err)

@@ -57,11 +57,42 @@ func (db *Database) Clone() *Database {
 	return &clone
 }
 
+// setSessionTimezone sets the MySQL session timezone to match the given timezone
+func setSessionTimezone(exec interface {
+	Exec(string, ...interface{}) (sql.Result, error)
+}, dsn string, connType string,
+) error {
+	config, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return fmt.Errorf("failed to parse %s DSN: %w", connType, err)
+	}
+
+	if config.Loc != nil {
+		_, offset := time.Now().In(config.Loc).Zone()
+		offsetHours := offset / 3600
+		offsetMinutes := (offset % 3600) / 60
+
+		var timeZoneStr string
+		if offset == 0 {
+			timeZoneStr = "+00:00"
+		} else {
+			timeZoneStr = fmt.Sprintf("%+03d:%02d", offsetHours, offsetMinutes)
+		}
+
+		_, err = exec.Exec("SET time_zone = ?", timeZoneStr)
+		if err != nil {
+			return fmt.Errorf("failed to set timezone on %s connection: %w", connType, err)
+		}
+	}
+	return nil
+}
+
 func (db *Database) WriterWithSubdir(subdir string) *Database {
 	db = db.Clone()
 	db.Writes = &sqlWriter{
-		path:  filepath.Join(db.Writes.(*sqlWriter).path, subdir),
-		index: new(synct[int]),
+		path:   filepath.Join(db.Writes.(*sqlWriter).path, subdir),
+		index:  new(synct[int]),
+		logger: db.Logger,
 	}
 
 	return db
@@ -123,7 +154,8 @@ func (db *Database) callLog(detail LogDetail) {
 // New creates a new Database
 func New(wUser, wPass, wSchema, wHost string, wPort int,
 	rUser, rPass, rSchema, rHost string, rPort int,
-	collation string, timeZone *time.Location) (db *Database, err error) {
+	collation string, timeZone *time.Location,
+) (db *Database, err error) {
 	writes := mysql.NewConfig()
 	writes.User = wUser
 	writes.Passwd = wPass
@@ -177,9 +209,18 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 		return nil, err
 	}
 
-	writesDSN, _ := mysql.ParseDSN(writes)
+	writesDSN, err := mysql.ParseDSN(writes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse writes DSN: %w", err)
+	}
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
+
+	// Set MySQL session timezone to match the Go driver's Loc parameter
+	// This ensures timestamps returned by MySQL are interpreted correctly
+	if err := setSessionTimezone(writesConn, writes, "writes"); err != nil {
+		return nil, err
+	}
 
 	writesConn.SetConnMaxLifetime(MaxConnectionTime)
 
@@ -197,6 +238,11 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 			return nil, err
 		}
 
+		// Set MySQL session timezone on reads connection as well
+		if err := setSessionTimezone(db.Reads, reads, "reads"); err != nil {
+			return nil, err
+		}
+
 		db.Reads.SetConnMaxLifetime(MaxConnectionTime)
 	} else {
 		db.ReadsDSN = writes
@@ -205,7 +251,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 
 	db.Logger = DefaultLogger()
 
-	return
+	return db, err
 }
 
 // NewFromConn creates a new Database given existing *sql.DB connections.
@@ -248,8 +294,9 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 func NewLocalWriter(path string) (*Database, error) {
 	db := new(Database)
 	sqlWriter := &sqlWriter{
-		path:  path,
-		index: new(synct[int]),
+		path:   path,
+		index:  new(synct[int]),
+		logger: DefaultLogger(),
 	}
 	db.Writes = sqlWriter
 

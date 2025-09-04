@@ -37,7 +37,11 @@ func (db *Database) Count(query string, cache time.Duration, params ...any) (int
 		}
 	}
 
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			db.Logger.Warn("failed to close rows", "err", err)
+		}
+	}()
 
 	count := 0
 	for rows.Next() {
