@@ -592,8 +592,9 @@ func TestSelectChannelUnexportedField(t *testing.T) {
 
 	type row struct {
 		Foo string
+		bar int //nolint:unused
 	}
 	ch := make(chan row)
-	err := db.Select(ch, "SELECT foo FROM bar", 0)
-	require.Error(t, err)
+	err := db.Select(ch, "SELECT foo, bar FROM table_name", 0)
+	require.ErrorIs(t, err, ErrUnexportedField)
 }

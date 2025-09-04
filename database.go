@@ -71,13 +71,11 @@ func setSessionTimezone(exec interface {
 		_, offset := time.Now().In(config.Loc).Zone()
 		offsetHours := offset / 3600
 		offsetMinutes := (offset % 3600) / 60
-
-		var timeZoneStr string
-		if offset == 0 {
-			timeZoneStr = "+00:00"
-		} else {
-			timeZoneStr = fmt.Sprintf("%+03d:%02d", offsetHours, offsetMinutes)
+		if offsetMinutes < 0 {
+			offsetMinutes = -offsetMinutes
 		}
+
+		timeZoneStr := fmt.Sprintf("%+03d:%02d", offsetHours, offsetMinutes)
 
 		_, err = exec.Exec("SET time_zone = ?", timeZoneStr)
 		if err != nil {
