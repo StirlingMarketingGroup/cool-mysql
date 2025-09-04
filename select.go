@@ -21,8 +21,10 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-var ErrDestType = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
-var ErrUnexportedField = fmt.Errorf("cool-mysql: struct has unexported fields and cannot be used with channels")
+var (
+	ErrDestType        = fmt.Errorf("cool-mysql: select destination must be a channel or a pointer to something")
+	ErrUnexportedField = fmt.Errorf("cool-mysql: struct has unexported fields and cannot be used with channels")
+)
 
 func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -37,6 +39,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		fmt.Println(replacedQuery)
 		j, _ := json.Marshal(normalizedParams)
 		fmt.Println(string(j))
+		cancel()
 		os.Exit(0)
 	}
 
@@ -79,8 +82,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 						Send: el,
 					},
 				}
-				switch index, _, _ := reflect.Select(cases); index {
-				case 0:
+				if index, _, _ := reflect.Select(cases); index == 0 {
 					cancel()
 					return context.Canceled
 				}
@@ -182,7 +184,11 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	if c, ok := conn.(*sql.DB); ok {
 		c2, err := c.Conn(ctx)
 		if c2 != nil {
-			defer c2.Close()
+			defer func() {
+				if err := c2.Close(); err != nil {
+					db.Logger.Warn("failed to close connection", "err", err)
+				}
+			}()
 		}
 		if err != nil {
 			return fmt.Errorf("failed to get connection: %w", err)
@@ -193,7 +199,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	var rows *sql.Rows
 	start := time.Now()
 
-	var b = backoff.NewExponentialBackOff()
+	b := backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = MaxExecutionTime
 	var attempt int
 	err = backoff.Retry(func() error {
@@ -212,7 +218,9 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 		if err != nil {
 			if rows2 != nil {
-				rows2.Close()
+				if closeErr := rows2.Close(); closeErr != nil {
+					db.Logger.Warn("failed to close rows", "err", closeErr)
+				}
 			}
 
 			if checkRetryError(err) {
@@ -233,7 +241,11 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		return err
 	}
 
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			db.Logger.Warn("failed to close rows", "err", err)
+		}
+	}()
 
 	columns, err := rows.Columns()
 	if err != nil {

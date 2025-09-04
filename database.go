@@ -60,8 +60,9 @@ func (db *Database) Clone() *Database {
 func (db *Database) WriterWithSubdir(subdir string) *Database {
 	db = db.Clone()
 	db.Writes = &sqlWriter{
-		path:  filepath.Join(db.Writes.(*sqlWriter).path, subdir),
-		index: new(synct[int]),
+		path:   filepath.Join(db.Writes.(*sqlWriter).path, subdir),
+		index:  new(synct[int]),
+		logger: db.Logger,
 	}
 
 	return db
@@ -123,7 +124,8 @@ func (db *Database) callLog(detail LogDetail) {
 // New creates a new Database
 func New(wUser, wPass, wSchema, wHost string, wPort int,
 	rUser, rPass, rSchema, rHost string, rPort int,
-	collation string, timeZone *time.Location) (db *Database, err error) {
+	collation string, timeZone *time.Location,
+) (db *Database, err error) {
 	writes := mysql.NewConfig()
 	writes.User = wUser
 	writes.Passwd = wPass
@@ -181,6 +183,26 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
+	// Set MySQL session timezone to match the Go driver's Loc parameter
+	// This ensures timestamps returned by MySQL are interpreted correctly
+	if writesDSN.Loc != nil {
+		_, offset := time.Now().In(writesDSN.Loc).Zone()
+		offsetHours := offset / 3600
+		offsetMinutes := (offset % 3600) / 60
+
+		var timeZoneStr string
+		if offset == 0 {
+			timeZoneStr = "+00:00"
+		} else {
+			timeZoneStr = fmt.Sprintf("%+03d:%02d", offsetHours, offsetMinutes)
+		}
+
+		_, err = writesConn.Exec("SET time_zone = ?", timeZoneStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set timezone on writes connection: %w", err)
+		}
+	}
+
 	writesConn.SetConnMaxLifetime(MaxConnectionTime)
 
 	db.Writes = writesConn
@@ -197,6 +219,26 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 			return nil, err
 		}
 
+		// Set MySQL session timezone on reads connection as well
+		readsDSN, _ := mysql.ParseDSN(reads)
+		if readsDSN.Loc != nil {
+			_, offset := time.Now().In(readsDSN.Loc).Zone()
+			offsetHours := offset / 3600
+			offsetMinutes := (offset % 3600) / 60
+
+			var timeZoneStr string
+			if offset == 0 {
+				timeZoneStr = "+00:00"
+			} else {
+				timeZoneStr = fmt.Sprintf("%+03d:%02d", offsetHours, offsetMinutes)
+			}
+
+			_, err = db.Reads.Exec("SET time_zone = ?", timeZoneStr)
+			if err != nil {
+				return nil, fmt.Errorf("failed to set timezone on reads connection: %w", err)
+			}
+		}
+
 		db.Reads.SetConnMaxLifetime(MaxConnectionTime)
 	} else {
 		db.ReadsDSN = writes
@@ -205,7 +247,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 
 	db.Logger = DefaultLogger()
 
-	return
+	return db, err
 }
 
 // NewFromConn creates a new Database given existing *sql.DB connections.
@@ -248,8 +290,9 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 func NewLocalWriter(path string) (*Database, error) {
 	db := new(Database)
 	sqlWriter := &sqlWriter{
-		path:  path,
-		index: new(synct[int]),
+		path:   path,
+		index:  new(synct[int]),
+		logger: DefaultLogger(),
 	}
 	db.Writes = sqlWriter
 

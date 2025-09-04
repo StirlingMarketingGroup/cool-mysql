@@ -20,12 +20,17 @@ type MapRow map[string]any
 
 type MapRows []MapRow
 
-type Row = MapRow
-type Rows = MapRows
+type (
+	Row  = MapRow
+	Rows = MapRows
+)
 
 func Value[T any](v any) T {
 	dest := new(T)
-	convertAssignRows(dest, v)
+	if err := convertAssignRows(dest, v); err != nil {
+		// Return zero value if conversion fails
+		return *dest
+	}
 
 	return *dest
 }
@@ -190,8 +195,7 @@ func convertAssignRows(dest, src any) error {
 			return nil
 		}
 	case decimalDecompose:
-		switch d := dest.(type) {
-		case decimalCompose:
+		if d, ok := dest.(decimalCompose); ok {
 			return d.Compose(s.Decompose(nil))
 		}
 	case nil:
@@ -410,7 +414,7 @@ func asBytes(buf []byte, rv reflect.Value) (b []byte, ok bool) {
 		s := rv.String()
 		return append(buf, s...), true
 	}
-	return
+	return b, ok
 }
 
 type decimalDecompose interface {

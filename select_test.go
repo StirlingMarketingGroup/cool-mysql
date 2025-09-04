@@ -27,14 +27,15 @@ func getTestDatabase(t *testing.T) (*Database, sqlmock.Sqlmock, func()) {
 
 	cleanup := func() {
 		require.NoError(t, mock.ExpectationsWereMet())
-		mockDB.Close()
+		if err := mockDB.Close(); err != nil {
+			t.Logf("failed to close mock DB: %v", err)
+		}
 	}
 
 	return db, mock, cleanup
 }
 
 func Test_query(t *testing.T) {
-
 	var timeVal time.Time
 	var timePtr *time.Time
 
@@ -552,7 +553,11 @@ func Test_isMultiValueElement(t *testing.T) {
 func TestSelectRetriesAndCloses(t *testing.T) {
 	mockDB, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer mockDB.Close()
+	defer func() {
+		if err := mockDB.Close(); err != nil {
+			t.Logf("failed to close mock DB: %v", err)
+		}
+	}()
 
 	// 1) Expect the max_allowed_packet lookup
 	mock.ExpectQuery("^SELECT @@max_allowed_packet$").
@@ -587,7 +592,6 @@ func TestSelectChannelUnexportedField(t *testing.T) {
 
 	type row struct {
 		Foo string
-		bar int
 	}
 	ch := make(chan row)
 	err := db.Select(ch, "SELECT foo FROM bar", 0)

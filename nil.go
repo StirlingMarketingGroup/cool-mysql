@@ -5,6 +5,6 @@ import (
 )
 
 func isNil(a any) bool {
-	defer func() { recover() }()
+	defer func() { _ = recover() }()
 	return a == nil || reflect.ValueOf(a).IsNil()
 }
