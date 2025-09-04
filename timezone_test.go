@@ -44,7 +44,7 @@ func TestTimezoneSystemHandlingExplanation(t *testing.T) {
 	t.Log("  - SELECT operations return times that are correctly interpreted")
 	t.Log("  - Both INSERT (with convert_tz) and SELECT work correctly")
 	t.Log("")
-	t.Log("CODE: database.go lines 188-203 and 222-240")
+	t.Log("CODE: setSessionTimezone() helper function in database.go")
 }
 
 // TestDatabaseTimezoneSetup tests that MySQL session timezone is set to match Go driver's Loc parameter
