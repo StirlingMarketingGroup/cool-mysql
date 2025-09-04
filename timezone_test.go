@@ -16,6 +16,8 @@ func TestTimezoneSystemHandling(t *testing.T) {
 		t.Fatalf("marshal failed: %v", err)
 	}
 
+	// Our marshalling uses convert_tz with @@session.time_zone
+	// The fix ensures @@session.time_zone is set to a valid timezone (not "SYSTEM")
 	expected := fmt.Sprintf("convert_tz('%s','UTC',@@session.time_zone)",
 		testTime.UTC().Format("2006-01-02 15:04:05.000000"))
 
@@ -24,14 +26,25 @@ func TestTimezoneSystemHandling(t *testing.T) {
 	}
 
 	t.Logf("Generated SQL: %s", string(result))
+	t.Logf("This works because NewFromDSN() sets session timezone to match DSN Loc parameter")
 }
 
-// TestTimezoneSystemHandlingExplanation documents the behavior
+// TestTimezoneSystemHandlingExplanation documents the actual solution
 func TestTimezoneSystemHandlingExplanation(t *testing.T) {
-	t.Log("This test demonstrates the fix for the macOS timezone issue:")
-	t.Log("- Before fix: convert_tz(timestamp, 'UTC', @@session.time_zone)")
-	t.Log("- After fix: CASE WHEN @@session.time_zone = 'SYSTEM' THEN convert_tz(timestamp,'UTC',@@system_time_zone) ELSE convert_tz(timestamp,'UTC',@@session.time_zone) END")
-	t.Log("- This ensures proper timezone conversion even when @@session.time_zone returns 'SYSTEM'")
+	t.Log("This test documents the fix for the timezone mismatch issue:")
+	t.Log("PROBLEM:")
+	t.Log("  - MySQL session timezone didn't match Go driver's Loc parameter")
+	t.Log("  - When MySQL session has @@session.time_zone = 'SYSTEM' but Go expects specific timezone")
+	t.Log("  - SELECT operations return DATETIME values that get misinterpreted")
+	t.Log("  - Example: MySQL returns '12:00:00', Go interprets it in wrong timezone")
+	t.Log("")
+	t.Log("SOLUTION:")
+	t.Log("  - NewFromDSN() sets MySQL session timezone to match DSN Loc parameter")
+	t.Log("  - This ensures session timezone matches what Go driver expects")
+	t.Log("  - SELECT operations return times that are correctly interpreted")
+	t.Log("  - Both INSERT (with convert_tz) and SELECT work correctly")
+	t.Log("")
+	t.Log("CODE: database.go lines 188-203 and 222-240")
 }
 
 // TestDatabaseTimezoneSetup tests that MySQL session timezone is set to match Go driver's Loc parameter
