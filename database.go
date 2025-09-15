@@ -59,7 +59,7 @@ func (db *Database) Clone() *Database {
 
 // setSessionTimezone sets the MySQL session timezone to match the given timezone
 func setSessionTimezone(exec interface {
-	Exec(string, ...interface{}) (sql.Result, error)
+	Exec(string, ...any) (sql.Result, error)
 }, dsn string, connType string,
 ) error {
 	config, err := mysql.ParseDSN(dsn)
