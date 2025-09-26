@@ -665,7 +665,7 @@ func convertToParams(firstParamName string, v any) (Params, map[string]paramMeta
 
 				meta[f.Name] = paramMeta{
 					defaultZero: t.HasOption("defaultzero"),
-					columnName:  columnName,
+                    columnName:  strings.ReplaceAll(columnName, "`", "``"),
 				}
 			}
 		}
