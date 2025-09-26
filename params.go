@@ -135,15 +135,24 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 	for i, t := range queryTokens {
 		switch t.kind {
 		case queryTokenKindParam:
-			k := strings.ToLower(t.string[2:])
+			name := t.string[2:]
+			k := strings.ToLower(name)
 			if v, ok := mergedParams[k]; ok {
-				var opts marshalOpt
+				var (
+					opts      marshalOpt
+					fieldName = name
+				)
 				if mergedParamMetas != nil {
-					if mergedParamMetas[k].defaultZero {
-						opts |= marshalOptDefaultZero
+					if meta, ok := mergedParamMetas[k]; ok {
+						if meta.defaultZero {
+							opts |= marshalOptDefaultZero
+						}
+						if len(meta.columnName) != 0 {
+							fieldName = meta.columnName
+						}
 					}
 				}
-				b, err := marshal(v, opts, k, valuerFuncs)
+				b, err := marshal(v, opts, fieldName, valuerFuncs)
 				if err != nil {
 					return "", nil, err
 				}
@@ -603,6 +612,7 @@ func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.T
 
 type paramMeta struct {
 	defaultZero bool
+	columnName  string
 }
 
 func convertToParams(firstParamName string, v any) (Params, map[string]paramMeta) {
@@ -644,8 +654,18 @@ func convertToParams(firstParamName string, v any) (Params, map[string]paramMeta
 
 			t, _ := structtag.Parse(string(f.Tag))
 			if t, _ := t.Get("mysql"); t != nil {
+				columnName := f.Name
+				if len(t.Name) != 0 {
+					if decoded, err := decodeHex(t.Name); err == nil {
+						columnName = decoded
+					} else {
+						columnName = t.Name
+					}
+				}
+
 				meta[f.Name] = paramMeta{
 					defaultZero: t.HasOption("defaultzero"),
+                    columnName:  strings.ReplaceAll(columnName, "`", "``"),
 				}
 			}
 		}
