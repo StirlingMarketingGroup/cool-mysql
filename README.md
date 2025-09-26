@@ -74,12 +74,15 @@ cool-mysql can be configured using environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `COOL_MAX_EXECUTION_TIME_TIME` | `27` (seconds) | Maximum query execution time (90% of 30 seconds) |
+| `COOL_MAX_ATTEMPTS` | `0` (attempts) | Maximum query attempts including the first try (<=0 disables the cap) |
 | `COOL_REDIS_LOCK_RETRY_DELAY` | `0.020` (seconds) | Delay between Redis lock retry attempts |
 | `COOL_MYSQL_MAX_QUERY_LOG_LENGTH` | `4096` (bytes) | Maximum length of queries in error logs |
 
 **Example:**
+
 ```bash
 export COOL_MAX_EXECUTION_TIME_TIME=60  # 60 second timeout
+export COOL_MAX_ATTEMPTS=5              # limit to 5 attempts per query
 export COOL_REDIS_LOCK_RETRY_DELAY=0.050  # 50ms retry delay
 export COOL_MYSQL_MAX_QUERY_LOG_LENGTH=8192  # 8KB log limit
 ```
@@ -172,11 +175,13 @@ err = db.Select(func(u User) {
 ### Additional query methods
 
 **Count records efficiently:**
+
 ```go
 count, err := db.Count("SELECT COUNT(*) FROM users WHERE active = @@active", 0, mysql.Params{"active": 1})
 ```
 
 **Check existence:**
+
 ```go
 exists, err := db.Exists("SELECT 1 FROM users WHERE email = @@email", 0, mysql.Params{"email": "user@example.com"})
 // Use ExistsWrites() to query the write connection
@@ -184,18 +189,21 @@ existsOnWrite, err := db.ExistsWrites("SELECT 1 FROM users WHERE email = @@email
 ```
 
 **Query against write connection:**
+
 ```go
 var users []User
 err := db.SelectWrites(&users, "SELECT id, name FROM users WHERE id = @@id", mysql.Params{"id": 123})
 ```
 
 **Direct JSON results:**
+
 ```go
 var result json.RawMessage
 err := db.SelectJSON(&result, "SELECT JSON_OBJECT('id', id, 'name', name) FROM users WHERE id = @@id", 0, mysql.Params{"id": 123})
 ```
 
 **Execute with detailed results:**
+
 ```go
 result, err := db.ExecResult("UPDATE users SET name = @@name WHERE id = @@id", mysql.Params{"name": "Alice", "id": 123})
 if err != nil {
@@ -220,9 +228,9 @@ err := db.SelectContext(ctx, &users, "SELECT id, name FROM users", 0)
 Use `mysql.Raw` for literal SQL that shouldn't be escaped:
 
 ```go
-err := db.Select(&users, 
-    "SELECT id, name FROM users WHERE created_at > @@date AND @@condition", 
-    0, 
+err := db.Select(&users,
+    "SELECT id, name FROM users WHERE created_at > @@date AND @@condition",
+    0,
     mysql.Params{
         "date": time.Now().Add(-24*time.Hour),
         "condition": mysql.Raw("status = 'active'"), // not escaped
@@ -280,7 +288,7 @@ Fields in a struct can include a `mysql` tag to control how they map to the data
 **Available options:**
 
 - `defaultzero` – write `default(column_name)` instead of the zero value during inserts and parameter interpolation
-- `insertDefault` – alias for `defaultzero` (same behavior)  
+- `insertDefault` – alias for `defaultzero` (same behavior)
 - `omitempty` – alias for `defaultzero` (same behavior)
 - `"-"` – skip this field entirely (not included in inserts, selects, or parameter interpolation)
 
@@ -297,7 +305,7 @@ type Person struct {
     Special  string    `mysql:"column0x2cname"`         // becomes "column,name"
 }
 
-db.Insert("people", Person{}) 
+db.Insert("people", Person{})
 // name, email, created_at become default(`name`), default(`email`), default(`created_at`)
 // Internal field is completely ignored
 
@@ -310,6 +318,7 @@ tmpl := `SELECT * FROM people {{ if .Name }}WHERE name=@@Name{{ end }}`
 ```
 
 **Important notes:**
+
 - When using template syntax, the struct field name (`.Name` above) is used for lookups, not the column name from the `mysql` tag
 - All three options (`defaultzero`, `insertDefault`, `omitempty`) have identical behavior
 - The `"-"` option completely excludes the field from all database operations
@@ -367,6 +376,7 @@ if err := commit(); err != nil {
 ### Interfaces and Custom Types
 
 **Zeroer Interface:** Custom zero-value detection
+
 ```go
 type CustomTime struct {
     time.Time
@@ -384,6 +394,7 @@ type Event struct {
 ```
 
 **Valueser Interface:** Custom value conversion
+
 ```go
 type Status int
 
@@ -406,6 +417,7 @@ type User struct {
 ### Advanced Caching
 
 **MultiCache:** Stack multiple cache layers
+
 ```go
 // Combine in-memory and Redis caching
 weak := mysql.NewWeakCache()
@@ -416,10 +428,11 @@ db.UseCache(multi)
 ```
 
 **Cache with distributed locking:**
+
 ```go
 db.EnableRedis(redisClient)
 // Queries will use distributed locks to prevent cache stampedes
-err := db.Select(&users, "SELECT * FROM users WHERE popular = 1", 
+err := db.Select(&users, "SELECT * FROM users WHERE popular = 1",
     5*time.Minute, // cache TTL
 )
 ```
@@ -432,7 +445,7 @@ var rows []mysql.MapRow
 err := db.Select(&rows, "SELECT id, name, email FROM users", 0)
 
 // SliceRow - convert to slices
-var rows []mysql.SliceRow  
+var rows []mysql.SliceRow
 err := db.Select(&rows, "SELECT id, name, email FROM users", 0)
 
 // Custom row processing
@@ -513,15 +526,15 @@ for user := range userCh {
 
 ```go
 // Short TTL for frequently changing data
-err := db.Select(&activeUsers, "SELECT * FROM users WHERE active = 1", 
+err := db.Select(&activeUsers, "SELECT * FROM users WHERE active = 1",
     30*time.Second)
 
 // Long TTL for relatively static data
-err := db.Select(&countries, "SELECT * FROM countries", 
+err := db.Select(&countries, "SELECT * FROM countries",
     24*time.Hour)
 
 // No caching for real-time data
-err := db.Select(&currentBalance, "SELECT balance FROM accounts WHERE id = ?", 
+err := db.Select(&currentBalance, "SELECT balance FROM accounts WHERE id = ?",
     0, userID) // TTL = 0 means no caching
 ```
 
@@ -530,7 +543,7 @@ err := db.Select(&currentBalance, "SELECT balance FROM accounts WHERE id = ?",
 ```go
 // Use templates for dynamic queries to reduce query plan cache pollution
 query := `
-SELECT * FROM users 
+SELECT * FROM users
 WHERE 1=1
 {{ if .ActiveOnly }}AND active = 1{{ end }}
 {{ if .Department }}AND department = @@Department{{ end }}
@@ -551,7 +564,7 @@ err := db.Select(&users, query, cacheTTL, params)
 
 1. **Use appropriate TTL values:**
    - Static data: hours to days
-   - Semi-static data: minutes to hours  
+   - Semi-static data: minutes to hours
    - Dynamic data: seconds to minutes
    - Real-time data: no caching (TTL = 0)
 
@@ -578,12 +591,14 @@ cool-mysql includes comprehensive error handling and automatic retry mechanisms:
 The library automatically retries operations that fail due to transient MySQL errors:
 
 **Retry-eligible MySQL error codes:**
+
 - `1213` - Deadlock found when trying to get lock
 - `1205` - Lock wait timeout exceeded
 - `2006` - MySQL server has gone away
 - `2013` - Lost connection to MySQL server during query
 
 **Retry behavior:**
+
 - Uses exponential backoff with jitter
 - Maximum retry attempts determined by context timeout
 - Delays start at ~20ms and increase exponentially
@@ -627,4 +642,3 @@ func performComplexOperation(ctx context.Context, db *mysql.DB) error {
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-

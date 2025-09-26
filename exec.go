@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -31,16 +31,16 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, n
 	start := time.Now()
 	var res sql.Result
 
-	var b = backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = MaxExecutionTime
+	b := backoff.NewExponentialBackOff()
 	var attempt int
 	var rowsAffected int64
-	exec := func() error {
+	operation := func() (sql.Result, error) {
 		attempt++
-		var err error
-		res, err = conn.ExecContext(ctx, replacedQuery)
+		res, err := conn.ExecContext(ctx, replacedQuery)
 		if res != nil {
 			rowsAffected, _ = res.RowsAffected()
+		} else {
+			rowsAffected = 0
 		}
 
 		realTx, _ := conn.(*sql.Tx)
@@ -85,22 +85,30 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, n
 				return err
 			}
 			if err := handleDeadlock(err); err != nil {
-				return err
+				return nil, err
 			}
 
 			if checkRetryError(err) {
-				return err
-			} else if errors.Is(err, mysql.ErrInvalidConn) {
-				return db.Test()
-			} else {
-				return backoff.Permanent(err)
+				return nil, err
 			}
+			if errors.Is(err, mysql.ErrInvalidConn) {
+				return nil, db.Test()
+			}
+			return nil, backoff.Permanent(err)
 		}
 
-		return nil
+		return res, nil
 	}
 
-	err = backoff.Retry(exec, backoff.WithContext(b, ctx))
+	options := []backoff.RetryOption{
+		backoff.WithBackOff(b),
+		backoff.WithMaxElapsedTime(MaxExecutionTime),
+	}
+	if MaxAttempts > 0 {
+		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
+	}
+
+	res, err = backoff.Retry(ctx, operation, options...)
 	if err != nil {
 		return nil, Error{
 			Err:           err,

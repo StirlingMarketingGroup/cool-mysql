@@ -5,14 +5,6 @@ import (
 	"strconv"
 )
 
-// getenv gets an environment variable with a default string
-func getenv(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
-	}
-	return fallback
-}
-
 // getenvInt64 gets an environment variable with a default int64
 func getenvInt64(key string, fallback int64) int64 {
 	if value, ok := os.LookupEnv(key); ok {

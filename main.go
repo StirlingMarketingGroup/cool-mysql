@@ -12,4 +12,7 @@ var MaxExecutionTime = time.Duration(getenvInt64("COOL_MAX_EXECUTION_TIME_TIME",
 
 var MaxConnectionTime = MaxExecutionTime
 
+// MaxAttempts caps total attempts per query, including the first try (<=0 disables the cap).
+var MaxAttempts = getenvInt("COOL_MAX_ATTEMPTS", 0)
+
 var RedisLockRetryDelay = time.Duration(getenvFloat("COOL_REDIS_LOCK_RETRY_DELAY", .020)) * time.Second

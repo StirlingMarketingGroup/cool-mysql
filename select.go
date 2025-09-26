@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/civil"
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/fatih/structtag"
 	"github.com/go-sql-driver/mysql"
 	"github.com/vmihailenco/msgpack/v5"
@@ -196,15 +196,13 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		conn = c2
 	}
 
-	var rows *sql.Rows
 	start := time.Now()
 
 	b := backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = MaxExecutionTime
 	var attempt int
-	err = backoff.Retry(func() error {
+	operation := func() (*sql.Rows, error) {
 		attempt++
-		rows2, err := conn.QueryContext(ctx, replacedQuery)
+		rows, err := conn.QueryContext(ctx, replacedQuery)
 
 		tx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
@@ -217,33 +215,42 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		})
 
 		if err != nil {
-			if rows2 != nil {
-				if closeErr := rows2.Close(); closeErr != nil {
+			if rows != nil {
+				if closeErr := rows.Close(); closeErr != nil {
 					db.Logger.Warn("failed to close rows", "err", closeErr)
 				}
 			}
 
 			if checkRetryError(err) {
-				return err
+				return nil, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
-				return db.Test()
+				return nil, db.Test()
 			}
-			{
-				return backoff.Permanent(err)
-			}
+			return nil, backoff.Permanent(err)
 		}
 
-		rows = rows2
-		return nil
-	}, backoff.WithContext(b, ctx))
+		return rows, nil
+	}
+
+	options := []backoff.RetryOption{
+		backoff.WithBackOff(b),
+		backoff.WithMaxElapsedTime(MaxExecutionTime),
+	}
+	if MaxAttempts > 0 {
+		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
+	}
+
+	rows, err := backoff.Retry(ctx, operation, options...)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
-		if err := rows.Close(); err != nil {
-			db.Logger.Warn("failed to close rows", "err", err)
+		if rows != nil {
+			if err := rows.Close(); err != nil {
+				db.Logger.Warn("failed to close rows", "err", err)
+			}
 		}
 	}()
 
@@ -387,7 +394,7 @@ func getElementTypeFromDest(destRef reflect.Value) (t reflect.Type, multiRow boo
 		indirectDestRefType != mapRowType {
 		switch k := indirectDestRef.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice:
-			if !((k == reflect.Array || k == reflect.Slice) && indirectDestRefType.Elem().Kind() == reflect.Uint8) {
+			if (k != reflect.Array && k != reflect.Slice) || indirectDestRefType.Elem().Kind() != reflect.Uint8 {
 				return indirectDestRefType.Elem(), true
 			}
 		}
@@ -408,7 +415,7 @@ func isMultiValueElement(t reflect.Type) bool {
 	if !reflect.New(t).Type().Implements(scannerType) && t != timeType && t != civilDateType {
 		switch k := t.Kind(); k {
 		case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.Struct:
-			if !((k == reflect.Array || k == reflect.Slice) && t.Elem().Kind() == reflect.Uint8) {
+			if (k != reflect.Array && k != reflect.Slice) || t.Elem().Kind() != reflect.Uint8 {
 				return true
 			}
 		}
