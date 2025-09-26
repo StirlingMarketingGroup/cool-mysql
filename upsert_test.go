@@ -3,6 +3,7 @@ package mysql
 import (
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
@@ -89,5 +90,27 @@ func TestUpsertExistsInsertWithWhere(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(replacedInsert)).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err = db.Upsert("people", []string{"id"}, nil, "deleted=0", p)
+	require.NoError(t, err)
+}
+
+func TestUpsertDefaultZeroUsesColumnName(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	type shipment struct {
+		ID        int       `mysql:"id"`
+		ShippedAt time.Time `mysql:"_Shipped,defaultzero"`
+	}
+
+	row := shipment{ID: 5}
+
+	updateQ := "update `shipments` set`_Shipped`=@@ShippedAt where`id`<=>@@ID"
+	replaced, _, err := db.InterpolateParams(updateQ, row)
+	require.NoError(t, err)
+	require.Contains(t, replaced, "default(`_Shipped`)")
+
+	mock.ExpectExec(regexp.QuoteMeta(replaced)).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = db.Upsert("shipments", []string{"id"}, []string{"_Shipped"}, "", row)
 	require.NoError(t, err)
 }
