@@ -8,7 +8,7 @@ require (
 	cloud.google.com/go v0.115.1
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/bradfitz/gomemcache v0.0.0-20250403215159-8d39553ac7cf
-	github.com/cenkalti/backoff/v4 v4.2.1
+	github.com/cenkalti/backoff/v5 v5.0.1
 	github.com/fatih/structtag v1.2.0
 	github.com/go-redsync/redsync/v4 v4.8.1
 	github.com/go-sql-driver/mysql v1.7.1
