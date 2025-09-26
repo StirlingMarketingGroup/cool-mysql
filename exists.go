@@ -144,8 +144,10 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		return exists, err
 	}
 	defer func() {
-		if err := rows.Close(); err != nil {
-			db.Logger.Warn("failed to close rows", "err", err)
+		if rows != nil {
+			if err := rows.Close(); err != nil {
+				db.Logger.Warn("failed to close rows", "err", err)
+			}
 		}
 	}()
 

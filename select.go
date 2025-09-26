@@ -247,8 +247,10 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	}
 
 	defer func() {
-		if err := rows.Close(); err != nil {
-			db.Logger.Warn("failed to close rows", "err", err)
+		if rows != nil {
+			if err := rows.Close(); err != nil {
+				db.Logger.Warn("failed to close rows", "err", err)
+			}
 		}
 	}()
 
