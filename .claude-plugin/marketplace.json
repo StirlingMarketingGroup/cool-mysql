@@ -1,0 +1,13 @@
+{
+  "name": "cool-mysql",
+  "owner": {
+    "name": "Stirling Marketing Group"
+  },
+  "plugins": [
+    {
+      "name": "cool-mysql",
+      "source": "./.claude/skills/cool-mysql",
+      "description": "Comprehensive guide for cool-mysql Go library - MySQL helper with dual connection pools, named parameters, template syntax, caching, and advanced query patterns"
+    }
+  ]
+}
