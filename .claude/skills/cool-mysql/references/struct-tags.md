@@ -61,7 +61,7 @@ type User struct {
     UserID int `mysql:"id"` // Field name differs from column name
 }
 
-// INSERT INTO users (id) VALUES (?)
+// INSERT INTO `users` (id) VALUES (?)
 ```
 
 ### defaultzero Option
@@ -74,9 +74,9 @@ type User struct {
 }
 
 // If CreatedAt.IsZero():
-//   INSERT INTO users (id, name, created_at) VALUES (?, ?, DEFAULT(created_at))
+//   INSERT INTO `users` (id, `name`, created_at) VALUES (?, ?, DEFAULT(created_at))
 // Else:
-//   INSERT INTO users (id, name, created_at) VALUES (?, ?, ?)
+//   INSERT INTO `users` (id, `name`, created_at) VALUES (?, ?, ?)
 ```
 
 ### omitempty Option
@@ -110,7 +110,7 @@ type User struct {
     internal string // Unexported fields also ignored
 }
 
-// INSERT INTO users (id) VALUES (?)
+// INSERT INTO `users` (id) VALUES (?)
 // Password is never inserted or selected
 ```
 
@@ -154,7 +154,7 @@ user := User{
 }
 
 db.Insert("users", user)
-// INSERT INTO users (name, created_at, updated_at)
+// INSERT INTO `users` (name, created_at, updated_at)
 // VALUES (?, DEFAULT(created_at), DEFAULT(updated_at))
 // Database sets timestamps automatically
 ```
@@ -294,7 +294,7 @@ type User struct {
     Timestamps // Embedded fields included
 }
 
-// SELECT id, name, created_at, updated_at FROM users
+// SELECT `id`, `name`, created_at, updated_at FROM `users`
 ```
 
 ### Pointer Fields for NULL Handling
@@ -316,7 +316,7 @@ user := User{
 }
 
 db.Insert("users", user)
-// INSERT INTO users (id, name, email, phone_number, last_login)
+// INSERT INTO `users` (id, `name`, `email`, phone_number, last_login)
 // VALUES (?, ?, NULL, NULL, NULL)
 ```
 
@@ -339,7 +339,7 @@ type UserSummary struct {
 }
 
 var summaries []UserSummary
-db.Select(&summaries, "SELECT id, name FROM users", 0)
+db.Select(&summaries, "SELECT `id`, name FROM `users`", 0)
 // Only maps id and name columns
 ```
 
@@ -379,7 +379,7 @@ type User struct {
 }
 
 var users []User
-db.Select(&users, "SELECT id, first_name, last_name FROM users", 0)
+db.Select(&users, "SELECT `id`, first_name, last_name FROM `users`", 0)
 
 // Compute FullName after query
 for i := range users {
@@ -397,8 +397,8 @@ type User struct {
 }
 
 // Query must use actual column name
-db.Select(&user, "SELECT id FROM users WHERE id = @@id", 0,
-    mysql.Params{"id": 1})
+db.Select(&user, "SELECT id FROM `users` WHERE `id` = @@id", 0,
+    1)
 ```
 
 ### 2. Templates Use Field Names, Not Column Names
@@ -409,10 +409,10 @@ type User struct {
 }
 
 // CORRECT - uses field name
-query := `SELECT * FROM users {{ if .Username }}WHERE user_name = @@name{{ end }}`
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` {{ if .Username }}WHERE `user_name` = @@name{{ end }}"
 
 // WRONG - user_name is column, not field
-query := `SELECT * FROM users {{ if .user_name }}WHERE user_name = @@name{{ end }}`
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` {{ if .user_name }}WHERE `user_name` = @@name{{ end }}"
 ```
 
 ### 3. Unexported Fields Are Ignored
@@ -473,7 +473,7 @@ type User struct {
 }
 
 // defaultzero only affects INSERT/UPSERT, not SELECT
-db.Select(&users, "SELECT * FROM users", 0)
+db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 // CreatedAt is populated from database regardless of tag
 ```
 

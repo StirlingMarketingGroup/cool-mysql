@@ -82,16 +82,16 @@ func TestSelectUsers(t *testing.T) {
         AddRow(1, "Alice", "alice@example.com").
         AddRow(2, "Bob", "bob@example.com")
 
-    mock.ExpectQuery("SELECT (.+) FROM users WHERE age > ?").
+    mock.ExpectQuery("SELECT (.+) FROM `users` WHERE age > ?").
         WithArgs(18).
         WillReturnRows(rows)
 
     // Execute query
     var users []User
     err := db.Select(&users,
-        "SELECT * FROM users WHERE age > @@minAge",
+        "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge",
         0,
-        mysql.Params{"minAge": 18})
+        18)
 
     // Verify
     if err != nil {
@@ -127,7 +127,7 @@ func TestInsertUser(t *testing.T) {
     }
 
     // Expect INSERT statement
-    mock.ExpectExec("INSERT INTO users").
+    mock.ExpectExec("INSERT INTO `users`").
         WithArgs(1, "Alice", "alice@example.com").
         WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -153,12 +153,12 @@ func TestUpdateUser(t *testing.T) {
     defer mock.ExpectClose()
 
     // Expect UPDATE statement
-    mock.ExpectExec("UPDATE users SET name = \\? WHERE id = \\?").
+    mock.ExpectExec("UPDATE `users` SET `name` = \\? WHERE `id` = \\?").
         WithArgs("Alice Updated", 1).
         WillReturnResult(sqlmock.NewResult(0, 1))
 
     // Execute update
-    err := db.Exec("UPDATE users SET name = @@name WHERE id = @@id",
+    err := db.Exec("UPDATE `users` SET `name` = @@name WHERE `id` = @@id",
         mysql.Params{"name": "Alice Updated", "id": 1})
 
     // Verify
@@ -180,13 +180,13 @@ func TestSelectError(t *testing.T) {
     defer mock.ExpectClose()
 
     // Expect query to return error
-    mock.ExpectQuery("SELECT (.+) FROM users").
+    mock.ExpectQuery("SELECT (.+) FROM `users`").
         WillReturnError(sql.ErrNoRows)
 
     // Execute query
     var user User
-    err := db.Select(&user, "SELECT * FROM users WHERE id = @@id", 0,
-        mysql.Params{"id": 999})
+    err := db.Select(&user, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id", 0,
+        999)
 
     // Verify error returned
     if !errors.Is(err, sql.ErrNoRows) {
@@ -208,7 +208,7 @@ func TestTransaction(t *testing.T) {
 
     // Expect transaction
     mock.ExpectBegin()
-    mock.ExpectExec("INSERT INTO users").
+    mock.ExpectExec("INSERT INTO `users`").
         WithArgs(1, "Alice", "alice@example.com").
         WillReturnResult(sqlmock.NewResult(1, 1))
     mock.ExpectCommit()
@@ -216,10 +216,13 @@ func TestTransaction(t *testing.T) {
     // Execute transaction
     ctx := context.Background()
     tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+    defer cancel()
     if err != nil {
         t.Fatalf("Failed to create tx: %v", err)
     }
-    defer cancel()
+
+    // Store transaction in context so operations use it
+    ctx = mysql.NewContextWithTx(ctx, tx)
 
     user := User{ID: 1, Name: "Alice", Email: "alice@example.com"}
     err = db.Insert("users", user)
@@ -330,9 +333,9 @@ func TestInsertUserIntegration(t *testing.T) {
     // Verify insertion
     var retrieved User
     err = db.Select(&retrieved,
-        "SELECT * FROM users WHERE email = @@email",
+        "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
         0,
-        mysql.Params{"email": "alice@example.com"})
+        "alice@example.com")
 
     if err != nil {
         t.Fatalf("Select failed: %v", err)
@@ -383,15 +386,15 @@ func TestSelectUsers(t *testing.T) {
                 rows.AddRow(u.ID, u.Name, u.Age)
             }
 
-            mock.ExpectQuery("SELECT (.+) FROM users").
+            mock.ExpectQuery("SELECT (.+) FROM `users`").
                 WithArgs(tt.minAge).
                 WillReturnRows(rows)
 
             var users []User
             err := db.Select(&users,
-                "SELECT * FROM users WHERE age > @@minAge",
+                "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge",
                 0,
-                mysql.Params{"minAge": tt.minAge})
+                tt.minAge)
 
             if tt.expectError && err == nil {
                 t.Error("Expected error, got nil")
@@ -422,13 +425,13 @@ func TestNamedParameters(t *testing.T) {
     defer mock.ExpectClose()
 
     // cool-mysql converts @@param to ? internally
-    mock.ExpectQuery("SELECT (.+) FROM users WHERE age > \\? AND status = \\?").
+    mock.ExpectQuery("SELECT (.+) FROM `users` WHERE age > \\? AND `status` = \\?").
         WithArgs(18, "active").
         WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
     var users []User
     err := db.Select(&users,
-        "SELECT * FROM users WHERE age > @@minAge AND status = @@status",
+        "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `status` = @@status",
         0,
         mysql.Params{"minAge": 18, "status": "active"})
 
@@ -458,11 +461,11 @@ func TestStructTagMapping(t *testing.T) {
     rows := sqlmock.NewRows([]string{"id", "user_name"}).
         AddRow(1, "Alice")
 
-    mock.ExpectQuery("SELECT id, user_name FROM users").
+    mock.ExpectQuery("SELECT `id`, user_name FROM `users`").
         WillReturnRows(rows)
 
     var users []CustomUser
-    err := db.Select(&users, "SELECT id, user_name FROM users", 0)
+    err := db.Select(&users, "SELECT `id`, user_name FROM `users`", 0)
 
     if err != nil {
         t.Fatalf("Query failed: %v", err)
@@ -497,11 +500,11 @@ func TestSelectWithContext(t *testing.T) {
     rows := sqlmock.NewRows([]string{"id", "name"}).
         AddRow(1, "Alice")
 
-    mock.ExpectQuery("SELECT (.+) FROM users").
+    mock.ExpectQuery("SELECT (.+) FROM `users`").
         WillReturnRows(rows)
 
     var users []User
-    err := db.SelectContext(ctx, &users, "SELECT * FROM users", 0)
+    err := db.SelectContext(ctx, &users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
     if err != nil {
         t.Errorf("Query failed: %v", err)
@@ -523,11 +526,11 @@ func TestContextCancellation(t *testing.T) {
     ctx, cancel := context.WithCancel(context.Background())
     cancel() // Cancel immediately
 
-    mock.ExpectQuery("SELECT (.+) FROM users").
+    mock.ExpectQuery("SELECT (.+) FROM `users`").
         WillDelayFor(100 * time.Millisecond)
 
     var users []User
-    err := db.SelectContext(ctx, &users, "SELECT * FROM users", 0)
+    err := db.SelectContext(ctx, &users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
     if err == nil {
         t.Error("Expected context cancellation error")
@@ -553,7 +556,7 @@ func TestDatabaseInContext(t *testing.T) {
 
     // Use DB from context
     var users []User
-    err := retrievedDB.Select(&users, "SELECT * FROM users", 0)
+    err := retrievedDB.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
     if err != nil {
         t.Errorf("Query failed: %v", err)
@@ -577,18 +580,18 @@ func TestCacheHit(t *testing.T) {
         AddRow(1, "Alice")
 
     // First query - cache miss
-    mock.ExpectQuery("SELECT (.+) FROM users").
+    mock.ExpectQuery("SELECT (.+) FROM `users`").
         WillReturnRows(rows)
 
     var users1 []User
-    err := db.Select(&users1, "SELECT * FROM users", 5*time.Minute)
+    err := db.Select(&users1, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 5*time.Minute)
     if err != nil {
         t.Fatalf("First query failed: %v", err)
     }
 
     // Second query - cache hit (no DB query expected)
     var users2 []User
-    err = db.Select(&users2, "SELECT * FROM users", 5*time.Minute)
+    err = db.Select(&users2, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 5*time.Minute)
     if err != nil {
         t.Fatalf("Second query failed: %v", err)
     }
@@ -617,14 +620,14 @@ func TestCacheBypass(t *testing.T) {
         AddRow(1, "Alice")
 
     // Each query with TTL=0 should hit database
-    mock.ExpectQuery("SELECT (.+) FROM users").
+    mock.ExpectQuery("SELECT (.+) FROM `users`").
         WillReturnRows(rows)
-    mock.ExpectQuery("SELECT (.+) FROM users").
+    mock.ExpectQuery("SELECT (.+) FROM `users`").
         WillReturnRows(rows)
 
     var users []User
-    db.Select(&users, "SELECT * FROM users", 0) // TTL=0, no cache
-    db.Select(&users, "SELECT * FROM users", 0) // TTL=0, no cache
+    db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0) // TTL=0, no cache
+    db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0) // TTL=0, no cache
 
     if err := mock.ExpectationsWereMet(); err != nil {
         t.Errorf("Expected 2 queries, got different: %v", err)
@@ -654,15 +657,15 @@ func TestUserWorkflow(t *testing.T) {
     // Query user
     var retrieved User
     err = db.Select(&retrieved,
-        "SELECT * FROM users WHERE email = @@email",
+        "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
         0,
-        mysql.Params{"email": "alice@example.com"})
+        "alice@example.com")
     if err != nil {
         t.Fatalf("Select failed: %v", err)
     }
 
     // Update user
-    err = db.Exec("UPDATE users SET name = @@name WHERE email = @@email",
+    err = db.Exec("UPDATE `users` SET `name` = @@name WHERE `email` = @@email",
         mysql.Params{"name": "Alice Updated", "email": "alice@example.com"})
     if err != nil {
         t.Fatalf("Update failed: %v", err)
@@ -670,9 +673,9 @@ func TestUserWorkflow(t *testing.T) {
 
     // Verify update
     err = db.Select(&retrieved,
-        "SELECT * FROM users WHERE email = @@email",
+        "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
         0,
-        mysql.Params{"email": "alice@example.com"})
+        "alice@example.com")
     if err != nil {
         t.Fatalf("Select after update failed: %v", err)
     }
@@ -682,17 +685,17 @@ func TestUserWorkflow(t *testing.T) {
     }
 
     // Delete user
-    err = db.Exec("DELETE FROM users WHERE email = @@email",
-        mysql.Params{"email": "alice@example.com"})
+    err = db.Exec("DELETE FROM `users` WHERE `email` = @@email",
+        "alice@example.com")
     if err != nil {
         t.Fatalf("Delete failed: %v", err)
     }
 
     // Verify deletion
     err = db.Select(&retrieved,
-        "SELECT * FROM users WHERE email = @@email",
+        "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
         0,
-        mysql.Params{"email": "alice@example.com"})
+        "alice@example.com")
     if !errors.Is(err, sql.ErrNoRows) {
         t.Error("Expected user to be deleted")
     }
@@ -709,7 +712,7 @@ func expectUserQuery(mock sqlmock.Sqlmock, users []User) {
     for _, u := range users {
         rows.AddRow(u.ID, u.Name, u.Email)
     }
-    mock.ExpectQuery("SELECT (.+) FROM users").WillReturnRows(rows)
+    mock.ExpectQuery("SELECT (.+) FROM `users`").WillReturnRows(rows)
 }
 
 func TestWithHelper(t *testing.T) {
@@ -720,7 +723,7 @@ func TestWithHelper(t *testing.T) {
     expectUserQuery(mock, expectedUsers)
 
     var users []User
-    db.Select(&users, "SELECT * FROM users", 0)
+    db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
     // Assertions...
 }
@@ -733,7 +736,7 @@ func TestInsertDuplicateEmail(t *testing.T) {
     db, mock := setupMockDB(t)
     defer mock.ExpectClose()
 
-    mock.ExpectExec("INSERT INTO users").
+    mock.ExpectExec("INSERT INTO `users`").
         WillReturnError(&mysql.MySQLError{Number: 1062}) // Duplicate entry
 
     user := User{Name: "Alice", Email: "alice@example.com"}
@@ -793,7 +796,7 @@ func TestConcurrentAccess(t *testing.T) {
 
     // Verify all users inserted
     var count int64
-    count, err := db.Count("SELECT COUNT(*) FROM users", 0)
+    count, err := db.Count("SELECT COUNT(*) FROM `users`", 0)
     if err != nil {
         t.Fatalf("Count failed: %v", err)
     }
@@ -820,7 +823,7 @@ func TestUserOperations(t *testing.T) {
 
     t.Run("Select", func(t *testing.T) {
         var users []User
-        err := db.Select(&users, "SELECT * FROM users", 0)
+        err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
         if err != nil {
             t.Fatalf("Select failed: %v", err)
         }
@@ -830,7 +833,7 @@ func TestUserOperations(t *testing.T) {
     })
 
     t.Run("Update", func(t *testing.T) {
-        err := db.Exec("UPDATE users SET name = @@name WHERE email = @@email",
+        err := db.Exec("UPDATE `users` SET `name` = @@name WHERE `email` = @@email",
             mysql.Params{"name": "Alice Updated", "email": "alice@example.com"})
         if err != nil {
             t.Fatalf("Update failed: %v", err)
@@ -860,7 +863,7 @@ func TestAlwaysVerify(t *testing.T) {
 func TestParameterInterpolation(t *testing.T) {
     db, _ := setupMockDB(t)
 
-    query := "SELECT * FROM users WHERE age > @@minAge AND status = @@status"
+    query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `status` = @@status"
     params := mysql.Params{"minAge": 18, "status": "active"}
 
     replacedQuery, normalizedParams, err := db.InterpolateParams(query, params)
@@ -868,7 +871,7 @@ func TestParameterInterpolation(t *testing.T) {
         t.Fatalf("InterpolateParams failed: %v", err)
     }
 
-    expectedQuery := "SELECT * FROM users WHERE age > ? AND status = ?"
+    expectedQuery := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > ? AND `status` = ?"
     if replacedQuery != expectedQuery {
         t.Errorf("Expected query '%s', got '%s'", expectedQuery, replacedQuery)
     }

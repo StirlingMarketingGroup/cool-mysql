@@ -28,9 +28,9 @@ type User struct {
 
 var users []User
 err := db.Select(&users,
-    "SELECT id, name, email, created_at FROM users WHERE age > @@minAge",
+    "SELECT `id`, `name`, `email`, created_at FROM `users` WHERE age > @@minAge",
     5*time.Minute, // Cache for 5 minutes
-    mysql.Params{"minAge": 18})
+    18)
 ```
 
 ### Select Single Struct
@@ -38,9 +38,9 @@ err := db.Select(&users,
 ```go
 var user User
 err := db.Select(&user,
-    "SELECT * FROM users WHERE id = @@id",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id",
     0, // No caching
-    mysql.Params{"id": 123})
+    123)
 
 if errors.Is(err, sql.ErrNoRows) {
     // User not found
@@ -54,23 +54,23 @@ if errors.Is(err, sql.ErrNoRows) {
 // String value
 var name string
 err := db.Select(&name,
-    "SELECT name FROM users WHERE id = @@id",
+    "SELECT `name` FROM `users` WHERE `id` = @@id",
     0,
-    mysql.Params{"id": 123})
+    123)
 
 // Integer value
 var count int
 err := db.Select(&count,
-    "SELECT COUNT(*) FROM users WHERE active = @@active",
+    "SELECT COUNT(*) FROM `users` WHERE `active` = @@active",
     0,
-    mysql.Params{"active": 1})
+    1)
 
 // Time value
 var lastLogin time.Time
 err := db.Select(&lastLogin,
-    "SELECT last_login FROM users WHERE id = @@id",
+    "SELECT last_login FROM `users` WHERE `id` = @@id",
     0,
-    mysql.Params{"id": 123})
+    123)
 ```
 
 ### Select Multiple Values (First Row Only)
@@ -84,9 +84,9 @@ type UserInfo struct {
 
 var info UserInfo
 err := db.Select(&info,
-    "SELECT name, email, age FROM users WHERE id = @@id",
+    "SELECT name, `email`, `age` FROM `users` WHERE `id` = @@id",
     0,
-    mysql.Params{"id": 123})
+    123)
 ```
 
 ## Named Parameters
@@ -96,7 +96,7 @@ err := db.Select(&info,
 ```go
 // Simple parameters
 err := db.Select(&users,
-    "SELECT * FROM users WHERE age > @@minAge AND status = @@status",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `status` = @@status",
     0,
     mysql.Params{"minAge": 18, "status": "active"})
 ```
@@ -116,7 +116,7 @@ filter := struct {
 }
 
 err := db.Select(&users,
-    "SELECT * FROM users WHERE age > @@MinAge AND status = @@Status AND city = @@City",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@MinAge AND `status` = @@Status AND city = @@City",
     0,
     filter)
 ```
@@ -126,7 +126,7 @@ err := db.Select(&users,
 ```go
 // Parameters are merged (last wins for duplicates)
 err := db.Select(&users,
-    "SELECT * FROM users WHERE age > @@minAge AND status = @@status AND city = @@city",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `status` = @@status AND city = @@city",
     0,
     mysql.Params{"minAge": 18, "status": "active"},
     mysql.Params{"city": "New York"},
@@ -138,9 +138,9 @@ err := db.Select(&users,
 ```go
 // Same parameter used multiple times
 err := db.Select(&users,
-    `SELECT * FROM users
-     WHERE (age BETWEEN @@minAge AND @@maxAge)
-     AND (created_at > @@date OR updated_at > @@date)`,
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`"+
+    " WHERE (`age` BETWEEN @@minAge AND @@maxAge)"+
+    " AND (`created_at` > @@date OR `updated_at` > @@date)",
     0,
     mysql.Params{
         "minAge": 18,
@@ -154,7 +154,7 @@ err := db.Select(&users,
 ```go
 // These parameters are treated as the same (normalized to lowercase)
 err := db.Select(&users,
-    "SELECT * FROM users WHERE name = @@userName",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `name` = @@userName",
     0,
     mysql.Params{"username": "Alice"}, // lowercase 'u'
     mysql.Params{"UserName": "Bob"},   // uppercase 'U' - this wins
@@ -174,10 +174,10 @@ params := mysql.Params{
 }
 
 query := `
-    SELECT * FROM users
+    SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`
     WHERE 1=1
-    {{ if .MinAge }}AND age > @@minAge{{ end }}
-    {{ if .Status }}AND status = @@status{{ end }}
+    {{ if .MinAge }}AND `age` > @@minAge{{ end }}
+    {{ if .Status }}AND `status` = @@status{{ end }}
 `
 
 var users []User
@@ -187,9 +187,17 @@ err := db.Select(&users, query, 0, params)
 ### Dynamic ORDER BY
 
 ```go
+// For dynamic ORDER BY, validate column names (identifiers can't be marshaled)
 type QueryParams struct {
     SortBy    string
     SortOrder string
+}
+
+// Whitelist allowed columns for safety
+allowedColumns := map[string]bool{
+    "created_at": true,
+    "name":       true,
+    "email":      true,
 }
 
 params := QueryParams{
@@ -197,9 +205,19 @@ params := QueryParams{
     SortOrder: "DESC",
 }
 
+// Validate before using
+if !allowedColumns[params.SortBy] {
+    return errors.New("invalid sort column")
+}
+allowedOrders := map[string]bool{"ASC": true, "DESC": true}
+if !allowedOrders[params.SortOrder] {
+    return errors.New("invalid sort order")
+}
+
+// Now safe to inject validated identifiers
 query := `
-    SELECT * FROM users
-    WHERE active = 1
+    SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`
+    WHERE `active` = 1
     {{ if .SortBy }}
     ORDER BY {{ .SortBy }} {{ .SortOrder }}
     {{ end }}
@@ -222,22 +240,20 @@ params := SearchParams{
     IncludeAddress: false,
 }
 
-query := `
-    SELECT u.*
-    {{ if .IncludeOrders }}, o.order_count{{ end }}
-    {{ if .IncludeAddress }}, a.city{{ end }}
-    FROM users u
-    {{ if .IncludeOrders }}
-    LEFT JOIN (
-        SELECT user_id, COUNT(*) as order_count
-        FROM orders
-        GROUP BY user_id
-    ) o ON u.id = o.user_id
-    {{ end }}
-    {{ if .IncludeAddress }}
-    LEFT JOIN addresses a ON u.id = a.user_id
-    {{ end }}
-`
+query := "SELECT `users`.`id`, `users`.`name`, `users`.`email`, `users`.`age`, `users`.`active`, `users`.`created_at`, `users`.`updated_at`" +
+    " {{ if .IncludeOrders }}, subquery.order_count{{ end }}" +
+    " {{ if .IncludeAddress }}, `addresses`.`city`{{ end }}" +
+    " FROM `users`" +
+    " {{ if .IncludeOrders }}" +
+    " LEFT JOIN (" +
+    " SELECT `user_id`, COUNT(*) as `order_count`" +
+    " FROM `orders`" +
+    " GROUP BY `user_id`" +
+    " ) subquery ON `users`.`id` = subquery.`user_id`" +
+    " {{ end }}" +
+    " {{ if .IncludeAddress }}" +
+    " LEFT JOIN `addresses` ON `users`.`id` = `addresses`.`user_id`" +
+    " {{ end }}"
 
 var users []User
 err := db.Select(&users, query, 0, params)
@@ -254,12 +270,12 @@ db.AddTemplateFuncs(template.FuncMap{
 
 // Use in query
 query := `
-    SELECT * FROM users
-    WHERE status = {{ quote (upper .Status) }}
+    SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`
+    WHERE `status` = {{ quote (upper .Status) }}
 `
 
-err := db.Select(&users, query, 0, mysql.Params{"Status": "active"})
-// Generates: WHERE status = 'ACTIVE'
+err := db.Select(&users, query, 0, "active")
+// Generates: WHERE `status` = 'ACTIVE'
 ```
 
 ### Template Best Practices
@@ -271,10 +287,10 @@ type User struct {
 }
 
 // WRONG - uses column name
-query := `SELECT * FROM users {{ if .user_name }}WHERE name = @@name{{ end }}`
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` {{ if .user_name }}WHERE `name` = @@name{{ end }}"
 
 // CORRECT - uses field name
-query := `SELECT * FROM users {{ if .Username }}WHERE name = @@name{{ end }}`
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` {{ if .Username }}WHERE `name` = @@name{{ end }}"
 ```
 
 ## Result Mapping
@@ -285,15 +301,15 @@ query := `SELECT * FROM users {{ if .Username }}WHERE name = @@name{{ end }}`
 // Single row as map
 var row mysql.MapRow
 err := db.Select(&row,
-    "SELECT id, name, email FROM users WHERE id = @@id",
+    "SELECT `id`, `name`, `email` FROM `users` WHERE `id` = @@id",
     0,
-    mysql.Params{"id": 123})
+    123)
 fmt.Printf("Name: %v\n", row["name"])
 
 // Multiple rows as maps
 var rows mysql.MapRows
 err := db.Select(&rows,
-    "SELECT id, name, email FROM users",
+    "SELECT `id`, `name`, `email` FROM `users`",
     0)
 for _, row := range rows {
     fmt.Printf("ID: %v, Name: %v\n", row["id"], row["name"])
@@ -306,15 +322,15 @@ for _, row := range rows {
 // Single row as slice
 var row mysql.SliceRow
 err := db.Select(&row,
-    "SELECT id, name, email FROM users WHERE id = @@id",
+    "SELECT `id`, `name`, `email` FROM `users` WHERE `id` = @@id",
     0,
-    mysql.Params{"id": 123})
+    123)
 fmt.Printf("First column: %v\n", row[0])
 
 // Multiple rows as slices
 var rows mysql.SliceRows
 err := db.Select(&rows,
-    "SELECT id, name, email FROM users",
+    "SELECT `id`, `name`, `email` FROM `users`",
     0)
 for _, row := range rows {
     fmt.Printf("Row: %v\n", row)
@@ -332,7 +348,7 @@ type UserSummary struct {
 
 var summaries []UserSummary
 err := db.Select(&summaries,
-    "SELECT id, name FROM users",
+    "SELECT `id`, name FROM `users`",
     0)
 ```
 
@@ -353,7 +369,7 @@ type User struct {
 
 var users []User
 err := db.Select(&users,
-    "SELECT id, name, email, created_at, updated_at FROM users",
+    "SELECT `id`, `name`, `email`, created_at, updated_at FROM `users`",
     0)
 ```
 
@@ -368,7 +384,7 @@ type User struct {
 }
 
 var users []User
-err := db.Select(&users, "SELECT * FROM users", 0)
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
 for _, user := range users {
     if user.Email != nil {
@@ -390,7 +406,7 @@ userCh := make(chan User, 100) // Buffered channel
 
 go func() {
     defer close(userCh)
-    if err := db.Select(userCh, "SELECT * FROM users", 0); err != nil {
+    if err := db.Select(userCh, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0); err != nil {
         log.Printf("Select error: %v", err)
     }
 }()
@@ -436,7 +452,7 @@ userCh := make(chan User, 100)
 
 go func() {
     defer close(userCh)
-    db.SelectContext(ctx, userCh, "SELECT * FROM users", 0)
+    db.SelectContext(ctx, userCh, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 }()
 
 for user := range userCh {
@@ -458,7 +474,7 @@ for user := range userCh {
 // Process each row with function
 err := db.Select(func(u User) {
     log.Printf("Processing user: %s (%s)", u.Name, u.Email)
-}, "SELECT * FROM users", 0)
+}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 ```
 
 ### Function Receiver with Error Handling
@@ -472,7 +488,7 @@ err := db.Select(func(u User) {
         return
     }
     processUser(u)
-}, "SELECT * FROM users", 0)
+}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
 if err != nil {
     return err
@@ -492,7 +508,7 @@ var count int
 err := db.Select(func(u User) {
     totalAge += u.Age
     count++
-}, "SELECT age FROM users WHERE active = 1", 0)
+}, "SELECT age FROM `users` WHERE `active` = 1", 0)
 
 if count > 0 {
     avgAge := float64(totalAge) / float64(count)
@@ -518,7 +534,7 @@ type User struct {
 
 var users []User
 err := db.Select(&users,
-    "SELECT id, name, meta FROM users",
+    "SELECT `id`, `name`, meta FROM `users`",
     0)
 
 for _, user := range users {
@@ -533,11 +549,11 @@ var result json.RawMessage
 err := db.SelectJSON(&result,
     `SELECT JSON_OBJECT(
         'id', id,
-        'name', name,
-        'email', email
-    ) FROM users WHERE id = @@id`,
+        'name', `name`,
+        'email', `email`
+    ) FROM `users` WHERE `id` = @@id`,
     0,
-    mysql.Params{"id": 123})
+    123)
 
 fmt.Printf("JSON: %s\n", string(result))
 ```
@@ -561,13 +577,11 @@ err := db.SelectJSON(&results,
 ### Subqueries with Named Parameters
 
 ```go
-query := `
-    SELECT u.*,
-           (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) as order_count
-    FROM users u
-    WHERE u.created_at > @@since
-    AND u.status = @@status
-`
+query := "SELECT `users`.`id`, `users`.`name`, `users`.`email`, `users`.`age`, `users`.`active`, `users`.`created_at`, `users`.`updated_at`," +
+    " (SELECT COUNT(*) FROM `orders` WHERE `orders`.`user_id` = `users`.`id`) as `order_count`" +
+    " FROM `users`" +
+    " WHERE `users`.`created_at` > @@since" +
+    " AND `users`.`status` = @@status"
 
 var users []struct {
     User
@@ -584,20 +598,18 @@ err := db.Select(&users, query, 5*time.Minute,
 ### JOINs with Named Parameters
 
 ```go
-query := `
-    SELECT
-        u.id,
-        u.name,
-        u.email,
-        o.order_id,
-        o.total
-    FROM users u
-    INNER JOIN orders o ON u.id = o.user_id
-    WHERE u.status = @@status
-    AND o.created_at > @@since
-    AND o.total > @@minTotal
-    ORDER BY o.created_at DESC
-`
+query := "SELECT" +
+    " `users`.`id`," +
+    " `users`.`name`," +
+    " `users`.`email`," +
+    " `orders`.`order_id`," +
+    " `orders`.`total`" +
+    " FROM `users`" +
+    " INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`" +
+    " WHERE `users`.`status` = @@status" +
+    " AND `orders`.`created_at` > @@since" +
+    " AND `orders`.`total` > @@minTotal" +
+    " ORDER BY `orders`.`created_at` DESC"
 
 type UserOrder struct {
     UserID  int     `mysql:"id"`
@@ -619,42 +631,45 @@ err := db.Select(&results, query, 0,
 ### IN Clause with Multiple Values
 
 ```go
-// For small lists, use template
+// cool-mysql natively supports slices - just pass them directly!
 ids := []int{1, 2, 3, 4, 5}
-idsStr := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ids)), ","), "[]")
 
-query := `SELECT * FROM users WHERE id IN (@@ids)`
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` IN (@@ids)"
 var users []User
 err := db.Select(&users, query, 0,
-    mysql.Params{"ids": mysql.Raw(idsStr)})
+    ids)
+// Automatically expands to: SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` IN (1,2,3,4,5)
 
-// Better approach: JSON_TABLE (MySQL 8.0+)
-idsJSON, _ := json.Marshal(ids)
-query := `
-    SELECT u.*
-    FROM users u
-    JOIN JSON_TABLE(
-        @@ids,
-        '$[*]' COLUMNS(id INT PATH '$')
-    ) AS j ON u.id = j.id
-`
-err := db.Select(&users, query, 0,
-    mysql.Params{"ids": string(idsJSON)})
+// Works with any slice type
+emails := []string{"user1@example.com", "user2@example.com"}
+err = db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` IN (@@emails)", 0,
+    emails)
+
+// For very large lists (10,000+ items), consider JSON_TABLE (MySQL 8.0+)
+// This can be more efficient than IN clause with many values
+var largeIDs []int // thousands of IDs
+idsJSON, _ := json.Marshal(largeIDs)
+query = "SELECT `users`.`id`, `users`.`name`, `users`.`email`, `users`.`age`, `users`.`active`, `users`.`created_at`, `users`.`updated_at`" +
+    " FROM `users`" +
+    " JOIN JSON_TABLE(" +
+    " @@ids," +
+    " '$[*]' COLUMNS(`id` INT PATH '$')" +
+    " ) AS json_ids ON `users`.`id` = json_ids.`id`"
+err = db.Select(&users, query, 0,
+    string(idsJSON))
 ```
 
 ### Window Functions
 
 ```go
-query := `
-    SELECT
-        id,
-        name,
-        salary,
-        RANK() OVER (ORDER BY salary DESC) as salary_rank,
-        AVG(salary) OVER () as avg_salary
-    FROM employees
-    WHERE department = @@dept
-`
+query := "SELECT" +
+    " `id`," +
+    " `name`," +
+    " `salary`," +
+    " RANK() OVER (ORDER BY `salary` DESC) as `salary_rank`," +
+    " AVG(`salary`) OVER () as `avg_salary`" +
+    " FROM `employees`" +
+    " WHERE `department` = @@dept"
 
 type EmployeeStats struct {
     ID          int     `mysql:"id"`
@@ -666,7 +681,7 @@ type EmployeeStats struct {
 
 var stats []EmployeeStats
 err := db.Select(&stats, query, 5*time.Minute,
-    mysql.Params{"dept": "Engineering"})
+    "Engineering")
 ```
 
 ## Raw SQL
@@ -678,9 +693,9 @@ err := db.Select(&stats, query, 5*time.Minute,
 // WARNING: Never use with user input - SQL injection risk!
 
 query := `
-    SELECT * FROM users
+    SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`
     WHERE @@dynamicCondition
-    AND status = @@status
+    AND `status` = @@status
 `
 
 err := db.Select(&users, query, 0,
@@ -693,15 +708,15 @@ err := db.Select(&users, query, 0,
 ### Dynamic Table Names
 
 ```go
-// Table names can't be parameterized - use Raw carefully
+// Table names can't be parameterized - use fmt.Sprintf carefully
 tableName := "users" // Validate this!
 
-query := fmt.Sprintf("SELECT * FROM %s WHERE status = @@status",
+query := fmt.Sprintf("SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM %s WHERE `status` = @@status",
     tableName) // Ensure tableName is validated/sanitized!
 
 var users []User
 err := db.Select(&users, query, 0,
-    mysql.Params{"status": "active"})
+    "active")
 ```
 
 ### CASE Statements with Raw
@@ -711,8 +726,8 @@ query := `
     SELECT
         id,
         name,
-        @@statusCase as status_label
-    FROM users
+        @@statusCase as `status_label`
+    FROM `users`
 `
 
 statusCase := mysql.Raw(`
@@ -732,7 +747,7 @@ type UserWithLabel struct {
 
 var users []UserWithLabel
 err := db.Select(&users, query, 0,
-    mysql.Params{"statusCase": statusCase})
+    statusCase)
 ```
 
 ## Debugging Queries
@@ -740,7 +755,7 @@ err := db.Select(&users, query, 0,
 ### Inspect Interpolated Query
 
 ```go
-query := "SELECT * FROM users WHERE age > @@minAge AND status = @@status"
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `status` = @@status"
 params := mysql.Params{"minAge": 18, "status": "active"}
 
 replacedQuery, normalizedParams, err := db.InterpolateParams(query, params)
@@ -750,7 +765,7 @@ if err != nil {
 
 fmt.Printf("Query: %s\n", replacedQuery)
 fmt.Printf("Params: %+v\n", normalizedParams)
-// Query: SELECT * FROM users WHERE age > ? AND status = ?
+// Query: SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > ? AND `status` = ?
 // Params: [18 active]
 ```
 
@@ -763,8 +778,8 @@ db.SetQueryLogger(func(query string, args []any, duration time.Duration, err err
 })
 
 // Now all queries will be logged
-db.Select(&users, "SELECT * FROM users WHERE age > @@age", 0,
-    mysql.Params{"age": 18})
+db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@age", 0,
+    18)
 ```
 
 ## Performance Tips

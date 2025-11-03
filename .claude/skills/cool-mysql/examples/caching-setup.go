@@ -54,9 +54,9 @@ func weakCacheExample() {
 	start := time.Now()
 	var users []User
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = @@active",
 		5*time.Minute, // Cache for 5 minutes
-		mysql.Params{"active": true})
+		true)
 	duration1 := time.Since(start)
 
 	if err != nil {
@@ -68,9 +68,9 @@ func weakCacheExample() {
 	// Second query - cache hit
 	start = time.Now()
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = @@active",
 		5*time.Minute,
-		mysql.Params{"active": true})
+		true)
 	duration2 := time.Since(start)
 
 	if err != nil {
@@ -117,9 +117,9 @@ func redisCacheExample() {
 	// Query with caching
 	var users []User
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE age > @@minAge",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge",
 		10*time.Minute, // Cache for 10 minutes
-		mysql.Params{"minAge": 18})
+		18)
 
 	if err != nil {
 		log.Printf("Redis cached query failed: %v", err)
@@ -168,8 +168,7 @@ func redisClusterExample() {
 
 	// Query with caching
 	var users []User
-	err = db.Select(&users, "SELECT * FROM users LIMIT @@limit", 5*time.Minute,
-		mysql.Params{"limit": 100})
+	err = db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` LIMIT @@limit", 5*time.Minute, 100)
 
 	if err != nil {
 		log.Printf("Cluster cached query failed: %v", err)
@@ -207,9 +206,9 @@ func memcachedCacheExample() {
 	// Query with caching
 	var users []User
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = @@active",
 		15*time.Minute, // Cache for 15 minutes
-		mysql.Params{"active": true})
+		true)
 
 	if err != nil {
 		log.Printf("Memcached query failed: %v", err)
@@ -258,9 +257,9 @@ func multiCacheExample() {
 	start := time.Now()
 	var users []User
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE age > @@minAge",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge",
 		10*time.Minute,
-		mysql.Params{"minAge": 21})
+		21)
 	cold := time.Since(start)
 
 	if err != nil {
@@ -272,9 +271,9 @@ func multiCacheExample() {
 	// Second query - warm cache (hits L1)
 	start = time.Now()
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE age > @@minAge",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge",
 		10*time.Minute,
-		mysql.Params{"minAge": 21})
+		21)
 	warm := time.Since(start)
 
 	if err != nil {
@@ -299,9 +298,9 @@ func cacheStrategiesExample() {
 	fmt.Println("\nStrategy 1: No caching (TTL = 0)")
 	var liveUsers []User
 	err = db.Select(&liveUsers,
-		"SELECT * FROM users WHERE last_active > @@since",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `last_active` > @@since",
 		0, // No caching
-		mysql.Params{"since": time.Now().Add(-5 * time.Minute)})
+		time.Now().Add(-5*time.Minute))
 
 	if err != nil {
 		log.Printf("Live query failed: %v", err)
@@ -312,9 +311,9 @@ func cacheStrategiesExample() {
 	// Strategy 2: Short TTL for frequently changing data
 	fmt.Println("\nStrategy 2: Short TTL (30 seconds)")
 	err = db.Select(&liveUsers,
-		"SELECT * FROM users WHERE active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = @@active",
 		30*time.Second, // Short TTL
-		mysql.Params{"active": true})
+		true)
 
 	if err != nil {
 		log.Printf("Short TTL query failed: %v", err)
@@ -332,7 +331,7 @@ func cacheStrategiesExample() {
 
 	var countries []Country
 	err = db.Select(&countries,
-		"SELECT * FROM countries",
+		"SELECT `id`, `name`, `code` FROM `countries`",
 		time.Hour, // Long TTL for reference data
 	)
 
@@ -356,9 +355,9 @@ func conditionalCacheQuery(db *mysql.Database) {
 	// First query to check result size
 	var users []User
 	err := db.Select(&users,
-		"SELECT * FROM users WHERE status = @@status",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `status` = @@status",
 		0, // No cache for initial check
-		mysql.Params{"status": "active"})
+		"active")
 
 	if err != nil {
 		log.Printf("Initial query failed: %v", err)
@@ -380,9 +379,9 @@ func conditionalCacheQuery(db *mysql.Database) {
 
 	// Re-query with appropriate TTL
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE status = @@status",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `status` = @@status",
 		ttl,
-		mysql.Params{"status": "active"})
+		"active")
 
 	if err != nil {
 		log.Printf("Cached query failed: %v", err)
@@ -411,15 +410,15 @@ func readAfterWriteExample(db *mysql.Database) {
 
 	// WRONG: Using Select() might read from stale cache or replica
 	// var user User
-	// db.Select(&user, "SELECT * FROM users WHERE email = @@email",
+	// db.Select(&user, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
 	//     5*time.Minute, mysql.Params{"email": "cache@example.com"})
 
 	// CORRECT: Use SelectWrites for read-after-write consistency
 	var user User
 	err = db.SelectWrites(&user,
-		"SELECT * FROM users WHERE email = @@email",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
 		0, // Don't cache write-pool reads
-		mysql.Params{"email": "cache@example.com"})
+		"cache@example.com")
 
 	if err != nil {
 		log.Printf("SelectWrites failed: %v", err)
@@ -434,15 +433,15 @@ func readAfterWriteExample(db *mysql.Database) {
 func performanceBenchmark(db *mysql.Database) {
 	fmt.Println("\nPerformance Benchmark: Cache vs No-Cache")
 
-	query := "SELECT * FROM users WHERE active = @@active"
-	params := mysql.Params{"active": true}
+	query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = @@active"
+	param := true
 
 	// Benchmark without cache
 	start := time.Now()
 	iterations := 100
 	for i := 0; i < iterations; i++ {
 		var users []User
-		db.Select(&users, query, 0, params) // No cache
+		db.Select(&users, query, 0, param) // No cache
 	}
 	noCacheDuration := time.Since(start)
 	avgNoCache := noCacheDuration / time.Duration(iterations)
@@ -455,13 +454,13 @@ func performanceBenchmark(db *mysql.Database) {
 
 	// Warm up cache
 	var warmup []User
-	db.Select(&warmup, query, 5*time.Minute, params)
+	db.Select(&warmup, query, 5*time.Minute, param)
 
 	// Benchmark with cache
 	start = time.Now()
 	for i := 0; i < iterations; i++ {
 		var users []User
-		db.Select(&users, query, 5*time.Minute, params) // With cache
+		db.Select(&users, query, 5*time.Minute, param) // With cache
 	}
 	cacheDuration := time.Since(start)
 	avgCache := cacheDuration / time.Duration(iterations)
@@ -482,20 +481,20 @@ func cacheKeyDebug(db *mysql.Database) {
 	fmt.Println("  1. Identical queries share cache:")
 	var users1, users2 []User
 
-	db.Select(&users1, "SELECT * FROM users WHERE age > @@minAge", 5*time.Minute,
-		mysql.Params{"minAge": 18})
+	db.Select(&users1, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge", 5*time.Minute,
+		18)
 
 	// This hits cache
-	db.Select(&users2, "SELECT * FROM users WHERE age > @@minAge", 5*time.Minute,
-		mysql.Params{"minAge": 18})
+	db.Select(&users2, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge", 5*time.Minute,
+		18)
 
 	fmt.Println("  ✓ Second query used cached result")
 
 	// Different params = different cache key
 	fmt.Println("\n  2. Different params = different cache:")
 	var users3 []User
-	db.Select(&users3, "SELECT * FROM users WHERE age > @@minAge", 5*time.Minute,
-		mysql.Params{"minAge": 25}) // Different param value
+	db.Select(&users3, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge", 5*time.Minute,
+		25) // Different param value
 
 	fmt.Println("  ✓ Different parameters bypass cache")
 
@@ -504,13 +503,13 @@ func cacheKeyDebug(db *mysql.Database) {
 	var users4, users5 []User
 
 	db.Select(&users4,
-		"SELECT * FROM users WHERE age > @@minAge AND active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `active` = @@active",
 		5*time.Minute,
 		mysql.Params{"minAge": 18, "active": true})
 
 	// Same cache even though params in different order
 	db.Select(&users5,
-		"SELECT * FROM users WHERE age > @@minAge AND active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge AND `active` = @@active",
 		5*time.Minute,
 		mysql.Params{"active": true, "minAge": 18}) // Reversed
 

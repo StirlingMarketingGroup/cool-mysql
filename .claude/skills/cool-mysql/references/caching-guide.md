@@ -35,13 +35,13 @@ cool-mysql supports pluggable caching for SELECT queries to reduce database load
 
 ```go
 // No caching (TTL = 0)
-err := db.Select(&users, "SELECT * FROM users", 0)
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
 // Cache for 5 minutes
-err := db.Select(&users, "SELECT * FROM users", 5*time.Minute)
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 5*time.Minute)
 
 // Cache for 1 hour
-err := db.Select(&users, "SELECT * FROM users WHERE active = 1", time.Hour)
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = 1", time.Hour)
 ```
 
 ## Cache Types
@@ -264,7 +264,7 @@ func getCacheTTL(queryType string) time.Duration {
 
 var users []User
 err := db.Select(&users,
-    "SELECT * FROM users WHERE active = 1",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = 1",
     getCacheTTL("user_profile"))
 ```
 
@@ -273,8 +273,8 @@ err := db.Select(&users,
 ```go
 // Cache differently based on result size
 var users []User
-err := db.Select(&users, "SELECT * FROM users WHERE status = @@status", 0,
-    mysql.Params{"status": status})
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `status` = @@status", 0,
+    status)
 
 ttl := 5 * time.Minute
 if len(users) > 1000 {
@@ -283,8 +283,8 @@ if len(users) > 1000 {
 }
 
 // Re-query with caching
-err = db.Select(&users, "SELECT * FROM users WHERE status = @@status", ttl,
-    mysql.Params{"status": status})
+err = db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `status` = @@status", ttl,
+    status)
 ```
 
 ## Multi-Level Caching
@@ -364,14 +364,14 @@ cool-mysql doesn't auto-invalidate on writes. You must handle invalidation expli
 
 ```go
 // Update database
-err := db.Exec("UPDATE users SET name = @@name WHERE id = @@id",
+err := db.Exec("UPDATE `users` SET `name` = @@name WHERE `id` = @@id",
     mysql.Params{"name": "Alice", "id": 123})
 if err != nil {
     return err
 }
 
 // Invalidate cache (if using Redis)
-cacheKey := generateCacheKey("SELECT * FROM users WHERE id = ?", 123)
+cacheKey := generateCacheKey("SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = ?", 123)
 redisClient.Del(ctx, cacheKey)
 ```
 
@@ -386,9 +386,9 @@ if err != nil {
 
 // Read from write pool for immediate consistency
 err = db.SelectWrites(&user,
-    "SELECT * FROM users WHERE id = @@id",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id",
     0, // Don't cache write-pool reads
-    mysql.Params{"id": user.ID})
+    user.ID)
 ```
 
 #### 3. Tag-Based Invalidation
@@ -398,7 +398,7 @@ err = db.SelectWrites(&user,
 const userCacheTag = "users:all"
 
 // Set cache with tag
-err := db.Select(&users, "SELECT * FROM users", 10*time.Minute)
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 10*time.Minute)
 redisClient.SAdd(ctx, userCacheTag, cacheKey)
 
 // Invalidate all user queries
@@ -411,7 +411,7 @@ redisClient.Del(ctx, userCacheTag)
 
 ```go
 // Rely on short TTL for eventual consistency
-err := db.Select(&users, "SELECT * FROM users",
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`",
     30*time.Second) // Short TTL = frequent refresh
 ```
 
@@ -441,7 +441,7 @@ cool-mysql's Redis cache includes distributed locking:
 db.EnableRedis(redisClient)
 
 // Automatic distributed locking
-err := db.Select(&users, "SELECT * FROM expensive_query", 10*time.Minute)
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = 1", 10*time.Minute)
 ```
 
 **How It Works:**
@@ -524,12 +524,12 @@ cool-mysql generates cache keys from query + parameters. Optimize by:
 1. **Normalizing Queries**
 ```go
 // BAD: Different queries, same intent
-db.Select(&users, "SELECT   *   FROM users WHERE id = @@id", ttl, params)
-db.Select(&users, "SELECT * FROM users WHERE id = @@id", ttl, params)
+db.Select(&users, "SELECT   *   FROM `users` WHERE `id` = @@id", ttl, params)
+db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id", ttl, params)
 // ^ Different cache keys due to whitespace
 
 // GOOD: Consistent formatting
-const userByIDQuery = "SELECT * FROM users WHERE id = @@id"
+const userByIDQuery = "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id"
 db.Select(&users, userByIDQuery, ttl, params)
 ```
 
@@ -549,7 +549,7 @@ db.Select(&users, query, ttl,
 // For memory-constrained environments
 // Use shorter TTLs to reduce memory usage
 db.UseCache(mysql.NewWeakCache())
-err := db.Select(&users, "SELECT * FROM users",
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`",
     1*time.Minute) // Short TTL = less memory
 
 // Or use Redis with maxmemory policy
@@ -642,8 +642,8 @@ db.UseCache(mysql.NewMultiCache(
 ```go
 // Pre-populate cache for known hot queries
 func warmCache(db *mysql.Database) {
-    db.Select(&refData, "SELECT * FROM countries", 24*time.Hour)
-    db.Select(&config, "SELECT * FROM config", time.Hour)
+    db.Select(&refData, "SELECT `id`, `name`, `code` FROM `countries`", 24*time.Hour)
+    db.Select(&config, "SELECT `key`, `value` FROM `config`", time.Hour)
 }
 ```
 

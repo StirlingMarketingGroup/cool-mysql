@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 
 	mysql "github.com/StirlingMarketingGroup/cool-mysql"
 )
@@ -43,11 +44,11 @@ func basicTransactionExample() {
 
 	// Get or create transaction
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel() // Always safe to call - rolls back if commit() not called
 	if err != nil {
 		log.Printf("Failed to create transaction: %v", err)
 		return
 	}
-	defer cancel() // Rolls back if commit() not called
 
 	// Store transaction in context
 	ctx = mysql.NewContextWithTx(ctx, tx)
@@ -69,7 +70,7 @@ func basicTransactionExample() {
 	fmt.Println("  User inserted in transaction")
 
 	// Update in same transaction
-	err = db.Exec("UPDATE users SET age = @@age WHERE email = @@email",
+	err = db.Exec("UPDATE `users` SET `age` = @@age WHERE `email` = @@email",
 		mysql.Params{
 			"age":   31,
 			"email": "tx1@example.com",
@@ -114,10 +115,10 @@ func nestedTransactionExample() {
 func outerTransaction(ctx context.Context, db *mysql.Database) error {
 	// Get or create transaction
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return fmt.Errorf("outer tx failed: %w", err)
 	}
-	defer cancel()
 
 	// Store in context
 	ctx = mysql.NewContextWithTx(ctx, tx)
@@ -158,10 +159,10 @@ func outerTransaction(ctx context.Context, db *mysql.Database) error {
 func innerTransaction(ctx context.Context, db *mysql.Database) error {
 	// Get or create transaction (will reuse existing from context)
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return fmt.Errorf("inner tx failed: %w", err)
 	}
-	defer cancel()
 
 	// Transaction already in context, so this is a no-op
 	ctx = mysql.NewContextWithTx(ctx, tx)
@@ -169,7 +170,7 @@ func innerTransaction(ctx context.Context, db *mysql.Database) error {
 	fmt.Println("    Inner: Reusing outer transaction")
 
 	// Update user
-	err = db.Exec("UPDATE users SET age = @@age WHERE email = @@email",
+	err = db.Exec("UPDATE `users` SET `age` = @@age WHERE `email` = @@email",
 		mysql.Params{
 			"age":   26,
 			"email": "outer@example.com",
@@ -209,9 +210,9 @@ func rollbackExample() {
 	// Verify rollback - user should not exist
 	var user User
 	err = db.Select(&user,
-		"SELECT * FROM users WHERE email = @@email",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "rollback@example.com"})
+		"rollback@example.com")
 
 	if err == sql.ErrNoRows {
 		fmt.Println("✓ Verified: User was not inserted (rollback worked)")
@@ -223,11 +224,11 @@ func rollbackExample() {
 }
 
 func failingTransaction(ctx context.Context, db *mysql.Database) error {
-	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	tx, _, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel() // Will rollback since we don't call commit
 	if err != nil {
 		return err
 	}
-	defer cancel() // Will rollback since commit() never called
 
 	ctx = mysql.NewContextWithTx(ctx, tx)
 
@@ -275,10 +276,10 @@ func complexTransactionExample() {
 // transferFunds demonstrates a bank transfer-like transaction
 func transferFunds(ctx context.Context, db *mysql.Database, fromEmail, toEmail string, amount int) error {
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return fmt.Errorf("transaction start failed: %w", err)
 	}
-	defer cancel()
 
 	ctx = mysql.NewContextWithTx(ctx, tx)
 
@@ -292,9 +293,9 @@ func transferFunds(ctx context.Context, db *mysql.Database, fromEmail, toEmail s
 
 	var sender Account
 	err = db.SelectWrites(&sender,
-		"SELECT email, balance FROM accounts WHERE email = @@email FOR UPDATE",
+		"SELECT email, balance FROM `accounts` WHERE `email` = @@email FOR UPDATE",
 		0, // Use write pool for transaction
-		mysql.Params{"email": fromEmail})
+		fromEmail)
 
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("sender account not found")
@@ -312,9 +313,9 @@ func transferFunds(ctx context.Context, db *mysql.Database, fromEmail, toEmail s
 	// Step 3: Check receiver exists
 	var receiver Account
 	err = db.SelectWrites(&receiver,
-		"SELECT email, balance FROM accounts WHERE email = @@email FOR UPDATE",
+		"SELECT email, balance FROM `accounts` WHERE `email` = @@email FOR UPDATE",
 		0,
-		mysql.Params{"email": toEmail})
+		toEmail)
 
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("receiver account not found")
@@ -326,7 +327,7 @@ func transferFunds(ctx context.Context, db *mysql.Database, fromEmail, toEmail s
 
 	// Step 4: Deduct from sender
 	result, err := db.ExecResult(
-		"UPDATE accounts SET balance = balance - @@amount WHERE email = @@email",
+		"UPDATE accounts SET `balance` = balance - @@amount WHERE `email` = @@email",
 		mysql.Params{
 			"amount": amount,
 			"email":  fromEmail,
@@ -345,7 +346,7 @@ func transferFunds(ctx context.Context, db *mysql.Database, fromEmail, toEmail s
 
 	// Step 5: Add to receiver
 	result, err = db.ExecResult(
-		"UPDATE accounts SET balance = balance + @@amount WHERE email = @@email",
+		"UPDATE accounts SET `balance` = balance + @@amount WHERE `email` = @@email",
 		mysql.Params{
 			"amount": amount,
 			"email":  toEmail,
@@ -419,10 +420,10 @@ func transactionWithRetry(ctx context.Context, db *mysql.Database) error {
 
 func attemptTransaction(ctx context.Context, db *mysql.Database) error {
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return err
 	}
-	defer cancel()
 
 	ctx = mysql.NewContextWithTx(ctx, tx)
 
@@ -450,22 +451,9 @@ func isRetryableError(err error) bool {
 	}
 
 	errStr := err.Error()
-	return contains(errStr, "deadlock") ||
-		contains(errStr, "lock wait timeout") ||
-		contains(errStr, "try restarting transaction")
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || indexOf(s, substr) >= 0))
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+	return strings.Contains(errStr, "deadlock") ||
+		strings.Contains(errStr, "lock wait timeout") ||
+		strings.Contains(errStr, "try restarting transaction")
 }
 
 // Batch transaction example
@@ -473,10 +461,10 @@ func batchTransactionExample(ctx context.Context, db *mysql.Database) error {
 	fmt.Println("\nBatch Transaction Example")
 
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return err
 	}
-	defer cancel()
 
 	ctx = mysql.NewContextWithTx(ctx, tx)
 
@@ -508,10 +496,10 @@ func savepointExample(ctx context.Context, db *mysql.Database) error {
 	fmt.Println("\nSavepoint Example (Advanced)")
 
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return err
 	}
-	defer cancel()
 
 	ctx = mysql.NewContextWithTx(ctx, tx)
 
@@ -577,16 +565,16 @@ func isolationLevelExample(ctx context.Context, db *mysql.Database) error {
 	fmt.Println("  Isolation level set to READ COMMITTED")
 
 	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
 	if err != nil {
 		return err
 	}
-	defer cancel()
 
 	ctx = mysql.NewContextWithTx(ctx, tx)
 
 	// Transaction operations...
 	var users []User
-	err = db.SelectWrites(&users, "SELECT * FROM users WHERE active = 1", 0)
+	err = db.SelectWrites(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = 1", 0)
 	if err != nil {
 		return err
 	}

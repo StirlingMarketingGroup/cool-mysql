@@ -7,7 +7,7 @@ description: Use this skill when working with the cool-mysql library for Go. Thi
 
 ## Overview
 
-cool-mysql is a MySQL helper library for Go that wraps `database/sql` with MySQL-specific conveniences while keeping the underlying interfaces intact. The library reduces boilerplate code for common database operations while providing advanced features like caching, automatic retries, and dual read/write connection pools.
+`cool-mysql` is a MySQL helper library for Go that wraps `database/sql` with MySQL-specific conveniences while keeping the underlying interfaces intact. The library reduces boilerplate code for common database operations while providing advanced features like caching, automatic retries, and dual read/write connection pools.
 
 **Core Philosophy:**
 - Keep `database/sql` interfaces intact
@@ -22,7 +22,7 @@ Use this skill when:
 - Setting up database connections with read/write separation
 - Implementing caching strategies for queries
 - Working with struct mappings and MySQL columns
-- Migrating from `database/sql` to cool-mysql
+- Migrating from `database/sql` to `cool-mysql`
 - Optimizing query performance
 - Handling transactions with proper context management
 - Debugging query issues or understanding error handling
@@ -32,7 +32,7 @@ Use this skill when:
 
 ### 1. Dual Connection Pools
 
-cool-mysql maintains separate connection pools for reads and writes to optimize for read-heavy workloads.
+`cool-mysql` maintains separate connection pools for reads and writes to optimize for read-heavy workloads.
 
 **Default Behavior:**
 - `Select()`, `SelectJSON()`, `Count()`, `Exists()` → Read pool
@@ -44,7 +44,7 @@ Use immediately after writing data when you need consistency:
 ```go
 db.Insert("users", user)
 // Need immediate consistency - use write pool
-db.SelectWrites(&user, "SELECT * FROM users WHERE id = @@id", 0, mysql.Params{"id": user.ID})
+db.SelectWrites(&user, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id", 0, user.ID)
 ```
 
 ### 2. Named Parameters
@@ -60,16 +60,16 @@ cool-mysql uses `@@paramName` syntax instead of positional `?` placeholders.
 **Example:**
 ```go
 // Named parameters
-db.Select(&users, "SELECT * FROM users WHERE age > @@minAge AND status = @@status", 0,
+db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `age` > @@minAge AND `status` = @@status", 0,
     mysql.Params{"minAge": 18, "status": "active"})
 
 // Struct as parameters
 user := User{ID: 1, Name: "Alice"}
-db.Exec("UPDATE users SET name = @@Name WHERE id = @@ID", user)
+db.Exec("UPDATE `users` SET `name` = @@Name WHERE `id` = @@ID", user)
 
 // Raw SQL injection
-db.Select(&users, "SELECT * FROM users WHERE @@condition", 0,
-    mysql.Params{"condition": mysql.Raw("created_at > NOW() - INTERVAL 1 DAY")})
+db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE @@condition", 0,
+    mysql.Raw("created_at > NOW() - INTERVAL 1 DAY"))
 ```
 
 ### 3. Template Syntax
@@ -81,12 +81,33 @@ cool-mysql supports Go template syntax for conditional query logic.
 - Template processing happens **before** parameter interpolation
 - Access parameters directly as fields: `.ParamName`
 
+**CRITICAL: Marshaling Template Values**
+
+When injecting VALUES (not identifiers) via templates, you MUST use the `marshal` pipe:
+
+```go
+// ✅ CORRECT - Use @@param for values (automatically marshaled)
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE {{ if .MinAge }}`age` > @@minAge{{ end }}"
+
+// ✅ CORRECT - Use | marshal when injecting value directly in template
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `name` = {{ .Name | marshal }}"
+
+// ❌ WRONG - Direct injection without marshal causes syntax errors
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `name` = {{ .Name }}"  // BROKEN!
+
+// ✅ CORRECT - Identifiers (column names) validated, then injected
+if !allowedColumns[sortBy] { return errors.New("invalid column") }
+query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` ORDER BY {{ .SortBy }}"  // OK - validated identifier
+```
+
+**Best Practice:** Use `@@param` syntax for values. Only use template injection with `| marshal` when you need conditional value logic.
+
 **Example:**
 ```go
 db.Select(&users,
-    `SELECT * FROM users WHERE 1=1
-    {{ if .MinAge }}AND age > @@minAge{{ end }}
-    {{ if .Status }}AND status = @@status{{ end }}`,
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE 1=1"+
+    " {{ if .MinAge }}AND `age` > @@minAge{{ end }}"+
+    " {{ if .Status }}AND `status` = @@status{{ end }}",
     0,
     mysql.Params{"minAge": 18, "status": "active"})
 ```
@@ -172,28 +193,24 @@ db, err := mysql.NewFromConn(writesConn, readsConn)
 **Select into struct slice:**
 ```go
 var users []User
-err := db.Select(&users, "SELECT * FROM users WHERE age > @@minAge", 0,
-    mysql.Params{"minAge": 18})
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `age` > @@minAge", 0, 18)
 ```
 
 **Select single value:**
 ```go
 var name string
-err := db.Select(&name, "SELECT name FROM users WHERE id = @@id", 0,
-    mysql.Params{"id": 1})
+err := db.Select(&name, "SELECT `name` FROM `users` WHERE `id` = @@id", 0, 1)
 // Returns sql.ErrNoRows if not found
 ```
 
 **Count records:**
 ```go
-count, err := db.Count("SELECT COUNT(*) FROM users WHERE active = @@active", 0,
-    mysql.Params{"active": 1})
+count, err := db.Count("SELECT COUNT(*) FROM `users` WHERE `active` = @@active", 0, 1)
 ```
 
 **Check existence:**
 ```go
-exists, err := db.Exists("SELECT 1 FROM users WHERE email = @@email", 0,
-    mysql.Params{"email": "user@example.com"})
+exists, err := db.Exists("SELECT 1 FROM `users` WHERE `email` = @@email", 0, "user@example.com")
 ```
 
 **Insert data:**
@@ -220,8 +237,7 @@ err := db.Upsert(
 
 **Execute query:**
 ```go
-err := db.Exec("UPDATE users SET active = 1 WHERE id = @@id",
-    mysql.Params{"id": 1})
+err := db.Exec("UPDATE `users` SET `active` = 1 WHERE `id` = @@id", 1)
 ```
 
 ## Migration Guide from database/sql
@@ -242,7 +258,7 @@ err := db.Exec("UPDATE users SET active = 1 WHERE id = @@id",
 
 **Before (database/sql):**
 ```go
-rows, err := db.Query("SELECT id, name, email FROM users WHERE age > ?", 18)
+rows, err := db.Query("SELECT `id`, `name`, `email` FROM `users` WHERE `age` > ?", 18)
 if err != nil {
     return err
 }
@@ -262,8 +278,7 @@ return rows.Err()
 **After (cool-mysql):**
 ```go
 var users []User
-return db.Select(&users, "SELECT * FROM users WHERE age > @@minAge", 0,
-    mysql.Params{"minAge": 18})
+return db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `age` > @@minAge", 0, 18)
 ```
 
 ## Best Practices
@@ -285,13 +300,18 @@ return db.Select(&users, "SELECT * FROM users WHERE age > @@minAge", 0,
 
 **DO:**
 - Use templates for conditional query logic
+- Use `@@param` for values (preferred - automatically marshaled)
+- Use `{{.Field | marshal}}` when injecting values directly in templates
+- Validate/whitelist identifiers (column names) before template injection
 - Reference parameters by field name: `.ParamName`
 - Add custom template functions with `db.AddTemplateFuncs()`
 
 **DON'T:**
+- Inject values without marshal: `{{.Name}}` causes syntax errors
 - Use column names in templates (use field names)
 - Forget that templates process before parameter interpolation
 - Use templates when named parameters suffice
+- Inject user-controlled identifiers without validation
 
 ### Caching Strategy
 
@@ -352,7 +372,7 @@ return db.Select(&users, "SELECT * FROM users WHERE age > @@minAge", 0,
 userCh := make(chan User)
 go func() {
     defer close(userCh)
-    db.Select(userCh, "SELECT * FROM users", 0)
+    db.Select(userCh, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 }()
 
 for user := range userCh {
@@ -378,17 +398,17 @@ err := db.Insert("users", userCh)
 ```go
 err := db.Select(func(u User) {
     log.Printf("Processing user: %s", u.Name)
-}, "SELECT * FROM users", 0)
+}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 ```
 
 ### Transaction Management
 
 ```go
 tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+defer cancel()
 if err != nil {
     return err
 }
-defer cancel()
 
 // Store transaction in context
 ctx = mysql.NewContextWithTx(ctx, tx)

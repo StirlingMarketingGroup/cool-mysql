@@ -105,25 +105,25 @@ Execute SELECT query and scan results into destination. Uses read connection poo
 ```go
 // Select into struct slice
 var users []User
-err := db.Select(&users, "SELECT * FROM users WHERE age > @@minAge", 5*time.Minute,
-    mysql.Params{"minAge": 18})
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@minAge", 5*time.Minute,
+    18)
 
 // Select single value
 var name string
-err := db.Select(&name, "SELECT name FROM users WHERE id = @@id", 0,
-    mysql.Params{"id": 1})
+err := db.Select(&name, "SELECT `name` FROM `users` WHERE `id` = @@id", 0,
+    1)
 
 // Select into channel
 userCh := make(chan User)
 go func() {
     defer close(userCh)
-    db.Select(userCh, "SELECT * FROM users", 0)
+    db.Select(userCh, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 }()
 
 // Select with function
 db.Select(func(u User) {
     log.Printf("User: %s", u.Name)
-}, "SELECT * FROM users", 0)
+}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 ```
 
 ### SelectContext
@@ -144,7 +144,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
 var users []User
-err := db.SelectContext(ctx, &users, "SELECT * FROM users", 0)
+err := db.SelectContext(ctx, &users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 ```
 
 ### SelectWrites
@@ -163,8 +163,8 @@ Select using write connection pool. Use for read-after-write consistency.
 ```go
 // Insert then immediately read
 db.Insert("users", user)
-db.SelectWrites(&user, "SELECT * FROM users WHERE id = @@id", 0,
-    mysql.Params{"id": user.ID})
+db.SelectWrites(&user, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id", 0,
+    user.ID)
 ```
 
 ### SelectWritesContext
@@ -187,8 +187,8 @@ Select query results as JSON.
 ```go
 var result json.RawMessage
 err := db.SelectJSON(&result,
-    "SELECT JSON_OBJECT('id', id, 'name', name) FROM users WHERE id = @@id",
-    0, mysql.Params{"id": 1})
+    "SELECT JSON_OBJECT('id', id, 'name', name) FROM `users` WHERE `id` = @@id",
+    0, 1)
 ```
 
 ### SelectJSONContext
@@ -220,8 +220,8 @@ Execute COUNT query and return result as `int64`. Uses read pool.
 
 **Example:**
 ```go
-count, err := db.Count("SELECT COUNT(*) FROM users WHERE active = @@active",
-    5*time.Minute, mysql.Params{"active": 1})
+count, err := db.Count("SELECT COUNT(*) FROM `users` WHERE `active` = @@active",
+    5*time.Minute, 1)
 ```
 
 ### CountContext
@@ -250,8 +250,8 @@ Check if query returns any rows. Uses read pool.
 
 **Example:**
 ```go
-exists, err := db.Exists("SELECT 1 FROM users WHERE email = @@email", 0,
-    mysql.Params{"email": "user@example.com"})
+exists, err := db.Exists("SELECT 1 FROM `users` WHERE `email` = @@email", 0,
+    "user@example.com")
 ```
 
 ### ExistsContext
@@ -408,11 +408,11 @@ Execute query without returning results (UPDATE, DELETE, etc.). Uses write pool.
 
 **Example:**
 ```go
-err := db.Exec("UPDATE users SET active = @@active WHERE id = @@id",
+err := db.Exec("UPDATE `users` SET `active` = @@active WHERE `id` = @@id",
     mysql.Params{"active": 1, "id": 123})
 
-err := db.Exec("DELETE FROM users WHERE last_login < @@cutoff",
-    mysql.Params{"cutoff": time.Now().Add(-365*24*time.Hour)})
+err := db.Exec("DELETE FROM `users` WHERE last_login < @@cutoff",
+    time.Now().Add(-365*24*time.Hour))
 ```
 
 ### ExecContext
@@ -435,7 +435,7 @@ Execute query and return `sql.Result` for accessing `LastInsertId()` and `RowsAf
 
 **Example:**
 ```go
-result, err := db.ExecResult("UPDATE users SET name = @@name WHERE id = @@id",
+result, err := db.ExecResult("UPDATE `users` SET `name` = @@name WHERE `id` = @@id",
     mysql.Params{"name": "Alice", "id": 1})
 if err != nil {
     return err
@@ -471,10 +471,10 @@ Get existing transaction from context or create new one.
 **Usage Pattern:**
 ```go
 tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+defer cancel() // Always safe to call - rolls back if commit() not called
 if err != nil {
     return err
 }
-defer cancel() // Rolls back if commit() not called
 
 // Store transaction in context
 ctx = mysql.NewContextWithTx(ctx, tx)
@@ -645,10 +645,10 @@ Manually interpolate parameters in query. Useful for debugging or logging.
 **Example:**
 ```go
 replacedQuery, normalizedParams, err := db.InterpolateParams(
-    "SELECT * FROM users WHERE id = @@id",
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id",
     mysql.Params{"id": 1},
 )
-// replacedQuery: "SELECT * FROM users WHERE id = ?"
+// replacedQuery: "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = ?"
 // normalizedParams: []any{1}
 ```
 
@@ -669,7 +669,7 @@ db.AddTemplateFuncs(template.FuncMap{
 })
 
 db.Select(&users,
-    `SELECT * FROM users WHERE name = @@name{{ if .UpperCase }} COLLATE utf8mb4_bin{{ end }}`,
+    "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `name` = @@name{{ if .UpperCase }} COLLATE utf8mb4_bin{{ end }}",
     0,
     mysql.Params{"name": "alice", "upperCase": true})
 ```
@@ -692,7 +692,7 @@ Literal SQL that won't be escaped. **Use with caution - SQL injection risk.**
 
 **Example:**
 ```go
-db.Select(&users, "SELECT * FROM users WHERE @@condition", 0,
+db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE @@condition", 0,
     mysql.Params{
         "condition": mysql.Raw("created_at > NOW() - INTERVAL 1 DAY"),
     })
@@ -711,7 +711,7 @@ Flexible result types when struct mapping isn't needed.
 **Example:**
 ```go
 var rows mysql.MapRows
-db.Select(&rows, "SELECT id, name FROM users", 0)
+db.Select(&rows, "SELECT `id`, name FROM `users`", 0)
 for _, row := range rows {
     fmt.Printf("ID: %v, Name: %v\n", row["id"], row["name"])
 }
@@ -779,14 +779,14 @@ Retry behavior uses exponential backoff and can be configured with `COOL_MAX_ATT
 **Example:**
 ```go
 var name string
-err := db.Select(&name, "SELECT name FROM users WHERE id = @@id", 0,
-    mysql.Params{"id": 999})
+err := db.Select(&name, "SELECT `name` FROM `users` WHERE `id` = @@id", 0,
+    999)
 if errors.Is(err, sql.ErrNoRows) {
     // Handle not found
 }
 
 var users []User
-err := db.Select(&users, "SELECT * FROM users WHERE id = @@id", 0,
-    mysql.Params{"id": 999})
+err := db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = @@id", 0,
+    999)
 // err is nil, users is empty slice []
 ```

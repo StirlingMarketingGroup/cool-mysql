@@ -62,13 +62,11 @@ func templateExamples(db *mysql.Database) {
 		Name:   "Alice",
 	}
 
-	query := `
-		SELECT * FROM users
-		WHERE 1=1
-		{{ if .MinAge }}AND age >= @@MinAge{{ end }}
-		{{ if .Status }}AND status = @@Status{{ end }}
-		{{ if .Name }}AND name LIKE CONCAT('%', @@Name, '%'){{ end }}
-	`
+	query := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`" +
+		" WHERE 1=1" +
+		" {{ if .MinAge }}AND `age` >= @@MinAge{{ end }}" +
+		" {{ if .Status }}AND `status` = @@Status{{ end }}" +
+		" {{ if .Name }}AND `name` LIKE CONCAT('%', @@Name, '%'){{ end }}"
 
 	var users []User
 	err := db.Select(&users, query, 0, params)
@@ -78,12 +76,19 @@ func templateExamples(db *mysql.Database) {
 		fmt.Printf("✓ Found %d users with filters\n", len(users))
 	}
 
-	// Example 2: Dynamic ORDER BY
-	fmt.Println("\n2. Dynamic ORDER BY")
+	// Example 2: Dynamic ORDER BY (with validation)
+	fmt.Println("\n2. Dynamic ORDER BY with whitelisting")
 
 	type SortParams struct {
 		SortBy    string
 		SortOrder string
+	}
+
+	// Whitelist allowed columns - identifiers can't be marshaled
+	allowedColumns := map[string]bool{
+		"created_at": true,
+		"name":       true,
+		"age":        true,
 	}
 
 	sortParams := SortParams{
@@ -91,13 +96,17 @@ func templateExamples(db *mysql.Database) {
 		SortOrder: "DESC",
 	}
 
-	sortQuery := `
-		SELECT * FROM users
-		WHERE active = 1
-		{{ if .SortBy }}
-		ORDER BY {{ .SortBy }} {{ .SortOrder }}
-		{{ end }}
-	`
+	// Validate before using in query
+	if !allowedColumns[sortParams.SortBy] {
+		log.Printf("Invalid sort column: %s", sortParams.SortBy)
+		return
+	}
+
+	sortQuery := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`" +
+		" WHERE `active` = 1" +
+		" {{ if .SortBy }}" +
+		" ORDER BY {{ .SortBy }} {{ .SortOrder }}" +
+		" {{ end }}"
 
 	err = db.Select(&users, sortQuery, 0, sortParams)
 	if err != nil {
@@ -120,19 +129,17 @@ func templateExamples(db *mysql.Database) {
 		IncludeAddress: false,
 	}
 
-	joinQuery := `
-		SELECT u.*
-		{{ if .IncludeOrders }}, COUNT(o.id) as order_count{{ end }}
-		{{ if .IncludeAddress }}, a.city{{ end }}
-		FROM users u
-		{{ if .IncludeOrders }}
-		LEFT JOIN orders o ON u.id = o.user_id
-		{{ end }}
-		{{ if .IncludeAddress }}
-		LEFT JOIN addresses a ON u.id = a.user_id
-		{{ end }}
-		GROUP BY u.id
-	`
+	joinQuery := "SELECT `users`.`id`, `users`.`name`, `users`.`email`, `users`.`age`, `users`.`active`, `users`.`created_at`, `users`.`updated_at`" +
+		" {{ if .IncludeOrders }}, COUNT(`orders`.`id`) as `order_count`{{ end }}" +
+		" {{ if .IncludeAddress }}, `addresses`.`city`{{ end }}" +
+		" FROM `users`" +
+		" {{ if .IncludeOrders }}" +
+		" LEFT JOIN `orders` ON `users`.`id` = `orders`.`user_id`" +
+		" {{ end }}" +
+		" {{ if .IncludeAddress }}" +
+		" LEFT JOIN `addresses` ON `users`.`id` = `addresses`.`user_id`" +
+		" {{ end }}" +
+		" GROUP BY `users`.`id`"
 
 	err = db.Select(&users, joinQuery, 0, joinParams)
 	if err != nil {
@@ -163,10 +170,9 @@ func templateExamples(db *mysql.Database) {
 		UseWildcard:   true,
 	}
 
-	caseQuery := `
-		SELECT * FROM users
-		WHERE name LIKE {{ if not .CaseSensitive }}{{ upper .SearchTerm }}{{ else }}{{ .SearchTerm }}{{ end }}
-	`
+	// IMPORTANT: Template values must be marshaled with | marshal
+	caseQuery := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`" +
+		" WHERE {{ if not .CaseSensitive }}UPPER(`name`){{ else }}`name`{{ end }} LIKE CONCAT('%', {{ .SearchTerm | marshal }}, '%')"
 
 	err = db.Select(&users, caseQuery, 0, caseParams)
 	if err != nil {
@@ -192,22 +198,20 @@ func templateExamples(db *mysql.Database) {
 		DateFrom:   time.Now().Add(-30 * 24 * time.Hour),
 	}
 
-	filterQuery := `
-		SELECT * FROM users
-		WHERE 1=1
-		{{ if .AgeRange }}
-		AND age BETWEEN @@AgeMin AND @@AgeMax
-		{{ end }}
-		{{ if .ActiveOnly }}
-		AND active = 1
-		{{ end }}
-		{{ if not .DateFrom.IsZero }}
-		AND created_at >= @@DateFrom
-		{{ end }}
-		{{ if not .DateTo.IsZero }}
-		AND created_at <= @@DateTo
-		{{ end }}
-	`
+	filterQuery := "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`" +
+		" WHERE 1=1" +
+		" {{ if .AgeRange }}" +
+		" AND `age` BETWEEN @@AgeMin AND @@AgeMax" +
+		" {{ end }}" +
+		" {{ if .ActiveOnly }}" +
+		" AND `active` = 1" +
+		" {{ end }}" +
+		" {{ if not .DateFrom.IsZero }}" +
+		" AND `created_at` >= @@DateFrom" +
+		" {{ end }}" +
+		" {{ if not .DateTo.IsZero }}" +
+		" AND `created_at` <= @@DateTo" +
+		" {{ end }}"
 
 	queryParams := mysql.Params{
 		"AgeMin":   filterParams.AgeRange[0],
@@ -232,7 +236,7 @@ func channelExamples(db *mysql.Database) {
 
 	go func() {
 		defer close(userCh)
-		err := db.Select(userCh, "SELECT * FROM users WHERE active = 1", 0)
+		err := db.Select(userCh, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = 1", 0)
 		if err != nil {
 			log.Printf("Channel select failed: %v", err)
 		}
@@ -290,8 +294,7 @@ func channelExamples(db *mysql.Database) {
 	// Producer: fetch users
 	go func() {
 		defer close(rawUserCh)
-		db.Select(rawUserCh, "SELECT * FROM users LIMIT @@limit", 0,
-			mysql.Params{"limit": 50})
+		db.Select(rawUserCh, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` LIMIT @@limit", 0, 50)
 	}()
 
 	// Transformer: enrich data
@@ -339,7 +342,7 @@ func functionReceiverExamples(db *mysql.Database) {
 		if count <= 3 {
 			fmt.Printf("  Processing: %s (Age: %d)\n", u.Name, u.Age)
 		}
-	}, "SELECT * FROM users WHERE active = 1", 0)
+	}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = 1", 0)
 
 	if err != nil {
 		log.Printf("Function receiver failed: %v", err)
@@ -356,7 +359,7 @@ func functionReceiverExamples(db *mysql.Database) {
 	err = db.Select(func(u User) {
 		totalAge += u.Age
 		userCount++
-	}, "SELECT * FROM users", 0)
+	}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
 	if err != nil {
 		log.Printf("Aggregation failed: %v", err)
@@ -385,7 +388,7 @@ func functionReceiverExamples(db *mysql.Database) {
 		default:
 			stats.SeniorCount++
 		}
-	}, "SELECT * FROM users", 0)
+	}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
 	if err != nil {
 		log.Printf("Stats failed: %v", err)
@@ -407,7 +410,7 @@ func functionReceiverExamples(db *mysql.Database) {
 			// Note: Can't actually stop iteration early
 			// This is a limitation of function receivers
 		}
-	}, "SELECT * FROM users", 0)
+	}, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 
 	if err != nil {
 		log.Printf("Search failed: %v", err)
@@ -450,9 +453,9 @@ func jsonExamples(db *mysql.Database) {
 
 	var usersWithMeta []UserWithMeta
 	err = db.Select(&usersWithMeta,
-		"SELECT id, name, email, metadata FROM users WHERE metadata IS NOT NULL LIMIT @@limit",
+		"SELECT `id`, `name`, `email`, metadata FROM `users` WHERE metadata IS NOT NULL LIMIT @@limit",
 		0,
-		mysql.Params{"limit": 5})
+		5)
 
 	if err != nil {
 		log.Printf("JSON select failed: %v", err)
@@ -468,14 +471,14 @@ func jsonExamples(db *mysql.Database) {
 
 	var jsonResult json.RawMessage
 	err = db.SelectJSON(&jsonResult,
-		`SELECT JSON_OBJECT(
-			'id', id,
-			'name', name,
-			'email', email,
-			'age', age
-		) FROM users WHERE id = @@id`,
+		"SELECT JSON_OBJECT("+
+		" 'id', `id`,"+
+		" 'name', `name`,"+
+		" 'email', `email`,"+
+		" 'age', `age`"+
+		" ) FROM `users` WHERE `id` = @@id",
 		0,
-		mysql.Params{"id": 1})
+		1)
 
 	if err != nil {
 		log.Printf("SelectJSON failed: %v", err)
@@ -488,14 +491,14 @@ func jsonExamples(db *mysql.Database) {
 
 	var jsonArray json.RawMessage
 	err = db.SelectJSON(&jsonArray,
-		`SELECT JSON_ARRAYAGG(
-			JSON_OBJECT(
-				'name', name,
-				'email', email
-			)
-		) FROM users WHERE active = 1 LIMIT @@limit`,
+		"SELECT JSON_ARRAYAGG("+
+		" JSON_OBJECT("+
+		" 'name', `name`,"+
+		" 'email', `email`"+
+		" )"+
+		" ) FROM `users` WHERE `active` = 1 LIMIT @@limit",
 		0,
-		mysql.Params{"limit": 5})
+		5)
 
 	if err != nil {
 		log.Printf("SelectJSON array failed: %v", err)
@@ -511,11 +514,9 @@ func rawSQLExamples(db *mysql.Database) {
 
 	var users []User
 	err := db.Select(&users,
-		"SELECT * FROM users WHERE @@condition",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE @@condition",
 		0,
-		mysql.Params{
-			"condition": mysql.Raw("created_at > NOW() - INTERVAL 7 DAY"),
-		})
+		mysql.Raw("created_at > NOW() - INTERVAL 7 DAY"))
 
 	if err != nil {
 		log.Printf("Raw SQL query failed: %v", err)
@@ -541,9 +542,9 @@ func rawSQLExamples(db *mysql.Database) {
 
 	var labeled []UserWithLabel
 	err = db.Select(&labeled,
-		"SELECT name, @@ageCase as label FROM users",
+		"SELECT name, @@ageCase as `label` FROM `users`",
 		0,
-		mysql.Params{"ageCase": caseSQL})
+		caseSQL)
 
 	if err != nil {
 		log.Printf("CASE query failed: %v", err)
@@ -559,12 +560,12 @@ func rawSQLExamples(db *mysql.Database) {
 	// Example 3: Raw SQL for subquery
 	fmt.Println("\n3. Raw SQL for subquery")
 
-	subquery := mysql.Raw("(SELECT AVG(age) FROM users WHERE active = 1)")
+	subquery := mysql.Raw("(SELECT AVG(age) FROM `users` WHERE `active` = 1)")
 
 	err = db.Select(&users,
-		"SELECT * FROM users WHERE age > @@avgAge",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age > @@avgAge",
 		0,
-		mysql.Params{"avgAge": subquery})
+		subquery)
 
 	if err != nil {
 		log.Printf("Subquery failed: %v", err)
@@ -577,13 +578,12 @@ func rawSQLExamples(db *mysql.Database) {
 
 	// DANGEROUS - SQL injection risk!
 	// userInput := "'; DROP TABLE users; --"
-	// db.Select(&users, "SELECT * FROM users WHERE name = @@name", 0,
+	// db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `name` = @@name", 0,
 	//     mysql.Params{"name": mysql.Raw(userInput)})
 
 	// SAFE - use regular parameter
 	safeInput := "Alice'; DROP TABLE users; --"
-	err = db.Select(&users, "SELECT * FROM users WHERE name = @@name", 0,
-		mysql.Params{"name": safeInput}) // Properly escaped
+	err = db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `name` = @@name", 0, safeInput) // Properly escaped
 
 	if err != nil {
 		log.Printf("Safe query failed: %v", err)
@@ -604,11 +604,11 @@ func complexQueryExamples(db *mysql.Database) {
 
 	var usersWithOrders []UserWithOrderCount
 	err := db.Select(&usersWithOrders,
-		`SELECT u.*,
-		(SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) as order_count
-		FROM users u
-		WHERE u.created_at > @@since
-		AND u.active = @@active`,
+		"SELECT `users`.`id`, `users`.`name`, `users`.`email`, `users`.`age`, `users`.`active`, `users`.`created_at`, `users`.`updated_at`,"+
+		" (SELECT COUNT(*) FROM `orders` WHERE `orders`.`user_id` = `users`.`id`) as `order_count`"+
+		" FROM `users`"+
+		" WHERE `users`.`created_at` > @@since"+
+		" AND `users`.`active` = @@active",
 		5*time.Minute,
 		mysql.Params{
 			"since":  time.Now().Add(-30 * 24 * time.Hour),
@@ -624,21 +624,19 @@ func complexQueryExamples(db *mysql.Database) {
 	// Example 2: JOIN with aggregation
 	fmt.Println("\n2. JOIN with aggregation")
 
-	query := `
-		SELECT
-			u.id,
-			u.name,
-			u.email,
-			COUNT(o.id) as order_count,
-			SUM(o.total) as total_spent
-		FROM users u
-		LEFT JOIN orders o ON u.id = o.user_id
-		WHERE u.active = @@active
-		GROUP BY u.id, u.name, u.email
-		HAVING COUNT(o.id) > @@minOrders
-		ORDER BY total_spent DESC
-		LIMIT @@limit
-	`
+	query := "SELECT" +
+		" `users`.`id`," +
+		" `users`.`name`," +
+		" `users`.`email`," +
+		" COUNT(`orders`.`id`) as `order_count`," +
+		" SUM(`orders`.`total`) as `total_spent`" +
+		" FROM `users`" +
+		" LEFT JOIN `orders` ON `users`.`id` = `orders`.`user_id`" +
+		" WHERE `users`.`active` = @@active" +
+		" GROUP BY `users`.`id`, `users`.`name`, `users`.`email`" +
+		" HAVING COUNT(`orders`.`id`) > @@minOrders" +
+		" ORDER BY total_spent DESC" +
+		" LIMIT @@limit"
 
 	type UserStats struct {
 		ID         int     `mysql:"id"`
@@ -665,17 +663,15 @@ func complexQueryExamples(db *mysql.Database) {
 	// Example 3: Window function
 	fmt.Println("\n3. Window function query")
 
-	windowQuery := `
-		SELECT
-			id,
-			name,
-			age,
-			RANK() OVER (ORDER BY age DESC) as age_rank,
-			AVG(age) OVER () as avg_age
-		FROM users
-		WHERE active = @@active
-		LIMIT @@limit
-	`
+	windowQuery := "SELECT" +
+		" `id`," +
+		" `name`," +
+		" `age`," +
+		" RANK() OVER (ORDER BY `age` DESC) as `age_rank`," +
+		" AVG(`age`) OVER () as `avg_age`" +
+		" FROM `users`" +
+		" WHERE `active` = @@active" +
+		" LIMIT @@limit"
 
 	type UserWithRank struct {
 		ID      int     `mysql:"id"`
@@ -701,19 +697,17 @@ func complexQueryExamples(db *mysql.Database) {
 	// Example 4: CTE (Common Table Expression)
 	fmt.Println("\n4. CTE query")
 
-	cteQuery := `
-		WITH recent_users AS (
-			SELECT * FROM users
-			WHERE created_at > @@since
-		),
-		active_recent AS (
-			SELECT * FROM recent_users
-			WHERE active = @@active
-		)
-		SELECT * FROM active_recent
-		ORDER BY created_at DESC
-		LIMIT @@limit
-	`
+	cteQuery := "WITH recent_users AS (" +
+		" SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`" +
+		" WHERE `created_at` > @@since" +
+		" )," +
+		" active_recent AS (" +
+		" SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM recent_users" +
+		" WHERE `active` = @@active" +
+		" )" +
+		" SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM active_recent" +
+		" ORDER BY `created_at` DESC" +
+		" LIMIT @@limit"
 
 	var cteUsers []User
 	err = db.Select(&cteUsers, cteQuery, 5*time.Minute,

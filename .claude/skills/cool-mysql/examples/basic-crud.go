@@ -67,7 +67,7 @@ func setupDatabase() (*mysql.Database, error) {
 		"localhost", // read host
 		3306,        // read port
 		"utf8mb4_unicode_ci", // collation
-		"UTC", // timezone
+		time.UTC,    // timezone
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database: %w", err)
@@ -152,7 +152,7 @@ func readExamples(db *mysql.Database) {
 	// Example 1: Select all users into slice
 	fmt.Println("1. Select all users")
 	var allUsers []User
-	err := db.Select(&allUsers, "SELECT * FROM users", 0)
+	err := db.Select(&allUsers, "SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`", 0)
 	if err != nil {
 		log.Printf("Select all failed: %v", err)
 	} else {
@@ -166,9 +166,9 @@ func readExamples(db *mysql.Database) {
 	fmt.Println("\n2. Select users with age filter")
 	var adults []User
 	err = db.Select(&adults,
-		"SELECT * FROM users WHERE age >= @@minAge",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE age >= @@minAge",
 		0, // No caching
-		mysql.Params{"minAge": 25})
+		25)
 	if err != nil {
 		log.Printf("Select with filter failed: %v", err)
 	} else {
@@ -179,9 +179,9 @@ func readExamples(db *mysql.Database) {
 	fmt.Println("\n3. Select single user by email")
 	var user User
 	err = db.Select(&user,
-		"SELECT * FROM users WHERE email = @@email",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "alice@example.com"})
+		"alice@example.com")
 	if errors.Is(err, sql.ErrNoRows) {
 		fmt.Println("✗ User not found")
 	} else if err != nil {
@@ -194,9 +194,9 @@ func readExamples(db *mysql.Database) {
 	fmt.Println("\n4. Select single value (name)")
 	var name string
 	err = db.Select(&name,
-		"SELECT name FROM users WHERE email = @@email",
+		"SELECT `name` FROM `users` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "bob@example.com"})
+		"bob@example.com")
 	if err != nil {
 		log.Printf("Select name failed: %v", err)
 	} else {
@@ -207,10 +207,10 @@ func readExamples(db *mysql.Database) {
 	fmt.Println("\n5. Select with multiple conditions")
 	var activeAdults []User
 	err = db.Select(&activeAdults,
-		`SELECT * FROM users
-		WHERE age >= @@minAge
-		AND active = @@active
-		ORDER BY name`,
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users`"+
+		" WHERE `age` >= @@minAge"+
+		" AND `active` = @@active"+
+		" ORDER BY `name`",
 		0,
 		mysql.Params{
 			"minAge": 25,
@@ -226,9 +226,9 @@ func readExamples(db *mysql.Database) {
 	fmt.Println("\n6. Select with caching (5 minute TTL)")
 	var cachedUsers []User
 	err = db.Select(&cachedUsers,
-		"SELECT * FROM users WHERE active = @@active",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `active` = @@active",
 		5*time.Minute, // Cache for 5 minutes
-		mysql.Params{"active": true})
+		true)
 	if err != nil {
 		log.Printf("Cached select failed: %v", err)
 	} else {
@@ -242,9 +242,9 @@ func readExamples(db *mysql.Database) {
 
 	var contextUsers []User
 	err = db.SelectContext(ctx, &contextUsers,
-		"SELECT * FROM users LIMIT @@limit",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` LIMIT @@limit",
 		0,
-		mysql.Params{"limit": 10})
+		10)
 	if err != nil {
 		log.Printf("Select with context failed: %v", err)
 	} else {
@@ -257,7 +257,7 @@ func updateExamples(db *mysql.Database) {
 	// Example 1: Simple update
 	fmt.Println("1. Update user name")
 	err := db.Exec(
-		"UPDATE users SET name = @@name WHERE email = @@email",
+		"UPDATE `users` SET `name` = @@name WHERE `email` = @@email",
 		mysql.Params{
 			"name":  "Alice Smith",
 			"email": "alice@example.com",
@@ -271,7 +271,7 @@ func updateExamples(db *mysql.Database) {
 	// Example 2: Update with result
 	fmt.Println("\n2. Update with result check")
 	result, err := db.ExecResult(
-		"UPDATE users SET age = @@age WHERE email = @@email",
+		"UPDATE `users` SET `age` = @@age WHERE `email` = @@email",
 		mysql.Params{
 			"age":   26,
 			"email": "alice@example.com",
@@ -286,7 +286,7 @@ func updateExamples(db *mysql.Database) {
 	// Example 3: Update multiple rows
 	fmt.Println("\n3. Update multiple rows")
 	result, err = db.ExecResult(
-		"UPDATE users SET active = @@active WHERE age < @@maxAge",
+		"UPDATE `users` SET `active` = @@active WHERE age < @@maxAge",
 		mysql.Params{
 			"active": false,
 			"maxAge": 25,
@@ -301,8 +301,8 @@ func updateExamples(db *mysql.Database) {
 	// Example 4: Update with current timestamp
 	fmt.Println("\n4. Update timestamp")
 	err = db.Exec(
-		"UPDATE users SET updated_at = NOW() WHERE email = @@email",
-		mysql.Params{"email": "bob@example.com"})
+		"UPDATE `users` SET `updated_at` = NOW() WHERE `email` = @@email",
+		"bob@example.com")
 	if err != nil {
 		log.Printf("Update timestamp failed: %v", err)
 	} else {
@@ -312,10 +312,10 @@ func updateExamples(db *mysql.Database) {
 	// Example 5: Conditional update
 	fmt.Println("\n5. Conditional update (only if age is current value)")
 	err = db.Exec(
-		`UPDATE users
-		SET age = @@newAge
-		WHERE email = @@email
-		AND age = @@currentAge`,
+		"UPDATE `users`"+
+		" SET `age` = @@newAge"+
+		" WHERE `email` = @@email"+
+		" AND `age` = @@currentAge",
 		mysql.Params{
 			"newAge":     27,
 			"email":      "charlie@example.com",
@@ -333,7 +333,7 @@ func updateExamples(db *mysql.Database) {
 	defer cancel()
 
 	err = db.ExecContext(ctx,
-		"UPDATE users SET active = @@active WHERE age > @@age",
+		"UPDATE `users` SET `active` = @@active WHERE age > @@age",
 		mysql.Params{
 			"active": true,
 			"age":    30,
@@ -350,8 +350,8 @@ func deleteExamples(db *mysql.Database) {
 	// Example 1: Delete single record
 	fmt.Println("1. Delete single user")
 	err := db.Exec(
-		"DELETE FROM users WHERE email = @@email",
-		mysql.Params{"email": "eve@example.com"})
+		"DELETE FROM `users` WHERE `email` = @@email",
+		"eve@example.com")
 	if err != nil {
 		log.Printf("Delete failed: %v", err)
 	} else {
@@ -361,8 +361,8 @@ func deleteExamples(db *mysql.Database) {
 	// Example 2: Delete with result check
 	fmt.Println("\n2. Delete with result check")
 	result, err := db.ExecResult(
-		"DELETE FROM users WHERE email = @@email",
-		mysql.Params{"email": "frank@example.com"})
+		"DELETE FROM `users` WHERE `email` = @@email",
+		"frank@example.com")
 	if err != nil {
 		log.Printf("Delete failed: %v", err)
 	} else {
@@ -377,8 +377,8 @@ func deleteExamples(db *mysql.Database) {
 	// Example 3: Delete multiple records
 	fmt.Println("\n3. Delete inactive users")
 	result, err = db.ExecResult(
-		"DELETE FROM users WHERE active = @@active",
-		mysql.Params{"active": false})
+		"DELETE FROM `users` WHERE `active` = @@active",
+		false)
 	if err != nil {
 		log.Printf("Bulk delete failed: %v", err)
 	} else {
@@ -389,8 +389,8 @@ func deleteExamples(db *mysql.Database) {
 	// Example 4: Delete with age condition
 	fmt.Println("\n4. Delete users under age threshold")
 	result, err = db.ExecResult(
-		"DELETE FROM users WHERE age < @@minAge",
-		mysql.Params{"minAge": 18})
+		"DELETE FROM `users` WHERE age < @@minAge",
+		18)
 	if err != nil {
 		log.Printf("Delete failed: %v", err)
 	} else {
@@ -404,8 +404,8 @@ func deleteExamples(db *mysql.Database) {
 	defer cancel()
 
 	err = db.ExecContext(ctx,
-		"DELETE FROM users WHERE created_at < @@cutoff",
-		mysql.Params{"cutoff": time.Now().Add(-365 * 24 * time.Hour)})
+		"DELETE FROM `users` WHERE `created_at` < @@cutoff",
+		time.Now().Add(-365*24*time.Hour))
 	if err != nil {
 		log.Printf("Delete with context failed: %v", err)
 	} else {
@@ -418,7 +418,7 @@ func utilityExamples(db *mysql.Database) {
 	// Example 1: Count users
 	fmt.Println("1. Count all users")
 	count, err := db.Count(
-		"SELECT COUNT(*) FROM users",
+		"SELECT COUNT(*) FROM `users`",
 		0) // No caching
 	if err != nil {
 		log.Printf("Count failed: %v", err)
@@ -429,9 +429,9 @@ func utilityExamples(db *mysql.Database) {
 	// Example 2: Count with condition
 	fmt.Println("\n2. Count active users")
 	activeCount, err := db.Count(
-		"SELECT COUNT(*) FROM users WHERE active = @@active",
+		"SELECT COUNT(*) FROM `users` WHERE `active` = @@active",
 		0,
-		mysql.Params{"active": true})
+		true)
 	if err != nil {
 		log.Printf("Count failed: %v", err)
 	} else {
@@ -441,7 +441,7 @@ func utilityExamples(db *mysql.Database) {
 	// Example 3: Count with caching
 	fmt.Println("\n3. Count with caching")
 	cachedCount, err := db.Count(
-		"SELECT COUNT(*) FROM users",
+		"SELECT COUNT(*) FROM `users`",
 		5*time.Minute) // Cache for 5 minutes
 	if err != nil {
 		log.Printf("Cached count failed: %v", err)
@@ -452,9 +452,9 @@ func utilityExamples(db *mysql.Database) {
 	// Example 4: Check if user exists
 	fmt.Println("\n4. Check if email exists")
 	exists, err := db.Exists(
-		"SELECT 1 FROM users WHERE email = @@email",
+		"SELECT 1 FROM `users` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "alice@example.com"})
+		"alice@example.com")
 	if err != nil {
 		log.Printf("Exists check failed: %v", err)
 	} else {
@@ -468,9 +468,9 @@ func utilityExamples(db *mysql.Database) {
 	// Example 5: Check existence with multiple conditions
 	fmt.Println("\n5. Check if active adult exists")
 	exists, err = db.Exists(
-		`SELECT 1 FROM users
-		WHERE active = @@active
-		AND age >= @@minAge`,
+		"SELECT 1 FROM `users`"+
+		" WHERE `active` = @@active"+
+		" AND `age` >= @@minAge",
 		0,
 		mysql.Params{
 			"active": true,
@@ -505,9 +505,9 @@ func utilityExamples(db *mysql.Database) {
 	// Immediately read using write pool for consistency
 	var retrieved User
 	err = db.SelectWrites(&retrieved,
-		"SELECT * FROM users WHERE email = @@email",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
 		0, // Don't cache writes
-		mysql.Params{"email": "grace@example.com"})
+		"grace@example.com")
 	if err != nil {
 		log.Printf("SelectWrites failed: %v", err)
 	} else {

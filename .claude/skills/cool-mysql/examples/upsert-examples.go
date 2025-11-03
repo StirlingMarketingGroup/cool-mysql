@@ -92,9 +92,9 @@ func basicUpsertExample() {
 	// Verify result
 	var retrieved User
 	err = db.Select(&retrieved,
-		"SELECT * FROM users WHERE email = @@email",
+		"SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "upsert@example.com"})
+		"upsert@example.com")
 
 	if err != nil {
 		log.Printf("Verification failed: %v", err)
@@ -245,9 +245,9 @@ func conditionalUpsertExample() {
 	// Verify current version
 	var current Document
 	err = db.Select(&current,
-		"SELECT * FROM documents WHERE id = @@id",
+		"SELECT `id`, `title`, `content`, `version`, `updated_at` FROM `documents` WHERE `id` = @@id",
 		0,
-		mysql.Params{"id": 1})
+		1)
 
 	if err != nil {
 		log.Printf("Verification failed: %v", err)
@@ -320,7 +320,7 @@ func batchUpsertExample() {
 	// Verify results
 	var allSettings []Setting
 	err = db.Select(&allSettings,
-		"SELECT * FROM settings ORDER BY key",
+		"SELECT `key`, `value` FROM `settings` ORDER BY key",
 		0)
 
 	if err != nil {
@@ -408,9 +408,9 @@ func selectiveUpdateExample() {
 	// Verify
 	var final UserProfile
 	err = db.Select(&final,
-		"SELECT * FROM user_profiles WHERE email = @@email",
+		"SELECT `email`, `name`, `bio`, `avatar`, `updated_at` FROM `user_profiles` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "profile@example.com"})
+		"profile@example.com")
 
 	if err != nil {
 		log.Printf("Verification failed: %v", err)
@@ -466,9 +466,9 @@ func timestampUpsertExample() {
 	// Get the article to see timestamps
 	var inserted Article
 	err = db.Select(&inserted,
-		"SELECT * FROM articles WHERE slug = @@slug",
+		"SELECT `slug`, `title`, `content`, `views`, `created_at`, `updated_at` FROM `articles` WHERE slug = @@slug",
 		0,
-		mysql.Params{"slug": "my-article"})
+		"my-article")
 
 	if err != nil {
 		log.Printf("Select failed: %v", err)
@@ -502,9 +502,9 @@ func timestampUpsertExample() {
 	// Verify timestamps
 	var updated Article
 	err = db.Select(&updated,
-		"SELECT * FROM articles WHERE slug = @@slug",
+		"SELECT `slug`, `title`, `content`, `views`, `created_at`, `updated_at` FROM `articles` WHERE slug = @@slug",
 		0,
-		mysql.Params{"slug": "my-article"})
+		"my-article")
 
 	if err != nil {
 		log.Printf("Verification failed: %v", err)
@@ -542,9 +542,9 @@ func incrementCounterExample() {
 
 	// Custom upsert to increment on duplicate
 	err = db.Exec(
-		`INSERT INTO page_views (page, views)
-		VALUES (@@page, @@views)
-		ON DUPLICATE KEY UPDATE views = views + @@views`,
+		"INSERT INTO `page_views` (`page`, `views`)"+
+		" VALUES (@@page, @@views)"+
+		" ON DUPLICATE KEY UPDATE `views` = `views` + @@views",
 		mysql.Params{
 			"page":  viewRecord.Page,
 			"views": viewRecord.Views,
@@ -559,9 +559,9 @@ func incrementCounterExample() {
 
 	// Increment again
 	err = db.Exec(
-		`INSERT INTO page_views (page, views)
-		VALUES (@@page, @@views)
-		ON DUPLICATE KEY UPDATE views = views + @@views`,
+		"INSERT INTO `page_views` (`page`, `views`)"+
+		" VALUES (@@page, @@views)"+
+		" ON DUPLICATE KEY UPDATE `views` = `views` + @@views",
 		mysql.Params{
 			"page":  page,
 			"views": 1,
@@ -575,9 +575,9 @@ func incrementCounterExample() {
 	// Check total views
 	var totalViews int
 	err = db.Select(&totalViews,
-		"SELECT views FROM page_views WHERE page = @@page",
+		"SELECT views FROM `page_views` WHERE page = @@page",
 		0,
-		mysql.Params{"page": page})
+		page)
 
 	if err != nil {
 		log.Printf("Select views failed: %v", err)
@@ -636,8 +636,8 @@ func upsertFromChannelExample() {
 	fmt.Println("✓ Streamed 100 metric upserts")
 
 	// Verify
-	var count int64
-	count, err = db.Count("SELECT COUNT(*) FROM metrics", 0)
+	var count int
+	count, err = db.Count("SELECT COUNT(*) FROM `metrics`", 0)
 	if err != nil {
 		log.Printf("Count failed: %v", err)
 		return
@@ -674,7 +674,7 @@ func UpsertOrIgnoreExample() {
 
 	// With INSERT IGNORE - silently ignores duplicate
 	err = db.Exec(
-		"INSERT IGNORE INTO email_counts (email, count) VALUES (@@email, @@count)",
+		"INSERT IGNORE INTO `email_counts` (email, count) VALUES (@@email, @@count)",
 		mysql.Params{"email": "test1@example.com", "count": 999})
 
 	fmt.Println("  Insert Ignore: Keeps original value on duplicate")
@@ -682,9 +682,9 @@ func UpsertOrIgnoreExample() {
 	// Verify - count should still be 1 (ignore worked)
 	var result UniqueEmail
 	err = db.Select(&result,
-		"SELECT * FROM email_counts WHERE email = @@email",
+		"SELECT `email`, `count` FROM `email_counts` WHERE `email` = @@email",
 		0,
-		mysql.Params{"email": "test1@example.com"})
+		"test1@example.com")
 
 	if err != nil {
 		log.Printf("Verification failed: %v", err)
