@@ -36,6 +36,18 @@ func UpsertExamples() {
 	// Timestamp tracking
 	fmt.Println("\n6. Timestamp Tracking with Upsert")
 	timestampUpsertExample()
+
+	// Increment counter
+	fmt.Println("\n7. Increment Counter Pattern")
+	incrementCounterExample()
+
+	// Upsert from channel
+	fmt.Println("\n8. Upsert from Channel (streaming)")
+	upsertFromChannelExample()
+
+	// Upsert vs Insert Ignore
+	fmt.Println("\n9. Upsert vs Insert Ignore")
+	UpsertOrIgnoreExample()
 }
 
 // basicUpsertExample demonstrates simple upsert by email

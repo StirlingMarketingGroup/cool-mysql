@@ -358,24 +358,11 @@ db.UseCache(cache)
 
 cool-mysql doesn't auto-invalidate on writes. You must handle invalidation explicitly.
 
-### Manual Invalidation Patterns
+### Handling Cache After Writes
 
-#### 1. Write-Through Pattern
+**Note:** Cache keys are generated internally by `cool-mysql` using SHA256 hashing and are not exposed as a public API. You cannot manually invalidate specific cache entries.
 
-```go
-// Update database
-err := db.Exec("UPDATE `users` SET `name` = @@name WHERE `id` = @@id",
-    mysql.Params{"name": "Alice", "id": 123})
-if err != nil {
-    return err
-}
-
-// Invalidate cache (if using Redis)
-cacheKey := generateCacheKey("SELECT `id`, `name`, `email`, `age`, `active`, `created_at`, `updated_at` FROM `users` WHERE `id` = ?", 123)
-redisClient.Del(ctx, cacheKey)
-```
-
-#### 2. Read-After-Write with SelectWrites
+#### Recommended Pattern: Use SelectWrites
 
 ```go
 // Write to database

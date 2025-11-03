@@ -24,17 +24,34 @@ func CachingExamples() {
 	fmt.Println("\n2. Redis Cache")
 	redisCacheExample()
 
+	// Redis Cluster caching
+	fmt.Println("\n3. Redis Cluster Cache")
+	redisClusterExample()
+
 	// Memcached caching
-	fmt.Println("\n3. Memcached Cache")
+	fmt.Println("\n4. Memcached Cache")
 	memcachedCacheExample()
 
 	// Multi-level caching
-	fmt.Println("\n4. Multi-Level Cache")
+	fmt.Println("\n5. Multi-Level Cache")
 	multiCacheExample()
 
 	// Cache strategies
-	fmt.Println("\n5. Cache Strategies")
+	fmt.Println("\n6. Cache Strategies")
 	cacheStrategiesExample()
+
+	// Performance benchmark
+	fmt.Println("\n7. Performance Benchmark")
+	db, err := setupDatabase()
+	if err != nil {
+		log.Printf("Setup failed: %v", err)
+		return
+	}
+	performanceBenchmark(db)
+
+	// Cache key debugging
+	fmt.Println("\n8. Cache Key Debugging")
+	cacheKeyDebug(db)
 }
 
 // weakCacheExample demonstrates in-memory weak cache

@@ -15,6 +15,12 @@ import (
 func TransactionExamples() {
 	fmt.Println("=== TRANSACTION EXAMPLES ===")
 
+	db, err := setupDatabase()
+	if err != nil {
+		log.Printf("Setup failed: %v", err)
+		return
+	}
+
 	// Basic transaction
 	fmt.Println("\n1. Basic Transaction")
 	basicTransactionExample()
@@ -30,6 +36,22 @@ func TransactionExamples() {
 	// Complex transaction
 	fmt.Println("\n4. Complex Multi-Step Transaction")
 	complexTransactionExample()
+
+	// Batch transaction
+	fmt.Println("\n5. Batch Transaction")
+	batchTransactionExample(context.Background(), db)
+
+	// Transaction with retry
+	fmt.Println("\n6. Transaction with Retry Logic")
+	transactionWithRetry(context.Background(), db)
+
+	// Savepoint example
+	fmt.Println("\n7. Savepoint Pattern")
+	savepointExample(context.Background(), db)
+
+	// Isolation level
+	fmt.Println("\n8. Custom Isolation Level")
+	isolationLevelExample(context.Background(), db)
 }
 
 // basicTransactionExample demonstrates basic transaction usage

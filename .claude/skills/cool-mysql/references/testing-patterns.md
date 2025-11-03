@@ -50,6 +50,7 @@ Complete guide to testing applications that use cool-mysql, including mocking st
 import (
     "testing"
     "github.com/DATA-DOG/go-sqlmock"
+    mysqlDriver "github.com/go-sql-driver/mysql"
     "github.com/StirlingMarketingGroup/cool-mysql"
 )
 
@@ -737,7 +738,7 @@ func TestInsertDuplicateEmail(t *testing.T) {
     defer mock.ExpectClose()
 
     mock.ExpectExec("INSERT INTO `users`").
-        WillReturnError(&mysql.MySQLError{Number: 1062}) // Duplicate entry
+        WillReturnError(&mysqlDriver.MySQLError{Number: 1062}) // Duplicate entry
 
     user := User{Name: "Alice", Email: "alice@example.com"}
     err := db.Insert("users", user)
