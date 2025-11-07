@@ -1,6 +1,8 @@
 # cool-mysql
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/StirlingMarketingGroup/cool-mysql.svg)](https://pkg.go.dev/github.com/StirlingMarketingGroup/cool-mysql)
+[![Go Tests](https://github.com/StirlingMarketingGroup/cool-mysql/actions/workflows/tests.yml/badge.svg)](https://github.com/StirlingMarketingGroup/cool-mysql/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/StirlingMarketingGroup/cool-mysql/branch/master/graph/badge.svg)](https://codecov.io/gh/StirlingMarketingGroup/cool-mysql)
 [![license](https://img.shields.io/badge/license-MIT-red.svg)](LICENSE)
 
 `cool-mysql` is a small library that wraps Go's `database/sql` with MySQL oriented helpers. It keeps the underlying interfaces intact while providing conveniences that save you time when writing data access code.
