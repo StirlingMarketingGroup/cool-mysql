@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -533,5 +534,63 @@ func TestFloatScientificNotationToUint(t *testing.T) {
 		err := db.Select(&res, "SELECT -1", 0)
 		require.Error(t, err)
 		require.ErrorContains(t, err, "value is negative")
+	})
+}
+
+func TestConvertFloatSrcToUintHelper(t *testing.T) {
+	t.Run("float64 handled", func(t *testing.T) {
+		u, handled, err := convertFloatSrcToUint(float64(42), 64)
+		require.True(t, handled)
+		require.NoError(t, err)
+		require.Equal(t, uint64(42), u)
+	})
+
+	t.Run("float32 handled", func(t *testing.T) {
+		u, handled, err := convertFloatSrcToUint(float32(7), 32)
+		require.True(t, handled)
+		require.NoError(t, err)
+		require.Equal(t, uint64(7), u)
+	})
+
+	t.Run("non float ignored", func(t *testing.T) {
+		_, handled, err := convertFloatSrcToUint("not-a-float", 64)
+		require.False(t, handled)
+		require.NoError(t, err)
+	})
+
+	t.Run("error surfaces", func(t *testing.T) {
+		_, handled, err := convertFloatSrcToUint(float64(-1), 64)
+		require.True(t, handled)
+		require.ErrorContains(t, err, "negative")
+	})
+}
+
+func TestFloatToUint64EdgeCases(t *testing.T) {
+	t.Run("nan", func(t *testing.T) {
+		_, err := floatToUint64(math.NaN(), 64)
+		require.ErrorContains(t, err, "NaN")
+	})
+
+	t.Run("inf", func(t *testing.T) {
+		_, err := floatToUint64(math.Inf(1), 64)
+		require.ErrorContains(t, err, "infinite")
+	})
+
+	t.Run("overflow", func(t *testing.T) {
+		val := float64(maxUintForBits(16)) + 1
+		_, err := floatToUint64(val, 16)
+		require.ErrorContains(t, err, "exceeds maximum")
+	})
+
+	t.Run("fractional", func(t *testing.T) {
+		_, err := floatToUint64(1.2, 64)
+		require.ErrorContains(t, err, "fractional")
+	})
+
+	t.Run("success exact max bits", func(t *testing.T) {
+		val := float64(maxUintForBits(32))
+		u, err := floatToUint64(val, 32)
+		require.NoError(t, err)
+		require.Equal(t, uint64(val), u)
 	})
 }
