@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/civil"
@@ -101,6 +102,12 @@ func Bytes(v any) []byte {
 }
 
 var errNilPtr = errors.New("destination pointer is nil") // embedded in descriptive error
+var (
+	floatPrecisionLoggerMu sync.RWMutex
+	floatPrecisionLogger   Logger = DefaultLogger()
+)
+
+const maxExactUint64Float = 1 << 53
 
 func convertAssignRows(dest, src any) error {
 	// Common cases, without reflect.
@@ -441,6 +448,10 @@ func floatToUint64(value float64, bitSize int) (uint64, error) {
 		return 0, fmt.Errorf("value exceeds maximum for uint%d", bitSize)
 	}
 
+	if bitSize == 64 && intPart > float64(maxExactUint64Float) {
+		logFloatPrecisionLoss(value, bitSize)
+	}
+
 	return uint64(intPart), nil
 }
 
@@ -449,6 +460,30 @@ func maxUintForBits(bits int) uint64 {
 		return ^uint64(0)
 	}
 	return (uint64(1) << uint(bits)) - 1
+}
+
+// SetFloatPrecisionLogger allows overriding the logger used for float precision warnings.
+func SetFloatPrecisionLogger(logger Logger) {
+	floatPrecisionLoggerMu.Lock()
+	defer floatPrecisionLoggerMu.Unlock()
+	if logger == nil {
+		floatPrecisionLogger = DefaultLogger()
+		return
+	}
+	floatPrecisionLogger = logger
+}
+
+func logFloatPrecisionLoss(value float64, bitSize int) {
+	floatPrecisionLoggerMu.RLock()
+	logger := floatPrecisionLogger
+	floatPrecisionLoggerMu.RUnlock()
+	if logger == nil {
+		return
+	}
+	logger.Warn("cool-mysql: possible precision loss converting float to uint",
+		"value", value,
+		"bitSize", bitSize,
+	)
 }
 
 func asBytes(buf []byte, rv reflect.Value) (b []byte, ok bool) {
