@@ -1,6 +1,8 @@
 name: Go Tests
 
 on:
+  push:
+    branches: [ master ]
   pull_request:
 
 jobs:
@@ -19,8 +21,22 @@ jobs:
     - name: Vet
       run: go vet ./...
 
-    - name: Test
-      run: go test ./...
+    - name: Test with Coverage
+      run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Coverage Report
+      uses: vladopajic/go-test-coverage@v2
+      with:
+        profile: coverage.txt
+        local-prefix: github.com/StirlingMarketingGroup/cool-mysql
+        threshold-file: 0
+        threshold-package: 0
+        threshold-total: 0
 
     - name: GolangCI-Lint
       uses: golangci/golangci-lint-action@v8
