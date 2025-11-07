@@ -459,3 +459,79 @@ func TestFloatDoubleJSONRoundTrip(t *testing.T) {
 	require.InDelta(t, original.Float32, decoded.Float32, 0.00001)
 	require.InDelta(t, original.Float64, decoded.Float64, 0.000000000000001)
 }
+
+func TestFloatScientificNotationToUint(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	const expected = uint64(3316968)
+
+	t.Run("float64 into uint64 field", func(t *testing.T) {
+		type result struct {
+			Total uint64 `mysql:"total"`
+		}
+
+		var res result
+
+		mock.ExpectQuery("SELECT").
+			WillReturnRows(sqlmock.NewRows([]string{"total"}).
+				AddRow(float64(expected)))
+
+		err := db.Select(&res, "SELECT SUM(total) AS total FROM table", 0)
+		require.NoError(t, err)
+		require.Equal(t, expected, res.Total)
+	})
+
+	t.Run("float64 into *uint64 field", func(t *testing.T) {
+		type result struct {
+			Total *uint64 `mysql:"total"`
+		}
+
+		var res result
+
+		mock.ExpectQuery("SELECT").
+			WillReturnRows(sqlmock.NewRows([]string{"total"}).
+				AddRow(float64(expected)))
+
+		err := db.Select(&res, "SELECT SUM(total) AS total FROM table", 0)
+		require.NoError(t, err)
+		require.NotNil(t, res.Total)
+		require.Equal(t, expected, *res.Total)
+	})
+
+	t.Run("float64 into standalone uint64 value", func(t *testing.T) {
+		var res uint64
+
+		mock.ExpectQuery("SELECT").
+			WillReturnRows(sqlmock.NewRows([]string{"total"}).
+				AddRow(float64(expected)))
+
+		err := db.Select(&res, "SELECT SUM(total) FROM table", 0)
+		require.NoError(t, err)
+		require.Equal(t, expected, res)
+	})
+
+	t.Run("fractional float errors", func(t *testing.T) {
+		var res uint64
+
+		mock.ExpectQuery("SELECT").
+			WillReturnRows(sqlmock.NewRows([]string{"total"}).
+				AddRow(float64(42.5)))
+
+		err := db.Select(&res, "SELECT AVG(total) FROM table", 0)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "value has fractional component")
+	})
+
+	t.Run("negative float errors", func(t *testing.T) {
+		var res uint64
+
+		mock.ExpectQuery("SELECT").
+			WillReturnRows(sqlmock.NewRows([]string{"total"}).
+				AddRow(float64(-1)))
+
+		err := db.Select(&res, "SELECT -1", 0)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "value is negative")
+	})
+}

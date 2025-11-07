@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
@@ -322,6 +323,14 @@ func convertAssignRows(dest, src any) error {
 		if src == nil {
 			return fmt.Errorf("converting NULL to %s is unsupported", dv.Kind())
 		}
+		if u64, handled, err := convertFloatSrcToUint(src, dv.Type().Bits()); handled {
+			if err != nil {
+				s := asString(src)
+				return fmt.Errorf("converting driver.Value type %T (%q) to a %s: %v", src, s, dv.Kind(), err)
+			}
+			dv.SetUint(u64)
+			return nil
+		}
 		s := asString(src)
 		u64, err := strconv.ParseUint(s, 10, dv.Type().Bits())
 		if err != nil {
@@ -396,6 +405,50 @@ func asString(src any) string {
 		return strconv.FormatBool(rv.Bool())
 	}
 	return fmt.Sprintf("%v", src)
+}
+
+func convertFloatSrcToUint(src any, bitSize int) (uint64, bool, error) {
+	switch v := src.(type) {
+	case float64:
+		u, err := floatToUint64(v, bitSize)
+		return u, true, err
+	case float32:
+		u, err := floatToUint64(float64(v), bitSize)
+		return u, true, err
+	default:
+		return 0, false, nil
+	}
+}
+
+func floatToUint64(value float64, bitSize int) (uint64, error) {
+	if math.IsNaN(value) {
+		return 0, errors.New("value is NaN")
+	}
+	if math.IsInf(value, 0) {
+		return 0, errors.New("value is infinite")
+	}
+	if value < 0 {
+		return 0, errors.New("value is negative")
+	}
+
+	intPart, frac := math.Modf(value)
+	if frac != 0 {
+		return 0, errors.New("value has fractional component")
+	}
+
+	maxUint := maxUintForBits(bitSize)
+	if intPart > float64(maxUint) {
+		return 0, fmt.Errorf("value exceeds maximum for uint%d", bitSize)
+	}
+
+	return uint64(intPart), nil
+}
+
+func maxUintForBits(bits int) uint64 {
+	if bits >= 64 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << uint(bits)) - 1
 }
 
 func asBytes(buf []byte, rv reflect.Value) (b []byte, ok bool) {

@@ -16,6 +16,7 @@ var valuerType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 var paramsType = reflect.TypeOf((*Params)(nil)).Elem()
 var sliceRowType = reflect.TypeOf((*SliceRow)(nil)).Elem()
 var mapRowType = reflect.TypeOf((*MapRow)(nil)).Elem()
+var interfaceType = reflect.TypeOf((*any)(nil)).Elem()
 
 var timeType = reflect.TypeOf((*time.Time)(nil)).Elem()
 var civilDateType = reflect.TypeOf((*civil.Date)(nil)).Elem()
