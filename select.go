@@ -290,23 +290,8 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		}
 
 		for _, dest := range ptrDests {
-			v := dest.tempDest.Elem()
-
-			// special case: if we're scanning into a civil.Date, we need to convert the time.Time
-			// we need to convert the time.Time we got from the db to a civil.Date
-			if dest.finalDest.Type() == reflect.PointerTo(civilDateType) {
-				if !v.IsNil() {
-					d := civil.DateOf(v.Elem().Interface().(time.Time))
-					dest.finalDest.Elem().Set(reflect.ValueOf(d))
-				} else {
-					dest.finalDest.Elem().Set(reflect.Zero(civilDateType))
-				}
-			} else {
-				if !v.IsNil() {
-					dest.finalDest.Elem().Set(v.Elem())
-				} else {
-					dest.finalDest.Elem().Set(reflect.Zero(dest.finalDest.Type().Elem()))
-				}
+			if err := dest.assign(); err != nil {
+				return err
 			}
 		}
 
@@ -451,8 +436,11 @@ type jsonField struct {
 }
 
 type ptrDest struct {
-	finalDest reflect.Value
-	tempDest  reflect.Value
+	finalDest  reflect.Value
+	tempDest   reflect.Value
+	assignFn   func(*ptrDest) error
+	targetType reflect.Type
+	baseType   reflect.Type
 }
 
 func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, columns []string) (ptrs []any, jsonFields []jsonField, fieldsMap map[string][]int, ptrDests map[int]*ptrDest, isStruct bool, err error) {
@@ -504,30 +492,15 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 					ptrDests = make(map[int]*ptrDest)
 				}
 
-				var tempDest reflect.Value
-				if f.Type == civilDateType {
-					tempDest = reflect.New(reflect.PointerTo(timeType))
-				} else {
-					tempDest = reflect.New(reflect.PointerTo(f.Type))
-				}
-
-				ptrDests[i] = &ptrDest{
-					tempDest: tempDest,
-				}
+				ptrDests[i] = newPtrDestForScanType(f.Type)
 			}
 		}
 		return make([]any, len(columns)), jsonFields, fieldsMap, ptrDests, true, nil
 	case isMultiValueElement(indirectType):
 		return make([]any, len(columns)), make([]jsonField, 1), nil, nil, false, nil
 	default:
-		var tempDest reflect.Value
-		if t == civilDateType {
-			tempDest = reflect.New(reflect.PointerTo(timeType))
-		} else {
-			tempDest = reflect.New(reflect.PointerTo(t))
-		}
-
-		return make([]any, len(columns)), nil, nil, map[int]*ptrDest{0: {tempDest: tempDest}}, false, nil
+		pd := newPtrDestForScanType(t)
+		return make([]any, len(columns)), nil, nil, map[int]*ptrDest{0: pd}, false, nil
 	}
 }
 
@@ -600,4 +573,91 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 			(*ptrs)[i] = x
 		}
 	}
+}
+
+func newPtrDestForScanType(fieldType reflect.Type) *ptrDest {
+	if fieldType == civilDateType {
+		return &ptrDest{
+			tempDest:   reflect.New(reflect.PointerTo(timeType)),
+			targetType: fieldType,
+		}
+	}
+
+	pd := &ptrDest{
+		tempDest:   reflect.New(reflect.PointerTo(fieldType)),
+		targetType: fieldType,
+	}
+
+	if baseType, ok := needsUintWorkaround(fieldType); ok {
+		pd.tempDest = reflect.New(reflect.PointerTo(interfaceType))
+		pd.baseType = baseType
+		pd.assignFn = assignUintFromInterface
+	}
+
+	return pd
+}
+
+func needsUintWorkaround(fieldType reflect.Type) (reflect.Type, bool) {
+	baseType := fieldType
+	for baseType.Kind() == reflect.Pointer {
+		baseType = baseType.Elem()
+	}
+
+	switch baseType.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return baseType, true
+	default:
+		return nil, false
+	}
+}
+
+func assignUintFromInterface(dest *ptrDest) error {
+	holder := dest.tempDest.Elem()
+	if !holder.IsValid() || holder.IsNil() {
+		dest.finalDest.Elem().Set(reflect.Zero(dest.finalDest.Type().Elem()))
+		return nil
+	}
+
+	raw := holder.Elem().Interface()
+	target := reflect.New(dest.baseType)
+	if err := convertAssignRows(target.Interface(), raw); err != nil {
+		return err
+	}
+
+	if dest.targetType.Kind() == reflect.Pointer {
+		dest.finalDest.Elem().Set(target)
+	} else {
+		dest.finalDest.Elem().Set(target.Elem())
+	}
+
+	return nil
+}
+
+func (dest *ptrDest) assign() error {
+	if dest == nil || !dest.finalDest.IsValid() {
+		return nil
+	}
+
+	if dest.assignFn != nil {
+		return dest.assignFn(dest)
+	}
+
+	v := dest.tempDest.Elem()
+
+	if dest.finalDest.Type() == reflect.PointerTo(civilDateType) {
+		if !v.IsNil() {
+			d := civil.DateOf(v.Elem().Interface().(time.Time))
+			dest.finalDest.Elem().Set(reflect.ValueOf(d))
+		} else {
+			dest.finalDest.Elem().Set(reflect.Zero(civilDateType))
+		}
+		return nil
+	}
+
+	if !v.IsNil() {
+		dest.finalDest.Elem().Set(v.Elem())
+	} else {
+		dest.finalDest.Elem().Set(reflect.Zero(dest.finalDest.Type().Elem()))
+	}
+	return nil
 }
