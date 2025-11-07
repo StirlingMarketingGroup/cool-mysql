@@ -625,7 +625,7 @@ func assignUintFromInterface(dest *ptrDest) error {
 	}
 
 	if dest.targetType.Kind() == reflect.Pointer {
-		dest.finalDest.Elem().Set(target.Convert(dest.finalDest.Type().Elem()))
+dest.finalDest.Elem().Set(target)
 	} else {
 		dest.finalDest.Elem().Set(target.Elem())
 	}
