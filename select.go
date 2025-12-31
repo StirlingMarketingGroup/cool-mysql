@@ -321,7 +321,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				f := indirectEl.FieldByIndex(jsonField.index)
 				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
 				if err != nil {
-					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", el.Type().FieldByIndex(jsonField.index).Name, err)
+					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", indirectEl.Type().FieldByIndex(jsonField.index).Name, err)
 				}
 			}
 		}

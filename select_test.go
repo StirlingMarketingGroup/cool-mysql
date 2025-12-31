@@ -598,3 +598,32 @@ func TestSelectChannelUnexportedField(t *testing.T) {
 	err := db.Select(ch, "SELECT foo, bar FROM table_name", 0)
 	require.ErrorIs(t, err, ErrUnexportedField)
 }
+
+// TestSelectJSONUnmarshalErrorWithPointerElement tests that JSON unmarshal errors
+// are handled correctly when the destination is a slice of struct pointers.
+// This is a regression test for issue #130: panic when el.Type().FieldByIndex()
+// is called on a pointer type.
+func TestSelectJSONUnmarshalErrorWithPointerElement(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	type OrderLineItem struct {
+		ID    int      `mysql:"ID"`
+		Items []string `mysql:"Items"` // JSON field
+	}
+
+	// Return invalid JSON for the Items column to trigger unmarshal error
+	rows := sqlmock.NewRows([]string{"ID", "Items"}).
+		AddRow(1, []byte(`{invalid json}`))
+
+	mock.ExpectQuery("SELECT ID, Items FROM orders").WillReturnRows(rows)
+
+	// Use slice of struct pointers - this triggers the bug
+	var dest []*OrderLineItem
+	err := db.Select(&dest, "SELECT ID, Items FROM orders", 0)
+
+	// Should get an error about JSON unmarshal, not a panic
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to unmarshal json into struct field")
+	require.Contains(t, err.Error(), "Items")
+}
