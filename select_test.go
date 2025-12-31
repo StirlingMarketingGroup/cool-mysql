@@ -627,3 +627,38 @@ func TestSelectJSONUnmarshalErrorWithPointerElement(t *testing.T) {
 	require.Contains(t, err.Error(), "failed to unmarshal json into struct field")
 	require.Contains(t, err.Error(), "Items")
 }
+
+// TestSelectNoInsertFieldMapping tests that fields with noinsert option
+// still participate in SELECT column mapping with their explicit tag name.
+// This is a regression test for issue #133.
+func TestSelectNoInsertFieldMapping(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	// This struct demonstrates the conflict scenario from issue #133:
+	// - CustomLineItem maps to column "LineItem" for both insert and select
+	// - LineItemModel maps to column "LineItemModel" for select only (skipped for insert)
+	// Without noinsert, if LineItemModel used mysql:"-", its struct name "LineItemModel"
+	// wouldn't conflict. But with a different field having mysql:"LineItem", we need
+	// noinsert to map to a different column name without being inserted.
+	type OrderRow struct {
+		ID             int    `mysql:"ID"`
+		CustomLineItem string `mysql:"LineItem"`               // maps to "LineItem" column
+		LineItemModel  string `mysql:"LineItemModel,noinsert"` // maps to "LineItemModel" for select, skipped for insert
+	}
+
+	// Return data for both columns
+	rows := sqlmock.NewRows([]string{"ID", "LineItem", "LineItemModel"}).
+		AddRow(1, "item-value", "model-value")
+
+	mock.ExpectQuery("SELECT ID, LineItem, LineItemModel FROM orders").WillReturnRows(rows)
+
+	var dest []OrderRow
+	err := db.Select(&dest, "SELECT ID, LineItem, LineItemModel FROM orders", 0)
+	require.NoError(t, err)
+
+	require.Len(t, dest, 1)
+	require.Equal(t, 1, dest[0].ID)
+	require.Equal(t, "item-value", dest[0].CustomLineItem)  // LineItem column -> CustomLineItem field
+	require.Equal(t, "model-value", dest[0].LineItemModel) // LineItemModel column -> LineItemModel field
+}
