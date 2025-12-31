@@ -196,3 +196,53 @@ func TestInsert_ErrNoColumnNames(t *testing.T) {
 	err = db.Insert("table", 1)
 	require.ErrorIs(t, err, ErrNoColumnNames)
 }
+
+// TestNoInsertTagOption tests that the noinsert option skips fields for inserts
+// but still allows them to be used for selects with an explicit column name.
+// This is a regression test for issue #133.
+func TestNoInsertTagOption(t *testing.T) {
+	t.Run("colNamesFromStruct skips noinsert fields", func(t *testing.T) {
+		type OrderLineItem struct {
+			ID             int    `mysql:"ID"`
+			CustomLineItem string `mysql:"LineItem"`
+			LineItemModel  string `mysql:"LineItemModel,noinsert"` // should be skipped for insert
+		}
+
+		cols, opts, fieldMap, err := colNamesFromStruct(reflect.TypeOf(OrderLineItem{}))
+		require.NoError(t, err)
+
+		// Should only have ID and LineItem columns, NOT LineItemModel
+		require.Equal(t, []string{"ID", "LineItem"}, cols)
+
+		// Should have opts for ID and LineItem only
+		require.Contains(t, opts, "ID")
+		require.Contains(t, opts, "LineItem")
+		require.NotContains(t, opts, "LineItemModel")
+
+		// Field map should also exclude LineItemModel
+		require.Equal(t, "ID", fieldMap["ID"])
+		require.Equal(t, "CustomLineItem", fieldMap["LineItem"])
+		require.NotContains(t, fieldMap, "LineItemModel")
+	})
+
+	t.Run("insert skips noinsert fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		db, err := NewWriter(&buf)
+		require.NoError(t, err)
+
+		type Row struct {
+			ID    int    `mysql:"id"`
+			Name  string `mysql:"name"`
+			Extra string `mysql:"extra,noinsert"` // should not appear in insert
+		}
+
+		err = db.Insert("test", Row{ID: 1, Name: "Alice", Extra: "ignored"})
+		require.NoError(t, err)
+
+		// The insert should NOT include the "extra" column
+		require.NotContains(t, buf.String(), "extra")
+		require.NotContains(t, buf.String(), "ignored")
+		require.Contains(t, buf.String(), "`id`")
+		require.Contains(t, buf.String(), "`name`")
+	})
+}

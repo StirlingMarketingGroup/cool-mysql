@@ -400,7 +400,7 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 
 		t, _ := structtag.Parse(string(f.Tag))
 		if t, _ := t.Get("mysql"); t != nil {
-			if t.Name == "-" {
+			if t.Name == "-" || t.HasOption("noinsert") {
 				continue
 			}
 
