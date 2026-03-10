@@ -84,7 +84,8 @@ func GetOrCreateTxFromContext(ctx context.Context) (tx *Tx, commit, cancel func(
 
 		tx, cancel, err = db.BeginTx()
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to begin tx: %w", err)
+			noop := func() error { return nil }
+			return nil, noop, noop, fmt.Errorf("failed to begin tx: %w", err)
 		}
 
 		return tx, tx.Commit, cancel, nil
