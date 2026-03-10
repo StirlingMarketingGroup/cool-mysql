@@ -246,6 +246,10 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		return err
 	}
 
+	if rows == nil {
+		return fmt.Errorf("query returned nil rows without error")
+	}
+
 	defer func() {
 		if rows != nil {
 			if err := rows.Close(); err != nil {
