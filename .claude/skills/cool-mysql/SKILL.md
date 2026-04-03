@@ -149,7 +149,8 @@ Control column mapping and behavior with `mysql` struct tags.
 - `mysql:"column_name,defaultzero"` - Write `DEFAULT(column_name)` for zero values
 - `mysql:"column_name,omitempty"` - Same as `defaultzero`
 - `mysql:"column_name,insertDefault"` - Same as `defaultzero`
-- `mysql:"-"` - Completely ignore this field
+- `mysql:"column_name,noinsert"` - Skip this field for inserts; still works in selects and params
+- `mysql:"-"` - **Deprecated**, use `noinsert` instead. Only skips inserts despite appearances
 - `mysql:"column0x2cname"` - Hex encoding for special characters (becomes `column,name`)
 
 **Example:**
@@ -160,7 +161,7 @@ type User struct {
     Email     string    `mysql:"email"`
     CreatedAt time.Time `mysql:"created_at,defaultzero"` // Use DB default on zero value
     UpdatedAt time.Time `mysql:"updated_at,defaultzero"`
-    Password  string    `mysql:"-"` // Never include in queries
+    Password  string    `mysql:"password,noinsert"` // Skipped for inserts, still works in selects
 }
 ```
 
@@ -331,7 +332,7 @@ return db.Select(&users, "SELECT `id`, `name`, `email`, `age`, `active`, `create
 
 **DO:**
 - Use `defaultzero` for timestamp columns with DB defaults
-- Use `mysql:"-"` to exclude sensitive fields
+- Use `noinsert` option to exclude fields from inserts
 - Use hex encoding for column names with special characters
 - Implement `Zeroer` interface for custom zero-value detection
 

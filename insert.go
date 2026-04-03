@@ -400,6 +400,10 @@ func colNamesFromStruct(t reflect.Type) (columns []string, colOpts map[string]in
 
 		t, _ := structtag.Parse(string(f.Tag))
 		if t, _ := t.Get("mysql"); t != nil {
+			// Deprecated: mysql:"-" is supported for backwards compatibility but
+			// is misleading because it only skips inserts, not selects or parameter
+			// interpolation. Use the "noinsert" option instead:
+			//   mysql:"column_name,noinsert"
 			if t.Name == "-" || t.HasOption("noinsert") {
 				continue
 			}
