@@ -421,6 +421,23 @@ if err := commit(); err != nil {
 }
 ```
 
+**Transaction Hooks:**
+
+`PostCommitHooks` run after a successful commit and can return errors. `PostRollbackHooks` run after a real rollback (not when `cancel()` is called on an already-committed transaction) and do not return errors since the transaction has already failed.
+
+```go
+// Run cleanup after commit
+tx.PostCommitHooks = append(tx.PostCommitHooks, func() error {
+    defer collectors.Delete(tx)
+    return flush()
+})
+
+// Run cleanup after rollback (e.g., clean up sync.Map entries)
+tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+    collectors.Delete(tx)
+})
+```
+
 ### Custom Interfaces
 
 **Custom zero detection:**

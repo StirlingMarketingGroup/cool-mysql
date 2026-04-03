@@ -241,6 +241,76 @@ func TestTransaction(t *testing.T) {
 }
 ```
 
+### Transaction Hook Tests
+
+```go
+func TestPostCommitHooks(t *testing.T) {
+    db, mock := setupMockDB(t)
+    defer mock.ExpectClose()
+
+    mock.ExpectBegin()
+    mock.ExpectCommit()
+
+    tx, cancel, err := db.BeginTx()
+    require.NoError(t, err)
+    defer cancel()
+
+    var called bool
+    tx.PostCommitHooks = append(tx.PostCommitHooks, func() error {
+        called = true
+        return nil
+    })
+
+    err = tx.Commit()
+    require.NoError(t, err)
+    require.True(t, called, "PostCommitHook should run after commit")
+}
+
+func TestPostRollbackHooks(t *testing.T) {
+    db, mock := setupMockDB(t)
+    defer mock.ExpectClose()
+
+    mock.ExpectBegin()
+    mock.ExpectRollback()
+
+    tx, _, err := db.BeginTx()
+    require.NoError(t, err)
+
+    var called bool
+    tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+        called = true
+    })
+
+    err = tx.Cancel()
+    require.NoError(t, err)
+    require.True(t, called, "PostRollbackHook should run after rollback")
+}
+
+func TestPostRollbackHooksNotRunWhenAlreadyCommitted(t *testing.T) {
+    db, mock := setupMockDB(t)
+    defer mock.ExpectClose()
+
+    mock.ExpectBegin()
+    mock.ExpectCommit()
+
+    tx, cancel, err := db.BeginTx()
+    require.NoError(t, err)
+
+    var called bool
+    tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+        called = true
+    })
+
+    err = tx.Commit()
+    require.NoError(t, err)
+
+    // defer cancel() after commit - hooks should NOT run
+    err = cancel()
+    require.NoError(t, err)
+    require.False(t, called, "PostRollbackHook should not run when tx was already committed")
+}
+```
+
 ## Test Database Setup
 
 ### Docker Compose Setup

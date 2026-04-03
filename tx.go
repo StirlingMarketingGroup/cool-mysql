@@ -22,7 +22,8 @@ type Tx struct {
 		queries []string
 	}
 
-	PostCommitHooks []func() error
+	PostCommitHooks    []func() error
+	PostRollbackHooks []func()
 }
 
 type txCancelFunc func() error
@@ -108,6 +109,7 @@ func (tx *Tx) Cancel() error {
 
 	start := time.Now()
 	err := tx.Tx.Rollback()
+	rolledBack := err == nil
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
 	}
@@ -118,6 +120,12 @@ func (tx *Tx) Cancel() error {
 		Attempt:  1,
 		Error:    err,
 	})
+
+	if rolledBack {
+		for _, hook := range tx.PostRollbackHooks {
+			hook()
+		}
+	}
 
 	return err
 }

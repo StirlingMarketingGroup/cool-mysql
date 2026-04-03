@@ -457,15 +457,15 @@ Context-aware version of `ExecResult()`.
 
 ### GetOrCreateTxFromContext
 ```go
-func GetOrCreateTxFromContext(ctx context.Context) (*sql.Tx, func() error, func(), error)
+func GetOrCreateTxFromContext(ctx context.Context) (tx *Tx, commit, cancel func() error, err error)
 ```
 
 Get existing transaction from context or create new one.
 
 **Returns:**
-- `*sql.Tx` - Transaction instance
+- `*Tx` - Transaction instance
 - `func() error` - Commit function
-- `func()` - Cancel function (rolls back if not committed)
+- `func() error` - Cancel function (rolls back if not committed)
 - `error` - Transaction creation error
 
 **Usage Pattern:**
@@ -486,23 +486,49 @@ if err := commit(); err != nil {
 }
 ```
 
+### Tx.PostCommitHooks
+```go
+PostCommitHooks []func() error
+```
+
+Functions to run after a successful commit. Hooks run sequentially; if any hook returns an error, it is wrapped and returned from `Commit()`.
+
+```go
+tx.PostCommitHooks = append(tx.PostCommitHooks, func() error {
+    defer collectors.Delete(tx)
+    return flush()
+})
+```
+
+### Tx.PostRollbackHooks
+```go
+PostRollbackHooks []func()
+```
+
+Functions to run after a real rollback. Hooks do **not** run when `Cancel()` is called on an already-committed transaction (the common `defer cancel()` pattern). They do not return errors since the transaction has already failed.
+
+```go
+tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+    collectors.Delete(tx)
+})
+```
+
 ### NewContextWithTx
 ```go
-func NewContextWithTx(ctx context.Context, tx *sql.Tx) context.Context
+func NewContextWithTx(ctx context.Context, tx *Tx) context.Context
 ```
 
 Store transaction in context for use by database operations.
 
 ### TxFromContext
 ```go
-func TxFromContext(ctx context.Context) (*sql.Tx, bool)
+func TxFromContext(ctx context.Context) *Tx
 ```
 
 Retrieve transaction from context.
 
 **Returns:**
-- `*sql.Tx` - Transaction if present
-- `bool` - `true` if transaction exists in context
+- `*Tx` - Transaction if present, or `nil`
 
 ## Context Management
 

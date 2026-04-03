@@ -343,6 +343,22 @@ if err := commit(); err != nil {
 }
 ```
 
+**Transaction Hooks:**
+
+`PostCommitHooks` run after a successful commit. `PostRollbackHooks` run after a rollback (but not when `cancel()` is called on an already-committed transaction).
+
+```go
+// Clean up external state after commit
+tx.PostCommitHooks = append(tx.PostCommitHooks, func() error {
+    return flush(collectors)
+})
+
+// Clean up external state if the transaction is rolled back
+tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+    collectors.Delete(tx)
+})
+```
+
 ## Advanced Features
 
 ### Context Management
