@@ -467,6 +467,9 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 
 			name := f.Name
 			mysqlTag, _ := tags.Get("mysql")
+			// Note: mysql:"-" fields are NOT skipped for selects — the "-" is
+			// only treated specially during inserts. The field maps to its Go
+			// name for select column matching. Prefer "noinsert" over "-".
 			if mysqlTag != nil && len(mysqlTag.Name) != 0 && mysqlTag.Name != "-" {
 				name, err = decodeHex(mysqlTag.Name)
 				if err != nil {

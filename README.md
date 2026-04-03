@@ -292,7 +292,8 @@ Fields in a struct can include a `mysql` tag to control how they map to the data
 - `defaultzero` – write `default(column_name)` instead of the zero value during inserts and parameter interpolation
 - `insertDefault` – alias for `defaultzero` (same behavior)
 - `omitempty` – alias for `defaultzero` (same behavior)
-- `"-"` – skip this field entirely (not included in inserts, selects, or parameter interpolation)
+- `noinsert` – skip this field for inserts only; the field still participates in selects and parameter interpolation
+- `"-"` – **deprecated**, use `noinsert` instead. Despite appearances, `"-"` only skips inserts — the field is still used for selects (mapped by its Go field name) and parameter interpolation
 
 **Hex encoding support:**
 Column names can include hex-encoded characters using `0x` notation (e.g., `0x2c` for comma, `0x20` for space).
@@ -301,15 +302,15 @@ Column names can include hex-encoded characters using `0x` notation (e.g., `0x2c
 type Person struct {
     ID       int       `mysql:"id"`
     Name     string    `mysql:"name,defaultzero"`
-    Email    string    `mysql:"email,omitempty"`        // same as defaultzero
-    Internal string    `mysql:"-"`                      // completely ignored
+    Email    string    `mysql:"email,omitempty"`          // same as defaultzero
+    Internal string    `mysql:"internal,noinsert"`        // skipped for inserts, still works in selects
     Created  time.Time `mysql:"created_at,insertDefault"` // same as defaultzero
-    Special  string    `mysql:"column0x2cname"`         // becomes "column,name"
+    Special  string    `mysql:"column0x2cname"`           // becomes "column,name"
 }
 
 db.Insert("people", Person{})
 // name, email, created_at become default(`name`), default(`email`), default(`created_at`)
-// Internal field is completely ignored
+// Internal field is skipped for inserts, but still works in selects
 
 _, _, _ = mysql.InterpolateParams(
     "SELECT * FROM people WHERE name = @@Name",

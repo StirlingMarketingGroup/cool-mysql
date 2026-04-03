@@ -52,7 +52,8 @@ type User struct {
 | Default zero | `mysql:"column_name,defaultzero"` | Use DEFAULT() for zero values |
 | Omit empty | `mysql:"column_name,omitempty"` | Same as `defaultzero` |
 | Insert default | `mysql:"column_name,insertDefault"` | Same as `defaultzero` |
-| Ignore field | `mysql:"-"` | Completely ignore field |
+| No insert | `mysql:"column_name,noinsert"` | Skip for inserts; still used in selects and params |
+| Ignore field | `mysql:"-"` | **Deprecated** — use `noinsert` instead. Only skips inserts despite appearances |
 
 ### Column Name Only
 
@@ -101,17 +102,29 @@ type User struct {
 // Equivalent to defaultzero
 ```
 
-### Ignore Field
+### No Insert (noinsert)
 
 ```go
 type User struct {
     ID       int    `mysql:"id"`
-    Password string `mysql:"-"` // Never included in queries
-    internal string // Unexported fields also ignored
+    Password string `mysql:"password_hash,noinsert"` // Skipped for inserts, still works in selects
+    internal string                                   // Unexported fields also ignored
 }
 
 // INSERT INTO `users` (id) VALUES (?)
-// Password is never inserted or selected
+// password_hash is skipped for inserts but still maps during SELECT
+```
+
+### Ignore Field (Deprecated)
+
+> **Deprecated:** `mysql:"-"` is misleading because it only skips inserts, not selects
+> or parameter interpolation. Use `noinsert` instead for clarity.
+
+```go
+// Deprecated — use noinsert instead
+type User struct {
+    Password string `mysql:"-"` // Only skips inserts, NOT selects or params
+}
 ```
 
 ## Default Value Handling
@@ -368,14 +381,14 @@ db.Insert("users", User{
 })
 ```
 
-### Ignored Fields with Computed Values
+### Fields Excluded from Inserts
 
 ```go
 type User struct {
     ID        int       `mysql:"id"`
     FirstName string    `mysql:"first_name"`
     LastName  string    `mysql:"last_name"`
-    FullName  string    `mysql:"-"` // Computed, not in DB
+    FullName  string    `mysql:"full_name,noinsert"` // Skipped for inserts, but available in selects
 }
 
 var users []User
@@ -495,13 +508,14 @@ type User struct {
 
 ```go
 type User struct {
-    DatabaseID   int    `mysql:"id"`      // Database column
-    UserName     string `mysql:"username"` // Database column
-    ComputedRank int    `mysql:"-"`       // Not in database
+    DatabaseID   int    `mysql:"id"`                    // Database column
+    UserName     string `mysql:"username"`               // Database column
+    ComputedRank int    `mysql:"computed_rank,noinsert"` // Populated from SELECT, skipped for inserts
 }
 
-// Database columns: id, username
-// Struct fields: DatabaseID, UserName, ComputedRank
+// Database columns: id, username, computed_rank
+// Insert only writes: id, username (computed_rank is noinsert)
+// Select can read all three columns
 ```
 
 ## Best Practices
@@ -540,13 +554,13 @@ type User struct {
 }
 ```
 
-### 4. Ignore Computed Fields
+### 4. Skip Computed Fields from Inserts
 
 ```go
 type User struct {
     FirstName string `mysql:"first_name"`
     LastName  string `mysql:"last_name"`
-    FullName  string `mysql:"-"` // Computed field
+    FullName  string `mysql:"full_name,noinsert"` // Skipped for inserts
 }
 ```
 
@@ -617,9 +631,8 @@ type User struct {
     // JSON column
     Metadata json.RawMessage `mysql:"metadata"`
 
-    // Ignored fields
-    Password     string `mysql:"-"` // Never persisted
-    PasswordHash string `mysql:"password_hash"`
+    // Insert-excluded fields
+    PasswordHash string `mysql:"password_hash,noinsert"` // Skipped for inserts, available in selects
 }
 ```
 
