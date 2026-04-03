@@ -37,20 +37,24 @@ func TransactionExamples() {
 	fmt.Println("\n4. Complex Multi-Step Transaction")
 	complexTransactionExample()
 
+	// Transaction hooks
+	fmt.Println("\n5. Transaction Hooks (PostCommit/PostRollback)")
+	transactionHooksExample(context.Background(), db)
+
 	// Batch transaction
-	fmt.Println("\n5. Batch Transaction")
+	fmt.Println("\n6. Batch Transaction")
 	batchTransactionExample(context.Background(), db)
 
 	// Transaction with retry
-	fmt.Println("\n6. Transaction with Retry Logic")
+	fmt.Println("\n7. Transaction with Retry Logic")
 	transactionWithRetry(context.Background(), db)
 
 	// Savepoint example
-	fmt.Println("\n7. Savepoint Pattern")
+	fmt.Println("\n8. Savepoint Pattern")
 	savepointExample(context.Background(), db)
 
 	// Isolation level
-	fmt.Println("\n8. Custom Isolation Level")
+	fmt.Println("\n9. Custom Isolation Level")
 	isolationLevelExample(context.Background(), db)
 }
 
@@ -411,6 +415,52 @@ func transferFunds(ctx context.Context, db *mysql.Database, fromEmail, toEmail s
 	}
 
 	fmt.Println("  All changes committed atomically")
+	return nil
+}
+
+// transactionHooksExample demonstrates PostCommitHooks and PostRollbackHooks
+func transactionHooksExample(ctx context.Context, db *mysql.Database) error {
+	fmt.Println("\nTransaction Hooks Example")
+
+	tx, commit, cancel, err := mysql.GetOrCreateTxFromContext(ctx)
+	defer cancel()
+	if err != nil {
+		return err
+	}
+
+	ctx = mysql.NewContextWithTx(ctx, tx)
+
+	// PostCommitHooks run after a successful commit and can return errors
+	tx.PostCommitHooks = append(tx.PostCommitHooks, func() error {
+		fmt.Println("  PostCommitHook: flushing batched events")
+		// e.g., flush batched node event instances
+		return nil
+	})
+
+	// PostRollbackHooks run after a real rollback (not when cancel() is
+	// called on an already-committed transaction). They don't return errors
+	// since the transaction has already failed.
+	tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+		fmt.Println("  PostRollbackHook: cleaning up external state")
+		// e.g., remove sync.Map entries keyed by this transaction
+	})
+
+	// Perform transaction operations using tx (not db) so they run inside the transaction
+	err = tx.Insert("users", User{
+		Name:   "HooksUser",
+		Email:  "hooks@example.com",
+		Age:    30,
+		Active: true,
+	})
+	if err != nil {
+		return err // cancel() triggers PostRollbackHooks
+	}
+
+	if err := commit(); err != nil {
+		return err
+	}
+
+	fmt.Println("✓ Transaction committed, PostCommitHooks executed")
 	return nil
 }
 
