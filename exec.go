@@ -111,7 +111,7 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, n
 	res, err = backoff.Retry(ctx, operation, options...)
 	if err != nil {
 		return nil, Error{
-			Err:           err,
+			Err:           unwrapBackoffPermanent(err),
 			OriginalQuery: query,
 			ReplacedQuery: replacedQuery,
 			Params:        normalizedParams,

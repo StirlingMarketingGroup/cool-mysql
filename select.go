@@ -243,7 +243,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	rows, err := backoff.Retry(ctx, operation, options...)
 	if err != nil {
-		return err
+		return unwrapBackoffPermanent(err)
 	}
 
 	if rows == nil {

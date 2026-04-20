@@ -5,8 +5,21 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cenkalti/backoff/v5"
 	stdMysql "github.com/go-sql-driver/mysql"
 )
+
+// unwrapBackoffPermanent strips any *backoff.PermanentError wrapper from the
+// error chain. backoff.Permanent is used internally to signal "don't retry" to
+// backoff.Retry; it must never leak into the public error surface because it
+// would hijack any outer backoff.Retry loop a caller builds around us.
+func unwrapBackoffPermanent(err error) error {
+	var p *backoff.PermanentError
+	if errors.As(err, &p) {
+		return p.Err
+	}
+	return err
+}
 
 // Error contains the error and query details
 type Error struct {

@@ -141,7 +141,7 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 
 	rows, err := backoff.Retry(ctx, operation, options...)
 	if err != nil {
-		return exists, err
+		return exists, unwrapBackoffPermanent(err)
 	}
 	defer func() {
 		if rows != nil {
