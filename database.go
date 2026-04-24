@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -344,6 +345,31 @@ func (db *Database) AddValuerFuncs(funcs ...any) {
 
 		db.valuerFuncs[rt.In(0)] = r
 	}
+}
+
+// Close closes the underlying connection pool(s). Safe to call on a
+// *Database whose Writes handler is not a *sql.DB (e.g. sqlWriter /
+// writer) — those handlers are treated as no-ops. When Reads and Writes
+// share the same *sql.DB pointer, it is closed only once. After Close
+// the Database is unusable; call Reconnect to rebuild it.
+func (db *Database) Close() error {
+	var errs []error
+
+	writesDB, _ := db.Writes.(*sql.DB)
+
+	if db.Reads != nil {
+		if err := db.Reads.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close reads: %w", err))
+		}
+	}
+
+	if writesDB != nil && writesDB != db.Reads {
+		if err := writesDB.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close writes: %w", err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // Reconnect creates new connection(s) for writes and reads
