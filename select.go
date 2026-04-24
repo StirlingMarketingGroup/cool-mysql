@@ -190,17 +190,11 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	if c, ok := conn.(*sql.DB); ok {
 		if c == db.Reads {
 			getFreshConn = func(ctx context.Context) (*sql.Conn, error) {
-				if db.Reads == nil {
-					return nil, fmt.Errorf("reads pool is nil")
-				}
 				return db.Reads.Conn(ctx)
 			}
 		} else if w, ok := db.Writes.(*sql.DB); ok && w == c {
 			getFreshConn = func(ctx context.Context) (*sql.Conn, error) {
 				w, _ := db.Writes.(*sql.DB)
-				if w == nil {
-					return nil, fmt.Errorf("writes pool is not a *sql.DB")
-				}
 				return w.Conn(ctx)
 			}
 		} else {
@@ -262,21 +256,24 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				}
 				// Swap the dead dedicated conn for a fresh one from the
 				// current pool so the retry doesn't hit the same dead
-				// conn and burn the whole retry budget.
-				if getFreshConn != nil {
-					if currentConn != nil {
-						if closeErr := currentConn.Close(); closeErr != nil {
-							db.Logger.Warn("failed to close stale connection", "err", closeErr)
-						}
-						currentConn = nil
-					}
-					fresh, acqErr := getFreshConn(ctx)
-					if acqErr != nil {
-						return nil, acqErr
-					}
-					currentConn = fresh
-					conn = fresh
+				// conn and burn the whole retry budget. If conn wasn't a
+				// *sql.DB (e.g. inside a *sql.Tx), we can't reacquire
+				// the tx is bound to the dead conn, so fail fast.
+				if getFreshConn == nil {
+					return nil, backoff.Permanent(err)
 				}
+				if currentConn != nil {
+					if closeErr := currentConn.Close(); closeErr != nil {
+						db.Logger.Warn("failed to close stale connection", "err", closeErr)
+					}
+					currentConn = nil
+				}
+				fresh, acqErr := getFreshConn(ctx)
+				if acqErr != nil {
+					return nil, acqErr
+				}
+				currentConn = fresh
+				conn = fresh
 				return nil, err
 			}
 			return nil, backoff.Permanent(err)

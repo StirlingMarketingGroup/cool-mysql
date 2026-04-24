@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"reflect"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -682,17 +683,160 @@ func TestSelectReacquiresConnOnErrInvalidConn(t *testing.T) {
 	require.Equal(t, int64(1), v)
 }
 
-// TestSelectWritesReacquiresConnOnErrInvalidConn covers the SelectWrites
-// path, which passes db.Writes.(*sql.DB) through the same retry logic.
+// getDualPoolTestDatabase builds a Database whose Reads and Writes point
+// at independent sqlmock pools so tests can exercise the writes-specific
+// branch of the conn-reacquire logic (c == db.Writes.(*sql.DB)).
+func getDualPoolTestDatabase(t *testing.T) (*Database, sqlmock.Sqlmock, sqlmock.Sqlmock, func()) {
+	writesDB, writesMock, err := sqlmock.New()
+	require.NoError(t, err)
+	readsDB, readsMock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	writesMock.ExpectQuery("^SELECT @@max_allowed_packet$").
+		WillReturnRows(sqlmock.NewRows([]string{"@@max_allowed_packet"}).
+			AddRow(int64(4194304)))
+
+	db, err := NewFromConn(writesDB, readsDB)
+	require.NoError(t, err)
+
+	cleanup := func() {
+		require.NoError(t, writesMock.ExpectationsWereMet())
+		require.NoError(t, readsMock.ExpectationsWereMet())
+		if err := writesDB.Close(); err != nil {
+			t.Logf("failed to close writes mock: %v", err)
+		}
+		if err := readsDB.Close(); err != nil {
+			t.Logf("failed to close reads mock: %v", err)
+		}
+	}
+	return db, writesMock, readsMock, cleanup
+}
+
+// TestSelectWritesReacquiresConnOnErrInvalidConn covers the writes branch
+// of getFreshConn — c matches db.Writes.(*sql.DB) but not db.Reads.
 func TestSelectWritesReacquiresConnOnErrInvalidConn(t *testing.T) {
-	db, mock, cleanup := getTestDatabase(t)
+	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
 
-	mock.ExpectQuery("^SELECT 2$").WillReturnError(mysql.ErrInvalidConn)
-	mock.ExpectQuery("^SELECT 2$").
+	writesMock.ExpectQuery("^SELECT 2$").WillReturnError(mysql.ErrInvalidConn)
+	writesMock.ExpectQuery("^SELECT 2$").
 		WillReturnRows(sqlmock.NewRows([]string{"col"}).AddRow(int64(2)))
 
 	var v int64
 	require.NoError(t, db.SelectWrites(&v, "SELECT 2", 0))
 	require.Equal(t, int64(2), v)
+}
+
+// TestSelectUnrelatedPoolReacquiresOnErrInvalidConn covers the fallback
+// branch where the passed conn is a *sql.DB that matches neither db.Reads
+// nor db.Writes — getFreshConn keeps using that pool directly.
+func TestSelectUnrelatedPoolReacquiresOnErrInvalidConn(t *testing.T) {
+	db, _, _, cleanup := getDualPoolTestDatabase(t)
+	defer cleanup()
+
+	thirdDB, thirdMock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, thirdMock.ExpectationsWereMet())
+		if err := thirdDB.Close(); err != nil {
+			t.Logf("failed to close third mock: %v", err)
+		}
+	}()
+
+	thirdMock.ExpectQuery("^SELECT 3$").WillReturnError(mysql.ErrInvalidConn)
+	thirdMock.ExpectQuery("^SELECT 3$").
+		WillReturnRows(sqlmock.NewRows([]string{"col"}).AddRow(int64(3)))
+
+	var v int64
+	require.NoError(t, db.query(thirdDB, context.Background(), &v, "SELECT 3", 0))
+	require.Equal(t, int64(3), v)
+}
+
+// errInvalidConnCounter counts QueryContext calls and always returns
+// mysql.ErrInvalidConn — stands in for a *sql.Tx whose conn has died.
+type errInvalidConnCounter struct {
+	calls int
+}
+
+func (h *errInvalidConnCounter) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	panic("unexpected ExecContext call in errInvalidConnCounter")
+}
+
+func (h *errInvalidConnCounter) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	h.calls++
+	return nil, mysql.ErrInvalidConn
+}
+
+// TestSelectErrInvalidConnFailsFastWithoutFreshConn verifies that when
+// conn is not a *sql.DB (e.g. a *sql.Tx), an ErrInvalidConn is treated as
+// permanent. Without that fail-fast the backoff loop would spin on the
+// same dead conn until the whole retry budget was burned.
+func TestSelectErrInvalidConnFailsFastWithoutFreshConn(t *testing.T) {
+	h := &errInvalidConnCounter{}
+	db := &Database{Logger: DefaultLogger(), testMx: new(sync.Mutex)}
+
+	var out []int
+	err := db.query(h, context.Background(), &out, "SELECT 1", 0)
+	require.Error(t, err)
+	require.ErrorIs(t, err, mysql.ErrInvalidConn)
+	require.Equal(t, 1, h.calls, "expected exactly one attempt, got %d", h.calls)
+}
+
+// TestSelectPropagatesTestError verifies that when db.Test() fails during
+// the ErrInvalidConn recovery path (pool Ping fails and Reconnect also
+// fails), that error surfaces to the caller instead of being swallowed.
+func TestSelectPropagatesTestError(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 1
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	mockDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	require.NoError(t, err)
+	defer func() {
+		if err := mockDB.Close(); err != nil {
+			t.Logf("failed to close mock: %v", err)
+		}
+	}()
+
+	mock.ExpectQuery("^SELECT @@max_allowed_packet$").
+		WillReturnRows(sqlmock.NewRows([]string{"@@max_allowed_packet"}).
+			AddRow(int64(4194304)))
+
+	db, err := NewFromConn(mockDB, mockDB)
+	require.NoError(t, err)
+
+	// First QueryContext fails with ErrInvalidConn — drives us into the
+	// Test() recovery branch. MonitorPingsOption+no ExpectPing makes the
+	// subsequent db.Test() Ping fail, and since WritesDSN/ReadsDSN are
+	// empty strings (NewFromConn doesn't know them), Reconnect also
+	// fails — so Test() returns an error.
+	mock.ExpectQuery("^SELECT 9$").WillReturnError(mysql.ErrInvalidConn)
+
+	var v int64
+	err = db.Select(&v, "SELECT 9", 0)
+	require.Error(t, err)
+}
+
+// TestSelectFailsWhenInitialConnAcquireFails verifies the initial
+// getFreshConn failure path — if the pool is closed before the query, we
+// surface the acquire error instead of entering the retry loop.
+func TestSelectFailsWhenInitialConnAcquireFails(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	mock.ExpectQuery("^SELECT @@max_allowed_packet$").
+		WillReturnRows(sqlmock.NewRows([]string{"@@max_allowed_packet"}).
+			AddRow(int64(4194304)))
+
+	db, err := NewFromConn(mockDB, mockDB)
+	require.NoError(t, err)
+
+	// sqlmock complains about unexpected Close, but we intentionally
+	// close here to force the pool into a state where Conn(ctx) fails.
+	_ = mockDB.Close()
+
+	var v int64
+	err = db.Select(&v, "SELECT 1", 0)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to get connection")
 }
