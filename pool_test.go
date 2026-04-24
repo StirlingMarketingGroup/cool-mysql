@@ -115,10 +115,15 @@ func TestReconnect_PreservesDualPool(t *testing.T) {
 	db, err := NewFromDSNDualPool(testDSN)
 	require.NoError(t, err)
 	require.Equal(t, 2, mo.calls)
+	// Expect the two original pools to be closed when Reconnect swaps.
+	mo.mocks[0].ExpectClose()
+	mo.mocks[1].ExpectClose()
 
 	require.NoError(t, db.Reconnect())
 	require.Equal(t, 4, mo.calls, "Reconnect on a dual-pool db must open two new pools")
 	require.NotSame(t, writesPool(t, db), db.Reads, "Reconnect must not collapse to one pool")
+	require.NoError(t, mo.mocks[0].ExpectationsWereMet())
+	require.NoError(t, mo.mocks[1].ExpectationsWereMet())
 }
 
 func TestReconnect_SharedPoolStaysShared(t *testing.T) {
@@ -127,10 +132,13 @@ func TestReconnect_SharedPoolStaysShared(t *testing.T) {
 	db, err := NewFromDSN(testDSN, testDSN)
 	require.NoError(t, err)
 	require.Equal(t, 1, mo.calls)
+	// The single shared old pool must be closed exactly once.
+	mo.mocks[0].ExpectClose()
 
 	require.NoError(t, db.Reconnect())
 	require.Equal(t, 2, mo.calls, "Reconnect on a shared-pool db should only open one new pool")
 	require.Same(t, writesPool(t, db), db.Reads)
+	require.NoError(t, mo.mocks[0].ExpectationsWereMet())
 }
 
 func TestOpenPool_PingFailureClosesPool(t *testing.T) {

@@ -431,7 +431,11 @@ func (db *Database) Close() error {
 }
 
 // Reconnect creates new connection(s) for writes and reads
-// and replaces the existing connections with the new ones
+// and replaces the existing connections with the new ones.
+// The old pools are closed before being replaced; any close error
+// is logged as a warning rather than returned, because Reconnect is
+// typically called when the old pools are already broken and the new
+// ones are what the caller needs to move forward with.
 func (db *Database) Reconnect() error {
 	var fresh *Database
 	var err error
@@ -442,6 +446,10 @@ func (db *Database) Reconnect() error {
 	}
 	if err != nil {
 		return fmt.Errorf("failed to reconnect: %w", err)
+	}
+
+	if closeErr := db.Close(); closeErr != nil {
+		db.Logger.Warn("failed to close old pools during reconnect", "err", closeErr)
 	}
 
 	db.Writes = fresh.Writes
