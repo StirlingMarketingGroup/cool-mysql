@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,44 @@ func TestInsert_DefaultZero_ZeroerSetToFalse(t *testing.T) {
 
 	expected := "insert into`t`(`a`)values(0);\n\n"
 	require.Equal(t, expected, buf.String())
+}
+
+// TestInsert_RowBufExceedsCap exercises the rowBufPoolMaxCap discard branch by
+// lowering the cap so a single normal-sized row trips it. The test asserts the
+// insert still produces correct output after the cap was exceeded (which
+// implies the deferred discard ran instead of returning the grown buf to the
+// pool).
+func TestInsert_RowBufExceedsCap(t *testing.T) {
+	defer func(old int) { rowBufPoolMaxCap = old }(rowBufPoolMaxCap)
+	rowBufPoolMaxCap = 8
+
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	err = db.Insert("people", testPerson{ID: 1, Name: strings.Repeat("x", 64)})
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "insert into`people`")
+	require.Contains(t, buf.String(), hex.EncodeToString([]byte(strings.Repeat("x", 64))))
+}
+
+// TestInsert_InsertBufExceedsCap exercises the insertBufPoolMaxCap discard
+// branch. MaxInsertSize is bumped so the chunk threshold lands above the cap,
+// then the cap itself is lowered so the full statement buffer trips the
+// discard.
+func TestInsert_InsertBufExceedsCap(t *testing.T) {
+	defer func(old int) { insertBufPoolMaxCap = old }(insertBufPoolMaxCap)
+	insertBufPoolMaxCap = 16
+
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	err = db.Insert("people", []testPerson{{1, "A"}, {2, "B"}, {3, "C"}})
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "(1,")
+	require.Contains(t, buf.String(), "(2,")
+	require.Contains(t, buf.String(), "(3,")
 }
 
 func TestInsert_ErrNoColumnNames(t *testing.T) {
