@@ -158,7 +158,7 @@ func TestOpenPool_PingFailureClosesPool(t *testing.T) {
 		return pool, nil
 	}
 
-	_, err := openPool(testDSN, "writes")
+	_, err := openPool(testDSN, "writes", 0)
 	require.ErrorIs(t, err, pingErr)
 	// ExpectClose on the mock asserts openPool closed the pool on error.
 	require.NoError(t, capturedMock.ExpectationsWereMet())

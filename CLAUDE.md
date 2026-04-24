@@ -79,7 +79,7 @@ Template branches (`{{ if .Name }}...`) look up the **Go field name**, not the `
 
 | Var | Default | Effect |
 |---|---|---|
-| `COOL_MAX_EXECUTION_TIME_TIME` | 27s | Total retry budget per query (also sets `SetConnMaxLifetime`) |
+| `COOL_MAX_EXECUTION_TIME_TIME` | 27s | Seeds `MaxExecutionTime` (the retry budget per query) and `MaxConnectionTime` (`SetConnMaxLifetime`). Both are copied onto `*Database.MaxExecutionTime` / `.MaxConnectionTime` at construction — set the field (or call `SetMaxConnectionTime`) per instance to override for long-running processes. |
 | `COOL_MAX_ATTEMPTS` | 0 (uncapped) | Hard cap on retry attempts |
 | `COOL_REDIS_LOCK_RETRY_DELAY` | 20ms | Redis-backed `Locker` poll interval |
 | `COOL_MYSQL_MAX_QUERY_LOG_LENGTH` | 4096 | Truncation point for query text in `Error.Error()` |

@@ -36,6 +36,20 @@ type Database struct {
 
 	MaxInsertSize *synct[int]
 
+	// MaxExecutionTime caps the total time (including retries) a single
+	// query is allowed to run before giving up. Zero means no cap.
+	// Initialized from the package-level MaxExecutionTime var (Lambda-
+	// oriented 27s default); long-running processes should set this to 0
+	// or a larger value that matches their workload.
+	MaxExecutionTime time.Duration
+
+	// MaxConnectionTime is the SetConnMaxLifetime value applied to both
+	// pools at construction. Zero means connections are reused forever.
+	// Initialized from the package-level MaxConnectionTime var. Change at
+	// runtime with SetMaxConnectionTime so the underlying pools pick up
+	// the new value.
+	MaxConnectionTime time.Duration
+
 	cache  Cache
 	locker Locker
 
@@ -198,8 +212,9 @@ var sqlOpenFunc = sql.Open
 // openPool opens a MySQL pool against the given DSN, pings it, applies the
 // session timezone, and configures the connection lifetime. On any error
 // after Open the pool is closed so the caller doesn't have to. connType is
-// used only in error messages (e.g. "writes", "reads").
-func openPool(dsn, connType string) (*sql.DB, error) {
+// used only in error messages (e.g. "writes", "reads"). connMaxLifetime
+// is passed straight to SetConnMaxLifetime — zero means "reuse forever".
+func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, error) {
 	conn, err := sqlOpenFunc("mysql", dsn)
 	if err != nil {
 		return nil, err
@@ -217,7 +232,7 @@ func openPool(dsn, connType string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	conn.SetConnMaxLifetime(MaxConnectionTime)
+	conn.SetConnMaxLifetime(connMaxLifetime)
 	return conn, nil
 }
 
@@ -233,8 +248,10 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db = new(Database)
 	db.testMx = new(sync.Mutex)
 	db.Logger = DefaultLogger()
+	db.MaxExecutionTime = MaxExecutionTime
+	db.MaxConnectionTime = MaxConnectionTime
 
-	writesConn, err := openPool(writes, "writes")
+	writesConn, err := openPool(writes, "writes", db.MaxConnectionTime)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +267,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
 	if reads != writes {
-		readsConn, err := openPool(reads, "reads")
+		readsConn, err := openPool(reads, "reads", db.MaxConnectionTime)
 		if err != nil {
 			_ = writesConn.Close()
 			return nil, err
@@ -278,8 +295,10 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 	db.testMx = new(sync.Mutex)
 	db.Logger = DefaultLogger()
 	db.forceDualPool = true
+	db.MaxExecutionTime = MaxExecutionTime
+	db.MaxConnectionTime = MaxConnectionTime
 
-	writesConn, err := openPool(dsn, "writes")
+	writesConn, err := openPool(dsn, "writes", db.MaxConnectionTime)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +313,7 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(parsed.MaxAllowedPacket)
 
-	readsConn, err := openPool(dsn, "reads")
+	readsConn, err := openPool(dsn, "reads", db.MaxConnectionTime)
 	if err != nil {
 		_ = writesConn.Close()
 		return nil, err
@@ -311,6 +330,8 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	db := new(Database)
 	db.testMx = new(sync.Mutex)
+	db.MaxExecutionTime = MaxExecutionTime
+	db.MaxConnectionTime = MaxConnectionTime
 
 	// 1) Pull the server's max_allowed_packet value
 	var maxPacket int64
@@ -325,7 +346,7 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	// 2) Wire up Writes
 	db.Writes = writesConn
 	db.WritesDSN = "" // not known from *sql.DB
-	writesConn.SetConnMaxLifetime(MaxConnectionTime)
+	writesConn.SetConnMaxLifetime(db.MaxConnectionTime)
 
 	// 3) Wire up Reads (may be same as Writes)
 	db.Reads = readsConn
@@ -333,7 +354,7 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 		db.ReadsDSN = ""
 	} else {
 		db.ReadsDSN = ""
-		readsConn.SetConnMaxLifetime(MaxConnectionTime)
+		readsConn.SetConnMaxLifetime(db.MaxConnectionTime)
 	}
 
 	// 4) Logger setup (identical to NewFromDSN)
@@ -352,6 +373,8 @@ func NewLocalWriter(path string) (*Database, error) {
 	db.Writes = sqlWriter
 
 	db.testMx = new(sync.Mutex)
+	db.MaxExecutionTime = MaxExecutionTime
+	db.MaxConnectionTime = MaxConnectionTime
 
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(1 << 20)
@@ -369,6 +392,8 @@ func NewWriter(w io.Writer) (*Database, error) {
 	db.Writes = writer
 
 	db.testMx = new(sync.Mutex)
+	db.MaxExecutionTime = MaxExecutionTime
+	db.MaxConnectionTime = MaxConnectionTime
 
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(1 << 20)
@@ -376,6 +401,21 @@ func NewWriter(w io.Writer) (*Database, error) {
 	db.Logger = DefaultLogger()
 
 	return db, nil
+}
+
+// SetMaxConnectionTime updates db.MaxConnectionTime and applies the new
+// value to the underlying write and read pools via SetConnMaxLifetime.
+// Pass 0 for "reuse connections forever". Assigning the field directly
+// won't affect already-opened pools — go through this setter to take
+// effect at runtime.
+func (db *Database) SetMaxConnectionTime(d time.Duration) {
+	db.MaxConnectionTime = d
+	if w, ok := db.Writes.(*sql.DB); ok {
+		w.SetConnMaxLifetime(d)
+	}
+	if db.Reads != nil {
+		db.Reads.SetConnMaxLifetime(d)
+	}
 }
 
 // AddTemplateFuncs adds template functions to the database
@@ -436,6 +476,11 @@ func (db *Database) Close() error {
 // is logged as a warning rather than returned, because Reconnect is
 // typically called when the old pools are already broken and the new
 // ones are what the caller needs to move forward with.
+//
+// Any per-instance overrides to MaxConnectionTime are re-applied to
+// the new pools. The fresh Database built by the constructors
+// otherwise carries the package-level defaults, which would silently
+// revert an override set via SetMaxConnectionTime.
 func (db *Database) Reconnect() error {
 	var fresh *Database
 	var err error
@@ -454,6 +499,13 @@ func (db *Database) Reconnect() error {
 
 	db.Writes = fresh.Writes
 	db.Reads = fresh.Reads
+
+	if freshW, ok := fresh.Writes.(*sql.DB); ok {
+		freshW.SetConnMaxLifetime(db.MaxConnectionTime)
+	}
+	if fresh.Reads != nil && fresh.Reads != fresh.Writes {
+		fresh.Reads.SetConnMaxLifetime(db.MaxConnectionTime)
+	}
 
 	return nil
 }
