@@ -235,7 +235,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-		backoff.WithMaxElapsedTime(MaxExecutionTime),
+		backoff.WithMaxElapsedTime(db.MaxExecutionTime),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
