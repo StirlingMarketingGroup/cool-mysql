@@ -201,14 +201,14 @@ func openPool(dsn, connType string) (*sql.DB, error) {
 	}
 
 	if err := conn.Ping(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 
 	// Set MySQL session timezone to match the Go driver's Loc parameter
 	// so timestamps returned by MySQL are interpreted correctly.
 	if err := setSessionTimezone(conn, dsn, connType); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 
@@ -238,7 +238,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 
 	writesDSN, err := mysql.ParseDSN(writes)
 	if err != nil {
-		writesConn.Close()
+		_ = writesConn.Close()
 		return nil, fmt.Errorf("failed to parse writes DSN: %w", err)
 	}
 	db.MaxInsertSize = new(synct[int])
@@ -247,7 +247,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	if reads != writes {
 		readsConn, err := openPool(reads, "reads")
 		if err != nil {
-			writesConn.Close()
+			_ = writesConn.Close()
 			return nil, err
 		}
 		db.ReadsDSN = reads
@@ -283,7 +283,7 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 
 	parsed, err := mysql.ParseDSN(dsn)
 	if err != nil {
-		writesConn.Close()
+		_ = writesConn.Close()
 		return nil, fmt.Errorf("failed to parse DSN: %w", err)
 	}
 	db.MaxInsertSize = new(synct[int])
@@ -291,7 +291,7 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 
 	readsConn, err := openPool(dsn, "reads")
 	if err != nil {
-		writesConn.Close()
+		_ = writesConn.Close()
 		return nil, err
 	}
 	db.ReadsDSN = dsn
