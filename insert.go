@@ -184,30 +184,34 @@ DUPE_KEY_SEARCH:
 
 	insertPart += "values"
 
-	// Both the insert buffer (whole INSERT statement, up to MaxInsertSize) and
-	// the row scratch are pooled so a long stream of Insert() calls amortizes
-	// allocation to near zero per call. Preallocating insertBuf to MaxInsertSize
-	// kills the repeated bytes.growSlice that used to show up in the alloc
-	// profile as the chunk filled.
+	// Both the insert buffer (whole INSERT statement) and the row scratch are
+	// pooled so a long stream of Insert() calls amortizes allocation to near
+	// zero per call. The buffer grows on demand via append — do not preallocate
+	// to MaxInsertSize, since @@max_allowed_packet is commonly hundreds of MB
+	// and concurrent small inserts would each retain that full capacity in the
+	// pool.
 	maxSize := int(in.db.MaxInsertSize.Get())
 	threshold := int(float64(maxSize) * 0.80)
 
 	insertBufP := insertScratchPool.Get().(*[]byte)
 	defer func() {
+		// Discard outsized backings so a single large insert can't leave a
+		// multi-MB array in the pool for later tiny inserts to retain.
+		if cap(*insertBufP) > insertBufPoolMaxCap {
+			return
+		}
 		*insertBufP = (*insertBufP)[:0]
 		insertScratchPool.Put(insertBufP)
 	}()
-	insertBuf := *insertBufP
-	if cap(insertBuf) < maxSize {
-		insertBuf = make([]byte, 0, maxSize)
-	} else {
-		insertBuf = insertBuf[:0]
-	}
+	insertBuf := (*insertBufP)[:0]
 	insertBuf = append(insertBuf, insertPart...)
 	insertPartLen := len(insertBuf)
 
 	rowBufP := rowScratchPool.Get().(*[]byte)
 	defer func() {
+		if cap(*rowBufP) > rowBufPoolMaxCap {
+			return
+		}
 		*rowBufP = (*rowBufP)[:0]
 		rowScratchPool.Put(rowBufP)
 	}()
@@ -396,10 +400,17 @@ DUPE_KEY_SEARCH:
 	return nil
 }
 
-// insertScratchPool holds the full-statement buffer for a single Insert() call,
-// sized to MaxInsertSize on first use and reused across calls. sync.Pool keys
-// on *[]byte so callers can grow the slice in place and have the larger cap
-// survive Put/Get.
+// Retention caps for the scratch pools. Buffers that grow past these bounds
+// are dropped instead of returned to the pool so that a single large insert
+// can't leave a huge backing array live for the next caller.
+const (
+	insertBufPoolMaxCap = 4 << 20 // 4 MiB
+	rowBufPoolMaxCap    = 64 << 10 // 64 KiB
+)
+
+// insertScratchPool holds the full-statement buffer for a single Insert() call.
+// sync.Pool keys on *[]byte so callers can grow the slice in place and have
+// the larger cap survive Put/Get, up to insertBufPoolMaxCap.
 var insertScratchPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, 1<<20)
@@ -408,8 +419,7 @@ var insertScratchPool = sync.Pool{
 }
 
 // rowScratchPool holds the per-row scratch used by buildRow. Starts small and
-// grows to whatever the widest row needs; the grown cap is preserved across
-// Insert() calls via the defer above.
+// grows to whatever the widest row needs, up to rowBufPoolMaxCap.
 var rowScratchPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, 4096)
