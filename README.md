@@ -500,6 +500,20 @@ err := db.Insert("users", newUser)
 err := db.SelectWrites(&users, "SELECT * FROM users WHERE just_created = 1", nil)
 ```
 
+**Single DSN, two pools.** `NewFromDSN(dsn, dsn)` with identical strings
+collapses to one shared pool — fine for short-lived callers (Lambda,
+scripts) but can cause reads/writes contention under concurrent load for
+long-running tools. When you don't have a read replica but still want two
+independent pools, use `NewFromDSNDualPool(dsn)`:
+
+```go
+// One pool shared by Reads and Writes
+db, err := mysql.NewFromDSN(dsn, dsn)
+
+// Two independent pools against the same DSN
+db, err := mysql.NewFromDSNDualPool(dsn)
+```
+
 ### Large Dataset Handling
 
 **Chunked inserts** automatically respect MySQL's `max_allowed_packet`:

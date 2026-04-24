@@ -49,6 +49,12 @@ type Database struct {
 
 	tmplFuncs   template.FuncMap
 	valuerFuncs map[reflect.Type]reflect.Value
+
+	// forceDualPool, when set, tells Reconnect to rebuild two independent
+	// pools from WritesDSN even if WritesDSN == ReadsDSN. Set by
+	// NewFromDSNDualPool. Not exported; external callers should pick the
+	// constructor that matches their intent.
+	forceDualPool bool
 }
 
 // Clone returns a copy of the db with the same connections
@@ -184,67 +190,114 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	return NewFromDSN(writes.FormatDSN(), reads.FormatDSN())
 }
 
-// NewFromDSN creates a new Database from config
-// DSN strings for both connections
+// openPool opens a MySQL pool against the given DSN, pings it, applies the
+// session timezone, and configures the connection lifetime. On any error
+// after Open the pool is closed so the caller doesn't have to. connType is
+// used only in error messages (e.g. "writes", "reads").
+func openPool(dsn, connType string) (*sql.DB, error) {
+	conn, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	// Set MySQL session timezone to match the Go driver's Loc parameter
+	// so timestamps returned by MySQL are interpreted correctly.
+	if err := setSessionTimezone(conn, dsn, connType); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	conn.SetConnMaxLifetime(MaxConnectionTime)
+	return conn, nil
+}
+
+// NewFromDSN creates a new Database from DSN strings for the writes and
+// reads connections.
+//
+// If writes == reads (same string), Reads and Writes share a single
+// *sql.DB pool — useful for callers without a read replica who are fine
+// with one pool. If you want two independent pools against the same DSN
+// (to avoid reads and writes contending for connections under concurrent
+// load), use NewFromDSNDualPool instead.
 func NewFromDSN(writes, reads string) (db *Database, err error) {
 	db = new(Database)
 	db.testMx = new(sync.Mutex)
+	db.Logger = DefaultLogger()
 
+	writesConn, err := openPool(writes, "writes")
+	if err != nil {
+		return nil, err
+	}
 	db.WritesDSN = writes
-	var writesConn *sql.DB
-	writesConn, err = sql.Open("mysql", writes)
-	if err != nil {
-		return nil, err
-	}
-
-	err = writesConn.Ping()
-	if err != nil {
-		return nil, err
-	}
+	db.Writes = writesConn
 
 	writesDSN, err := mysql.ParseDSN(writes)
 	if err != nil {
+		writesConn.Close()
 		return nil, fmt.Errorf("failed to parse writes DSN: %w", err)
 	}
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
 
-	// Set MySQL session timezone to match the Go driver's Loc parameter
-	// This ensures timestamps returned by MySQL are interpreted correctly
-	if err := setSessionTimezone(writesConn, writes, "writes"); err != nil {
-		return nil, err
-	}
-
-	writesConn.SetConnMaxLifetime(MaxConnectionTime)
-
-	db.Writes = writesConn
-
 	if reads != writes {
+		readsConn, err := openPool(reads, "reads")
+		if err != nil {
+			writesConn.Close()
+			return nil, err
+		}
 		db.ReadsDSN = reads
-		db.Reads, err = sql.Open("mysql", reads)
-		if err != nil {
-			return nil, err
-		}
-
-		err = db.Reads.Ping()
-		if err != nil {
-			return nil, err
-		}
-
-		// Set MySQL session timezone on reads connection as well
-		if err := setSessionTimezone(db.Reads, reads, "reads"); err != nil {
-			return nil, err
-		}
-
-		db.Reads.SetConnMaxLifetime(MaxConnectionTime)
+		db.Reads = readsConn
 	} else {
 		db.ReadsDSN = writes
 		db.Reads = writesConn
 	}
 
-	db.Logger = DefaultLogger()
+	return db, nil
+}
 
-	return db, err
+// NewFromDSNDualPool creates a new Database with two independent
+// connection pools backed by the same DSN.
+//
+// Use this when you don't have a read replica but still want Reads and
+// Writes to use separate pools. The dual-pool design exists to keep reads
+// and writes from starving each other under concurrent load, which is
+// defeated by NewFromDSN(dsn, dsn) because equal DSN strings collapse to
+// a single shared pool.
+func NewFromDSNDualPool(dsn string) (db *Database, err error) {
+	db = new(Database)
+	db.testMx = new(sync.Mutex)
+	db.Logger = DefaultLogger()
+	db.forceDualPool = true
+
+	writesConn, err := openPool(dsn, "writes")
+	if err != nil {
+		return nil, err
+	}
+	db.WritesDSN = dsn
+	db.Writes = writesConn
+
+	parsed, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		writesConn.Close()
+		return nil, fmt.Errorf("failed to parse DSN: %w", err)
+	}
+	db.MaxInsertSize = new(synct[int])
+	db.MaxInsertSize.Set(parsed.MaxAllowedPacket)
+
+	readsConn, err := openPool(dsn, "reads")
+	if err != nil {
+		writesConn.Close()
+		return nil, err
+	}
+	db.ReadsDSN = dsn
+	db.Reads = readsConn
+
+	return db, nil
 }
 
 // NewFromConn creates a new Database given existing *sql.DB connections.
@@ -375,13 +428,19 @@ func (db *Database) Close() error {
 // Reconnect creates new connection(s) for writes and reads
 // and replaces the existing connections with the new ones
 func (db *Database) Reconnect() error {
-	new, err := NewFromDSN(db.WritesDSN, db.ReadsDSN)
+	var fresh *Database
+	var err error
+	if db.forceDualPool {
+		fresh, err = NewFromDSNDualPool(db.WritesDSN)
+	} else {
+		fresh, err = NewFromDSN(db.WritesDSN, db.ReadsDSN)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to reconnect: %w", err)
 	}
 
-	db.Writes = new.Writes
-	db.Reads = new.Reads
+	db.Writes = fresh.Writes
+	db.Reads = fresh.Reads
 
 	return nil
 }
