@@ -402,9 +402,10 @@ DUPE_KEY_SEARCH:
 
 // Retention caps for the scratch pools. Buffers that grow past these bounds
 // are dropped instead of returned to the pool so that a single large insert
-// can't leave a huge backing array live for the next caller.
-const (
-	insertBufPoolMaxCap = 4 << 20 // 4 MiB
+// can't leave a huge backing array live for the next caller. Vars (not
+// consts) so tests can lower them to exercise the discard path.
+var (
+	insertBufPoolMaxCap = 4 << 20  // 4 MiB
 	rowBufPoolMaxCap    = 64 << 10 // 64 KiB
 )
 

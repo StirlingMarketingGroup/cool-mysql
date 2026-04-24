@@ -3,7 +3,9 @@ package mysql
 import (
 	"database/sql/driver"
 	"encoding/hex"
+	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -505,6 +507,50 @@ func Test_marshal(t *testing.T) {
 				},
 			},
 			want: []byte("null"),
+		},
+		{name: "bool true", args: args{x: true}, want: []byte("1")},
+		{name: "bool false", args: args{x: false}, want: []byte("0")},
+		{name: "empty string", args: args{x: ""}, want: []byte("''")},
+		{name: "nil []byte", args: args{x: []byte(nil)}, want: []byte("null")},
+		{name: "empty []byte", args: args{x: []byte{}}, want: []byte("''")},
+		{name: "populated []byte", args: args{x: []byte{0xde, 0xad}}, want: []byte("0xdead")},
+		{name: "int", args: args{x: int(-12)}, want: []byte("-12")},
+		{name: "int8", args: args{x: int8(-8)}, want: []byte("-8")},
+		{name: "int16", args: args{x: int16(-16)}, want: []byte("-16")},
+		{name: "int32", args: args{x: int32(-32)}, want: []byte("-32")},
+		{name: "int64", args: args{x: int64(-64)}, want: []byte("-64")},
+		{name: "uint", args: args{x: uint(12)}, want: []byte("12")},
+		{name: "uint8", args: args{x: uint8(8)}, want: []byte("8")},
+		{name: "uint16", args: args{x: uint16(16)}, want: []byte("16")},
+		{name: "uint32", args: args{x: uint32(32)}, want: []byte("32")},
+		{name: "uint64", args: args{x: uint64(64)}, want: []byte("64")},
+		{name: "float32", args: args{x: float32(1.5)}, want: []byte(strconv.FormatFloat(float64(float32(1.5)), 'E', -1, 64))},
+		{name: "float64", args: args{x: float64(2.5)}, want: []byte(strconv.FormatFloat(2.5, 'E', -1, 64))},
+		{name: "complex64", args: args{x: complex64(complex(1, 2))}, want: []byte(strconv.FormatComplex(complex128(complex(float32(1), float32(2))), 'E', -1, 64))},
+		{name: "complex128", args: args{x: complex(3.0, 4.0)}, want: []byte(strconv.FormatComplex(complex(3.0, 4.0), 'E', -1, 64))},
+		{name: "time zero", args: args{x: time.Time{}}, want: []byte("null")},
+		{name: "civil date zero", args: args{x: civil.Date{}}, want: []byte("null")},
+		{name: "civil date non-zero", args: args{x: civil.Date{Year: 2020, Month: 1, Day: 1}}, want: []byte("'2020-01-01'")},
+		{name: "nil json.RawMessage", args: args{x: json.RawMessage(nil)}, want: []byte("null")},
+		{name: "empty json.RawMessage", args: args{x: json.RawMessage{}}, want: []byte("''")},
+		{name: "populated json.RawMessage", args: args{x: json.RawMessage(`{"a":1}`)}, want: []byte("_utf8mb4 0x" + hex.EncodeToString([]byte(`{"a":1}`)) + " collate utf8mb4_unicode_ci")},
+		{name: "Raw", args: args{x: Raw("NOW()")}, want: []byte("NOW()")},
+		{
+			name: "defaultzero with fieldName",
+			args: args{
+				x:         0,
+				opt:       marshalOptDefaultZero,
+				fieldName: "col",
+			},
+			want: []byte("default(`col`)"),
+		},
+		{
+			name: "defaultzero without fieldName",
+			args: args{
+				x:   0,
+				opt: marshalOptDefaultZero,
+			},
+			want: []byte("default"),
 		},
 	}
 	for _, tt := range tests {
