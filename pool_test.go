@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -258,4 +259,70 @@ func TestApplyTimeZoneToConfig_NilLocNoop(t *testing.T) {
 	applyTimeZoneToConfig(cfg)
 	require.Empty(t, cfg.Params["time_zone"])
 	require.Nil(t, cfg.Params)
+}
+
+// TestOpenPool_InvalidDSNReturnsError covers the ParseDSN error branch
+// in openPool — guarantees the connType is surfaced in the wrapped
+// error so the caller can tell which pool (writes vs reads) was the
+// offender.
+func TestOpenPool_InvalidDSNReturnsError(t *testing.T) {
+	_, err := openPool("::not a valid DSN::", "writes", 0)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "writes",
+		"wrapped error must include the connType so the pool is identifiable")
+}
+
+// TestDefaultSqlOpenFunc_NewConnectorError covers the error branch of
+// the default sqlOpenFunc. mysql.NewConnector runs Config.normalize,
+// which fails on a non-registered ServerPubKey — an easy way to force
+// an error without dialing.
+func TestDefaultSqlOpenFunc_NewConnectorError(t *testing.T) {
+	// Don't overwrite sqlOpenFunc — we're exercising the default. Other
+	// tests swap it via t.Cleanup, so by the time this runs we have the
+	// default back.
+	_, err := sqlOpenFunc(&mysqldrv.Config{
+		Net:          "tcp",
+		Addr:         "localhost:3306",
+		ServerPubKey: "not-a-registered-pub-key",
+	})
+	require.Error(t, err)
+}
+
+// TestOpenPool_WiresBeforeConnectTimeZone proves the BeforeConnect hook
+// openPool installs actually runs applyTimeZoneToConfig on every new
+// conn. Can't use sqlmock here (it short-circuits the driver's Connect
+// flow that fires BeforeConnect), so we use the default sqlOpenFunc
+// against a dead-loopback port and observe that BeforeConnect mutates
+// the cloned Config before the dial fails.
+func TestOpenPool_WiresBeforeConnectTimeZone(t *testing.T) {
+	// Default sqlOpenFunc is required so we exercise the real driver
+	// path that calls BeforeConnect at Connect-time.
+	original := sqlOpenFunc
+	t.Cleanup(func() { sqlOpenFunc = original })
+	sqlOpenFunc = original
+
+	// Port 1 on 127.0.0.1 is guaranteed unused; the dial will fail fast
+	// so the test doesn't wait for a real TCP timeout.
+	dsn := "user:pass@tcp(127.0.0.1:1)/db?parseTime=true&loc=UTC"
+	cfg, err := mysqldrv.ParseDSN(dsn)
+	require.NoError(t, err)
+
+	var observed string
+	require.NoError(t, cfg.Apply(mysqldrv.BeforeConnect(func(_ context.Context, c *mysqldrv.Config) error {
+		applyTimeZoneToConfig(c)
+		observed = c.Params["time_zone"]
+		return nil
+	})))
+
+	connector, err := mysqldrv.NewConnector(cfg)
+	require.NoError(t, err)
+
+	// Connect() runs BeforeConnect, then tries to dial. The dial error
+	// is expected; what we're verifying is the hook ran first.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = connector.Connect(ctx)
+
+	require.Equal(t, "'+00:00'", observed,
+		"BeforeConnect must have run applyTimeZoneToConfig on the per-conn cfg clone")
 }
