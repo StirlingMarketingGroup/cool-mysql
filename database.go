@@ -78,26 +78,29 @@ func (db *Database) Clone() *Database {
 	return &clone
 }
 
-// setSessionTimezone sets the MySQL session timezone to match the given timezone
-func setSessionTimezone(exec interface {
-	Exec(string, ...any) (sql.Result, error)
-}, dsn string, connType string,
-) error {
-	config, err := mysql.ParseDSN(dsn)
-	if err != nil {
-		return fmt.Errorf("failed to parse %s DSN: %w", connType, err)
+// applyTimeZoneToConfig writes the current Loc offset to
+// Params["time_zone"] as a SQL-quoted offset string (e.g. "'+00:00'").
+// go-sql-driver passes Params verbatim into the `SET <k> = <v>` it runs
+// at connection init, so the single quotes must be part of the value.
+//
+// This is wired via BeforeConnect (see openPool) so it runs on every
+// new conn. Per-conn recomputation matters for Locs with DST — a pool
+// opened in EST (-05:00) would otherwise keep handing out `-05:00` to
+// every new conn after the DST transition to EDT (-04:00). See #152.
+//
+// No-op if Loc is nil or Params["time_zone"] is already set: caller
+// intent wins over the Loc-derived default.
+func applyTimeZoneToConfig(cfg *mysql.Config) {
+	if cfg.Loc == nil || cfg.Params["time_zone"] != "" {
+		return
 	}
+	_, offset := time.Now().In(cfg.Loc).Zone()
+	tzStr := time.Unix(0, 0).In(time.FixedZone("", offset)).Format("-07:00")
 
-	if config.Loc != nil {
-		_, offset := time.Now().In(config.Loc).Zone()
-		timeZoneStr := time.Unix(0, 0).In(time.FixedZone("", offset)).Format("-07:00")
-
-		_, err = exec.Exec("SET time_zone = ?", timeZoneStr)
-		if err != nil {
-			return fmt.Errorf("failed to set timezone on %s connection: %w", connType, err)
-		}
+	if cfg.Params == nil {
+		cfg.Params = make(map[string]string)
 	}
-	return nil
+	cfg.Params["time_zone"] = "'" + tzStr + "'"
 }
 
 func (db *Database) WriterWithSubdir(subdir string) *Database {
@@ -204,30 +207,44 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	return NewFromDSN(writes.FormatDSN(), reads.FormatDSN())
 }
 
-// sqlOpenFunc is the function openPool uses to open a *sql.DB. It's a
-// package-level variable so tests can substitute a fake that returns a
-// sqlmock-backed pool instead of hitting a real MySQL server.
-var sqlOpenFunc = sql.Open
+// sqlOpenFunc is the function openPool uses to build a *sql.DB from a
+// parsed mysql.Config. It's a package-level variable so tests can
+// substitute a fake that returns a sqlmock-backed pool instead of
+// hitting a real MySQL server.
+var sqlOpenFunc = func(cfg *mysql.Config) (*sql.DB, error) {
+	connector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(connector), nil
+}
 
-// openPool opens a MySQL pool against the given DSN, pings it, applies the
-// session timezone, and configures the connection lifetime. On any error
-// after Open the pool is closed so the caller doesn't have to. connType is
-// used only in error messages (e.g. "writes", "reads"). connMaxLifetime
-// is passed straight to SetConnMaxLifetime — zero means "reuse forever".
+// openPool opens a MySQL pool against the given DSN, pings it, and
+// configures the connection lifetime. A BeforeConnect hook is wired so
+// go-sql-driver runs `SET time_zone = <Loc offset>` on every new conn
+// the pool opens — see applyTimeZoneToConfig. On any error after Open
+// the pool is closed so the caller doesn't have to. connType is used
+// only in error messages (e.g. "writes", "reads"). connMaxLifetime is
+// passed straight to SetConnMaxLifetime — zero means "reuse forever".
 func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, error) {
-	conn, err := sqlOpenFunc("mysql", dsn)
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse %s DSN: %w", connType, err)
+	}
+
+	// The driver hands BeforeConnect a fresh Clone() of cfg for every
+	// new conn, so mutating c here scopes to that one conn.
+	_ = cfg.Apply(mysql.BeforeConnect(func(_ context.Context, c *mysql.Config) error {
+		applyTimeZoneToConfig(c)
+		return nil
+	}))
+
+	conn, err := sqlOpenFunc(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	if err := conn.Ping(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-
-	// Set MySQL session timezone to match the Go driver's Loc parameter
-	// so timestamps returned by MySQL are interpreted correctly.
-	if err := setSessionTimezone(conn, dsn, connType); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}

@@ -4,9 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
+
+	mysqldrv "github.com/go-sql-driver/mysql"
 )
 
 // The DSN value we feed the constructors in these tests. It only has to
@@ -21,29 +24,22 @@ type mockOpen struct {
 }
 
 // installMockOpen replaces sqlOpenFunc for the duration of a test with a
-// fake that hands back sqlmock pools. Every returned mock pre-expects the
-// "SET time_zone = ?" that setSessionTimezone always emits (the go-sql
-// driver's ParseDSN defaults Loc to UTC, so the call is unconditional).
-// The caller can push additional expectations onto mo.mocks[i] after the
-// constructor runs.
+// fake that hands back sqlmock pools. The session timezone `SET` is
+// issued by go-sql-driver per-conn via the injected DSN param, not by
+// the library, so we don't pre-expect it here — sqlmock doesn't simulate
+// the driver's conn init. The caller can push additional expectations
+// onto mo.mocks[i] after the constructor runs.
 func installMockOpen(t *testing.T) *mockOpen {
 	t.Helper()
 
 	original := sqlOpenFunc
 	mo := &mockOpen{}
 
-	sqlOpenFunc = func(driver, dsn string) (*sql.DB, error) {
-		if driver != "mysql" {
-			return nil, errors.New("unexpected driver: " + driver)
-		}
+	sqlOpenFunc = func(cfg *mysqldrv.Config) (*sql.DB, error) {
 		pool, m, err := sqlmock.New()
 		if err != nil {
 			return nil, err
 		}
-		// setSessionTimezone runs unconditionally because ParseDSN
-		// populates Loc with time.UTC by default.
-		m.ExpectExec(`SET time_zone = \?`).
-			WillReturnResult(sqlmock.NewResult(0, 0))
 		mo.calls++
 		mo.pools = append(mo.pools, pool)
 		mo.mocks = append(mo.mocks, m)
@@ -147,7 +143,7 @@ func TestOpenPool_PingFailureClosesPool(t *testing.T) {
 
 	var capturedMock sqlmock.Sqlmock
 	pingErr := errors.New("boom")
-	sqlOpenFunc = func(driver, dsn string) (*sql.DB, error) {
+	sqlOpenFunc = func(cfg *mysqldrv.Config) (*sql.DB, error) {
 		pool, m, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 		if err != nil {
 			return nil, err
@@ -171,15 +167,13 @@ func TestNewFromDSNDualPool_ReadsOpenFailureClosesWrites(t *testing.T) {
 	openErr := errors.New("second open failed")
 	var writesMock sqlmock.Sqlmock
 	var call int
-	sqlOpenFunc = func(driver, dsn string) (*sql.DB, error) {
+	sqlOpenFunc = func(cfg *mysqldrv.Config) (*sql.DB, error) {
 		call++
 		if call == 1 {
 			pool, m, err := sqlmock.New()
 			if err != nil {
 				return nil, err
 			}
-			m.ExpectExec(`SET time_zone = \?`).
-				WillReturnResult(sqlmock.NewResult(0, 0))
 			// After the reads-side open fails below, the constructor
 			// must close the writes pool it already opened.
 			m.ExpectClose()
@@ -192,4 +186,76 @@ func TestNewFromDSNDualPool_ReadsOpenFailureClosesWrites(t *testing.T) {
 	_, err := NewFromDSNDualPool(testDSN)
 	require.ErrorIs(t, err, openErr)
 	require.NoError(t, writesMock.ExpectationsWereMet())
+}
+
+// applyTimeZoneToConfig is the per-conn hook wired via BeforeConnect (see
+// openPool) and is the core of the fix for issue #152. These tests
+// exercise it directly because BeforeConnect fires inside the driver's
+// Connect flow, which sqlmock doesn't simulate.
+
+func TestApplyTimeZoneToConfig_UTCLocProducesZeroOffset(t *testing.T) {
+	cfg, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")
+	require.NoError(t, err)
+
+	applyTimeZoneToConfig(cfg)
+	require.Equal(t, "'+00:00'", cfg.Params["time_zone"])
+}
+
+func TestApplyTimeZoneToConfig_NonUTCLocUsesCurrentOffset(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	cfg, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")
+	require.NoError(t, err)
+	cfg.Loc = loc
+
+	applyTimeZoneToConfig(cfg)
+
+	_, offset := time.Now().In(loc).Zone()
+	expected := "'" + time.Unix(0, 0).In(time.FixedZone("", offset)).Format("-07:00") + "'"
+	require.Equal(t, expected, cfg.Params["time_zone"])
+}
+
+// TestApplyTimeZoneToConfig_RecomputesPerInvocation mimics what
+// BeforeConnect does across a DST transition: the same base cfg is
+// cloned and mutated per conn, so simulating the two offsets on
+// separate cfg copies must yield the two different offsets. This is
+// the DST-safety guarantee openPool provides by wiring the hook
+// per-conn rather than baking the offset into the DSN once.
+func TestApplyTimeZoneToConfig_RecomputesPerInvocation(t *testing.T) {
+	winter := time.FixedZone("EST", -5*60*60)
+	summer := time.FixedZone("EDT", -4*60*60)
+
+	base, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")
+	require.NoError(t, err)
+
+	winterCfg := base.Clone()
+	winterCfg.Loc = winter
+	applyTimeZoneToConfig(winterCfg)
+	require.Equal(t, "'-05:00'", winterCfg.Params["time_zone"])
+
+	summerCfg := base.Clone()
+	summerCfg.Loc = summer
+	applyTimeZoneToConfig(summerCfg)
+	require.Equal(t, "'-04:00'", summerCfg.Params["time_zone"])
+
+	// The base cfg's Params map must be untouched — BeforeConnect
+	// scopes mutation to the per-conn clone.
+	require.Empty(t, base.Params["time_zone"])
+}
+
+func TestApplyTimeZoneToConfig_PreservesExplicitParam(t *testing.T) {
+	cfg, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC&time_zone=%27%2B05%3A30%27")
+	require.NoError(t, err)
+
+	applyTimeZoneToConfig(cfg)
+	require.Equal(t, "'+05:30'", cfg.Params["time_zone"],
+		"an explicit caller-provided time_zone must be preserved verbatim")
+}
+
+func TestApplyTimeZoneToConfig_NilLocNoop(t *testing.T) {
+	cfg := &mysqldrv.Config{}
+	applyTimeZoneToConfig(cfg)
+	require.Empty(t, cfg.Params["time_zone"])
+	require.Nil(t, cfg.Params)
 }
