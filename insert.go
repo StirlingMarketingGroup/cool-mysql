@@ -1,12 +1,12 @@
 package mysql
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/structtag"
@@ -184,50 +184,71 @@ DUPE_KEY_SEARCH:
 
 	insertPart += "values"
 
-	insertBuf := bytes.NewBufferString(insertPart)
-	rowBuf := new(bytes.Buffer)
+	// Both the insert buffer (whole INSERT statement, up to MaxInsertSize) and
+	// the row scratch are pooled so a long stream of Insert() calls amortizes
+	// allocation to near zero per call. Preallocating insertBuf to MaxInsertSize
+	// kills the repeated bytes.growSlice that used to show up in the alloc
+	// profile as the chunk filled.
+	maxSize := int(in.db.MaxInsertSize.Get())
+	threshold := int(float64(maxSize) * 0.80)
+
+	insertBufP := insertScratchPool.Get().(*[]byte)
+	defer func() {
+		*insertBufP = (*insertBufP)[:0]
+		insertScratchPool.Put(insertBufP)
+	}()
+	insertBuf := *insertBufP
+	if cap(insertBuf) < maxSize {
+		insertBuf = make([]byte, 0, maxSize)
+	} else {
+		insertBuf = insertBuf[:0]
+	}
+	insertBuf = append(insertBuf, insertPart...)
+	insertPartLen := len(insertBuf)
+
+	rowBufP := rowScratchPool.Get().(*[]byte)
+	defer func() {
+		*rowBufP = (*rowBufP)[:0]
+		rowScratchPool.Put(rowBufP)
+	}()
+	rowBuf := *rowBufP
+	rowBuf = rowBuf[:0]
+
 	var rowBuffered bool
 
-	resetBuf := func() {
-		insertBuf.Truncate(len(insertPart))
-		rowBuffered = false
-	}
-
 	multiCol := isMultiColumn(rt)
+	valuerFuncs := in.db.valuerFuncs
 
-	buildRow := func(row reflect.Value) (string, error) {
-		rowBuf.Reset()
-
-		rowBuf.WriteByte('(')
+	buildRow := func(row reflect.Value) error {
+		rowBuf = append(rowBuf[:0], '(')
 
 		writeValue := func(r reflect.Value, opts marshalOpt, fieldName string) error {
 			r = reflectUnwrap(r)
 
 			if !r.IsValid() {
-				rowBuf.WriteString("null")
+				rowBuf = append(rowBuf, "null"...)
 				return nil
 			}
 
 			v := r.Interface()
 
-			b, err := marshal(v, opts|marshalOptJSONSlice, fieldName, in.db.valuerFuncs)
+			var err error
+			rowBuf, err = marshalAppend(rowBuf, v, opts|marshalOptJSONSlice, fieldName, valuerFuncs)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}
-			rowBuf.Write(b)
-
 			return nil
 		}
 
 		switch k := row.Kind(); {
 		case !multiCol:
 			if err := writeValue(row, marshalOptNone, ""); err != nil {
-				return "", err
+				return err
 			}
 		case k == reflect.Struct:
 			for i, col := range columnNames {
 				if i != 0 {
-					rowBuf.WriteByte(',')
+					rowBuf = append(rowBuf, ',')
 				}
 
 				f := row.FieldByIndex(colOpts[col].index)
@@ -243,19 +264,19 @@ DUPE_KEY_SEARCH:
 					if v, ok := pv.Interface().(Zeroer); ok {
 						if pv.IsNil() {
 							if _, ok := pv.Type().Elem().MethodByName("IsZero"); ok {
-								rowBuf.WriteString("default")
+								rowBuf = append(rowBuf, "default"...)
 								continue
 							}
 						}
 
 						if v.IsZero() {
-							rowBuf.WriteString("default")
+							rowBuf = append(rowBuf, "default"...)
 							continue
 						}
 					}
 
 					if !f.IsValid() || f.IsZero() {
-						rowBuf.WriteString("default")
+						rowBuf = append(rowBuf, "default"...)
 						continue
 					}
 				}
@@ -265,39 +286,39 @@ DUPE_KEY_SEARCH:
 					marshalOpts |= marshalOptDefaultZero
 				}
 				if err := writeValue(v, marshalOpts, col); err != nil {
-					return "", err
+					return err
 				}
 			}
 		case k == reflect.Map:
 			for i, col := range columnNames {
 				if i != 0 {
-					rowBuf.WriteByte(',')
+					rowBuf = append(rowBuf, ',')
 				}
 
 				v := row.MapIndex(reflect.ValueOf(col))
 				if !v.IsValid() {
-					rowBuf.WriteString("default")
+					rowBuf = append(rowBuf, "default"...)
 					continue
 				}
 
 				if err := writeValue(v, marshalOptNone, col); err != nil {
-					return "", err
+					return err
 				}
 			}
 		case k == reflect.Slice || k == reflect.Array:
 			for i := 0; i < row.Len(); i++ {
 				if i != 0 {
-					rowBuf.WriteByte(',')
+					rowBuf = append(rowBuf, ',')
 				}
 
 				if err := writeValue(row.Index(i), marshalOptNone, ""); err != nil {
-					return "", err
+					return err
 				}
 			}
 		}
 
-		rowBuf.WriteByte(')')
-		return rowBuf.String(), nil
+		rowBuf = append(rowBuf, ')')
+		return nil
 	}
 
 	var start time.Time
@@ -308,9 +329,11 @@ DUPE_KEY_SEARCH:
 			return nil
 		}
 
-		insertBuf.WriteString(onDuplicateKeyUpdate)
+		insertBuf = append(insertBuf, onDuplicateKeyUpdate...)
 
-		result, err := in.db.exec(in.conn, ctx, in.tx, true, insertBuf.String())
+		// One string copy per chunk (not per row) — amortized across thousands
+		// of rows, negligible next to the row-build savings.
+		result, err := in.db.exec(in.conn, ctx, in.tx, true, string(insertBuf))
 		if err != nil {
 			return err
 		}
@@ -324,31 +347,31 @@ DUPE_KEY_SEARCH:
 			in.HandleResult(result)
 		}
 
-		resetBuf()
+		insertBuf = insertBuf[:insertPartLen]
+		rowBuffered = false
 		return nil
 	}
 
 	for {
 		start = time.Now()
 
-		var row string
-		row, err = buildRow(currentRow)
-		if err != nil {
+		if err = buildRow(currentRow); err != nil {
 			return err
 		}
 
-		// buffer will be too big with this row, exec first and reset buffer
-		if insertBuf.Len()+len(row)+len(onDuplicateKeyUpdate) > int(float64(in.db.MaxInsertSize.Get())*0.80) {
+		// Flush before appending this row if it would push us past threshold.
+		// +1 for the comma separator when rowBuffered is true.
+		if len(insertBuf)+len(rowBuf)+len(onDuplicateKeyUpdate)+1 > threshold {
 			if err = insert(); err != nil {
 				return err
 			}
 		}
 
 		if rowBuffered {
-			insertBuf.WriteByte(',')
+			insertBuf = append(insertBuf, ',')
 		}
 
-		insertBuf.WriteString(row)
+		insertBuf = append(insertBuf, rowBuf...)
 
 		rowBuffered = true
 
@@ -365,7 +388,33 @@ DUPE_KEY_SEARCH:
 		return err
 	}
 
+	// Capture the grown backings back into the pool so the next Insert() call
+	// starts with the same reserved capacity instead of reallocating.
+	*insertBufP = insertBuf
+	*rowBufP = rowBuf
+
 	return nil
+}
+
+// insertScratchPool holds the full-statement buffer for a single Insert() call,
+// sized to MaxInsertSize on first use and reused across calls. sync.Pool keys
+// on *[]byte so callers can grow the slice in place and have the larger cap
+// survive Put/Get.
+var insertScratchPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 1<<20)
+		return &b
+	},
+}
+
+// rowScratchPool holds the per-row scratch used by buildRow. Starts small and
+// grows to whatever the widest row needs; the grown cap is preserved across
+// Insert() calls via the defer above.
+var rowScratchPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
 }
 
 func colNamesFromMap(v reflect.Value) (columns []string) {
