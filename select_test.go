@@ -10,6 +10,7 @@ import (
 
 	"cloud.google.com/go/civil"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -661,4 +662,37 @@ func TestSelectNoInsertFieldMapping(t *testing.T) {
 	require.Equal(t, 1, dest[0].ID)
 	require.Equal(t, "item-value", dest[0].CustomLineItem)  // LineItem column -> CustomLineItem field
 	require.Equal(t, "model-value", dest[0].LineItemModel) // LineItemModel column -> LineItemModel field
+}
+
+// TestSelectReacquiresConnOnErrInvalidConn verifies that when QueryContext
+// returns mysql.ErrInvalidConn on a dedicated conn checked out from the
+// pool, select.go releases the dead conn and grabs a fresh one before
+// retrying. Without that swap the retry would hit the same dead conn and
+// burn the entire retry budget.
+func TestSelectReacquiresConnOnErrInvalidConn(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT 1$").WillReturnError(mysql.ErrInvalidConn)
+	mock.ExpectQuery("^SELECT 1$").
+		WillReturnRows(sqlmock.NewRows([]string{"col"}).AddRow(int64(1)))
+
+	var v int64
+	require.NoError(t, db.Select(&v, "SELECT 1", 0))
+	require.Equal(t, int64(1), v)
+}
+
+// TestSelectWritesReacquiresConnOnErrInvalidConn covers the SelectWrites
+// path, which passes db.Writes.(*sql.DB) through the same retry logic.
+func TestSelectWritesReacquiresConnOnErrInvalidConn(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT 2$").WillReturnError(mysql.ErrInvalidConn)
+	mock.ExpectQuery("^SELECT 2$").
+		WillReturnRows(sqlmock.NewRows([]string{"col"}).AddRow(int64(2)))
+
+	var v int64
+	require.NoError(t, db.SelectWrites(&v, "SELECT 2", 0))
+	require.Equal(t, int64(2), v)
 }

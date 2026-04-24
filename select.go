@@ -181,20 +181,49 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		}
 	}
 
+	var currentConn *sql.Conn
+	// getFreshConn reacquires a dedicated conn from the pool originally
+	// passed in. It reads db.Reads / db.Writes live so it picks up the
+	// replacement pool after Reconnect.
+	var getFreshConn func(ctx context.Context) (*sql.Conn, error)
+
 	if c, ok := conn.(*sql.DB); ok {
-		c2, err := c.Conn(ctx)
-		if c2 != nil {
-			defer func() {
-				if err := c2.Close(); err != nil {
-					db.Logger.Warn("failed to close connection", "err", err)
+		if c == db.Reads {
+			getFreshConn = func(ctx context.Context) (*sql.Conn, error) {
+				if db.Reads == nil {
+					return nil, fmt.Errorf("reads pool is nil")
 				}
-			}()
+				return db.Reads.Conn(ctx)
+			}
+		} else if w, ok := db.Writes.(*sql.DB); ok && w == c {
+			getFreshConn = func(ctx context.Context) (*sql.Conn, error) {
+				w, _ := db.Writes.(*sql.DB)
+				if w == nil {
+					return nil, fmt.Errorf("writes pool is not a *sql.DB")
+				}
+				return w.Conn(ctx)
+			}
+		} else {
+			getFreshConn = func(ctx context.Context) (*sql.Conn, error) {
+				return c.Conn(ctx)
+			}
 		}
+
+		c2, err := getFreshConn(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get connection: %w", err)
 		}
+		currentConn = c2
 		conn = c2
 	}
+
+	defer func() {
+		if currentConn != nil {
+			if err := currentConn.Close(); err != nil {
+				db.Logger.Warn("failed to close connection", "err", err)
+			}
+		}
+	}()
 
 	start := time.Now()
 
@@ -225,7 +254,30 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				return nil, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
-				return nil, db.Test()
+				// Reconnect if the pool itself is down. Test is a no-op
+				// when the pool is healthy and only this dedicated conn
+				// died.
+				if testErr := db.Test(); testErr != nil {
+					return nil, testErr
+				}
+				// Swap the dead dedicated conn for a fresh one from the
+				// current pool so the retry doesn't hit the same dead
+				// conn and burn the whole retry budget.
+				if getFreshConn != nil {
+					if currentConn != nil {
+						if closeErr := currentConn.Close(); closeErr != nil {
+							db.Logger.Warn("failed to close stale connection", "err", closeErr)
+						}
+						currentConn = nil
+					}
+					fresh, acqErr := getFreshConn(ctx)
+					if acqErr != nil {
+						return nil, acqErr
+					}
+					currentConn = fresh
+					conn = fresh
+				}
+				return nil, err
 			}
 			return nil, backoff.Permanent(err)
 		}
