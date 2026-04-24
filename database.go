@@ -190,12 +190,17 @@ func New(wUser, wPass, wSchema, wHost string, wPort int,
 	return NewFromDSN(writes.FormatDSN(), reads.FormatDSN())
 }
 
+// sqlOpenFunc is the function openPool uses to open a *sql.DB. It's a
+// package-level variable so tests can substitute a fake that returns a
+// sqlmock-backed pool instead of hitting a real MySQL server.
+var sqlOpenFunc = sql.Open
+
 // openPool opens a MySQL pool against the given DSN, pings it, applies the
 // session timezone, and configures the connection lifetime. On any error
 // after Open the pool is closed so the caller doesn't have to. connType is
 // used only in error messages (e.g. "writes", "reads").
 func openPool(dsn, connType string) (*sql.DB, error) {
-	conn, err := sql.Open("mysql", dsn)
+	conn, err := sqlOpenFunc("mysql", dsn)
 	if err != nil {
 		return nil, err
 	}
