@@ -68,12 +68,16 @@ func mergeParams(caseSensitive bool, params []Params, paramMetas []map[string]pa
 // Takes multiple "sets" of params for convenience, so we don't
 // have to specify params if there aren't any, but each param will
 // override the values of the previous. If there are 2 maps given,
-// both with the key "ID", the last one will be used
+// both with the key "ID", the last one will be used.
+//
+// time.Time params are formatted as naive datetime literals in time.UTC.
+// To format times in a different location, route through a *Database
+// (which carries Loc from the DSN) via db.InterpolateParams.
 func InterpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, tmplFuncs, valuerFuncs, params...)
+	return interpolateParams(query, tmplFuncs, valuerFuncs, time.UTC, params...)
 }
 
-func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, params ...any) (replacedQuery string, mergedParams Params, err error) {
+func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, loc *time.Location, params ...any) (replacedQuery string, mergedParams Params, err error) {
 	if strings.Contains(query, "{{") {
 		convertedParams := make([]Params, 0, len(params))
 		for _, p := range params {
@@ -83,7 +87,7 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 
 		mp, _ := mergeParams(true, convertedParams, nil)
 		cp, _ := convertToParams("params", mp)
-		query, err = execTemplate(query, cp, tmplFuncs, valuerFuncs)
+		query, err = execTemplate(query, cp, tmplFuncs, valuerFuncs, loc)
 		if err != nil {
 			return "", nil, err
 		}
@@ -159,7 +163,7 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 				if !paramInINClause(queryTokens, i) {
 					opts |= marshalOptJSONSlice
 				}
-				b, err := marshal(v, opts, fieldName, valuerFuncs)
+				b, err := marshal(v, opts, fieldName, valuerFuncs, loc)
 				if err != nil {
 					return "", nil, err
 				}
@@ -403,8 +407,11 @@ func paramInINClause(queryTokens []queryToken, paramIdx int) bool {
 	return false
 }
 
+// Marshal formats x as a MySQL literal. time.Time values are formatted as
+// naive datetime literals in time.UTC. To format times in a different
+// location, route through a *Database (which carries Loc from the DSN).
 func Marshal(x any, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
-	return marshal(x, 0, "", valuerFuncs)
+	return marshal(x, 0, "", valuerFuncs, time.UTC)
 }
 
 type marshalOpt uint
@@ -419,8 +426,12 @@ const (
 // marshal keeps the original allocating API so callers outside the insert
 // hot path (Marshal, interpolateParams) don't change. The actual work lives
 // in marshalAppend.
-func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
-	return marshalAppend(nil, x, opts, fieldName, valuerFuncs)
+//
+// loc controls how time.Time values are formatted: the value is converted
+// In(loc) and emitted as a naive datetime literal. Pass time.UTC if no
+// specific location is associated with the caller.
+func marshal(x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.Type]reflect.Value, loc *time.Location) ([]byte, error) {
+	return marshalAppend(nil, x, opts, fieldName, valuerFuncs, loc)
 }
 
 const hexChars = "0123456789abcdef"
@@ -454,7 +465,12 @@ func appendHexString(dst []byte, src string) []byte {
 //
 // Strings and []byte are hex encoded to guarantee no escaping issues can
 // sneak through. The encoding matches marshal byte-for-byte.
-func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
+//
+// loc controls how time.Time values are formatted: the value is converted
+// In(loc) and emitted as a naive datetime literal so the round-trip
+// through go-sql-driver's DST-aware Loc preserves the original instant.
+// time.UTC is used when loc is nil.
+func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerFuncs map[reflect.Type]reflect.Value, loc *time.Location) ([]byte, error) {
 	if (opts&marshalOptDefaultZero) != 0 && isZero(x) {
 		if len(fieldName) != 0 {
 			dst = append(dst, "default(`"...)
@@ -500,7 +516,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 				return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
 			}
 
-			return marshalAppend(dst, returns[0].Interface(), opts, fieldName, valuerFuncs)
+			return marshalAppend(dst, returns[0].Interface(), opts, fieldName, valuerFuncs, loc)
 		}
 	}
 
@@ -560,9 +576,16 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 		if v.IsZero() {
 			return append(dst, "null"...), nil
 		}
-		dst = append(dst, "convert_tz('"...)
-		dst = v.UTC().AppendFormat(dst, "2006-01-02 15:04:05.000000")
-		dst = append(dst, "','UTC',@@session.time_zone)"...)
+		// Emit a naive datetime literal formatted in loc. The driver re-parses
+		// naive DATETIME values through the same Loc on the read side, so the
+		// instant round-trips exactly — including across DST boundaries that
+		// a fixed @@session.time_zone offset would slip on. See #157.
+		if loc == nil {
+			loc = time.UTC
+		}
+		dst = append(dst, '\'')
+		dst = v.In(loc).AppendFormat(dst, "2006-01-02 15:04:05.000000")
+		dst = append(dst, '\'')
 		return dst, nil
 	case civil.Date:
 		if v.IsZero() {
@@ -592,7 +615,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 	v = reflect.ValueOf(x)
 	if v.IsValid() && (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) {
 		if v := v.Elem(); v.IsValid() {
-			return marshalAppend(dst, v.Interface(), opts, fieldName, valuerFuncs)
+			return marshalAppend(dst, v.Interface(), opts, fieldName, valuerFuncs, loc)
 		}
 	}
 
@@ -629,7 +652,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 			if err := returns[1].Interface(); err != nil {
 				return nil, fmt.Errorf("cool-mysql: failed to call valuer func: %w", err.(error))
 			}
-			return marshalAppend(dst, returns[0].Interface(), opts, fieldName, valuerFuncs)
+			return marshalAppend(dst, returns[0].Interface(), opts, fieldName, valuerFuncs, loc)
 		}
 	}
 
@@ -647,7 +670,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call Value on driver.Valuer: %w", err)
 		}
-		return marshalAppend(dst, v, opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v, opts, fieldName, valuerFuncs, loc)
 	}
 
 	if vs, ok := pv.Interface().(Valueser); ok {
@@ -664,7 +687,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 		// Valueser intentionally returns a []driver.Value to be expanded
 		// comma-separated; suppress marshalOptJSONSlice so a 1-element return
 		// like `[]driver.Value{int(s)}` renders as `s`, not `[s]`.
-		return marshalAppend(dst, vs, opts&^marshalOptJSONSlice, fieldName, valuerFuncs)
+		return marshalAppend(dst, vs, opts&^marshalOptJSONSlice, fieldName, valuerFuncs, loc)
 	}
 
 	if isNil(x) {
@@ -674,27 +697,27 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 	k := v.Kind()
 	switch k {
 	case reflect.Bool:
-		return marshalAppend(dst, v.Bool(), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v.Bool(), opts, fieldName, valuerFuncs, loc)
 	case reflect.String:
-		return marshalAppend(dst, v.String(), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v.String(), opts, fieldName, valuerFuncs, loc)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return marshalAppend(dst, v.Int(), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v.Int(), opts, fieldName, valuerFuncs, loc)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return marshalAppend(dst, v.Uint(), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v.Uint(), opts, fieldName, valuerFuncs, loc)
 	case reflect.Complex64, reflect.Complex128:
-		return marshalAppend(dst, v.Complex(), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v.Complex(), opts, fieldName, valuerFuncs, loc)
 	case reflect.Float32, reflect.Float64:
-		return marshalAppend(dst, v.Float(), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, v.Float(), opts, fieldName, valuerFuncs, loc)
 	case reflect.Struct, reflect.Map:
 		j, err := json.Marshal(x)
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to marshal struct to json: %w", err)
 		}
 
-		return marshalAppend(dst, json.RawMessage(j), opts, fieldName, valuerFuncs)
+		return marshalAppend(dst, json.RawMessage(j), opts, fieldName, valuerFuncs, loc)
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return marshalAppend(dst, v.Bytes(), opts, fieldName, valuerFuncs)
+			return marshalAppend(dst, v.Bytes(), opts, fieldName, valuerFuncs, loc)
 		}
 
 		if opts&marshalOptJSONSlice != 0 {
@@ -703,7 +726,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 				return nil, fmt.Errorf("cool-mysql: failed to marshal slice to json: %w", err)
 			}
 
-			return marshalAppend(dst, json.RawMessage(j), opts, fieldName, valuerFuncs)
+			return marshalAppend(dst, json.RawMessage(j), opts, fieldName, valuerFuncs, loc)
 		}
 
 		if opts&marshalOptWrapSliceWithParens != 0 {
@@ -720,7 +743,7 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 			}
 
 			var err error
-			dst, err = marshalAppend(dst, v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens, fieldName, valuerFuncs)
+			dst, err = marshalAppend(dst, v.Index(i).Interface(), opts|marshalOptWrapSliceWithParens, fieldName, valuerFuncs, loc)
 			if err != nil {
 				return nil, err
 			}
@@ -846,14 +869,14 @@ func parseName(s string) string {
 	return backtickReplacer.Replace(s)
 }
 
-func execTemplate(q string, params Params, additionalTmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value) (string, error) {
+func execTemplate(q string, params Params, additionalTmplFuncs template.FuncMap, valuerFuncs map[reflect.Type]reflect.Value, loc *time.Location) (string, error) {
 	if !strings.Contains(q, "{{") {
 		return q, nil
 	}
 
 	tmplFuncs := template.FuncMap{
 		"marshal": func(x any) (string, error) {
-			b, err := marshal(x, 0, "", valuerFuncs)
+			b, err := marshal(x, 0, "", valuerFuncs, loc)
 			if err != nil {
 				return "", err
 			}

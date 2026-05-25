@@ -189,10 +189,14 @@ func TestNewFromDSNDualPool_ReadsOpenFailureClosesWrites(t *testing.T) {
 	require.NoError(t, writesMock.ExpectationsWereMet())
 }
 
-// applyTimeZoneToConfig is the per-conn hook wired via BeforeConnect (see
-// openPool) and is the core of the fix for issue #152. These tests
-// exercise it directly because BeforeConnect fires inside the driver's
-// Connect flow, which sqlmock doesn't simulate.
+// applyTimeZoneToConfig is the per-conn hook wired via BeforeConnect
+// (see openPool). It writes the current cfg.Loc offset into
+// Params["time_zone"] so MySQL's session time zone matches the Loc
+// the driver parses reads through — which keeps TIMESTAMP columns and
+// NOW()/CURRENT_TIMESTAMP consistent with the naive Loc-formatted
+// DATETIME literals the marshaller emits (#157). These tests
+// exercise the hook directly because BeforeConnect fires inside the
+// driver's Connect flow, which sqlmock doesn't simulate.
 
 func TestApplyTimeZoneToConfig_UTCLocProducesZeroOffset(t *testing.T) {
 	cfg, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")

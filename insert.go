@@ -222,6 +222,7 @@ DUPE_KEY_SEARCH:
 
 	multiCol := isMultiColumn(rt)
 	valuerFuncs := in.db.valuerFuncs
+	loc := in.db.location()
 
 	buildRow := func(row reflect.Value) error {
 		rowBuf = append(rowBuf[:0], '(')
@@ -237,7 +238,7 @@ DUPE_KEY_SEARCH:
 			v := r.Interface()
 
 			var err error
-			rowBuf, err = marshalAppend(rowBuf, v, opts|marshalOptJSONSlice, fieldName, valuerFuncs)
+			rowBuf, err = marshalAppend(rowBuf, v, opts|marshalOptJSONSlice, fieldName, valuerFuncs, loc)
 			if err != nil {
 				return fmt.Errorf("failed to marshal value: %w", err)
 			}
