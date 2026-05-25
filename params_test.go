@@ -280,13 +280,24 @@ func Test_paramInINClause(t *testing.T) {
 		{"@@x", false},
 		{"WHERE (a = @@x)", false},
 		{"MY_FUNC(@@x)", false},
-		// Param nested inside an IN's subquery shares the IN's paren, so it
-		// reports true. Harmless: this only affects slice values, and a slice
-		// at a scalar position (= comparison) would be invalid SQL either way.
-		{"WHERE a IN (SELECT b FROM t WHERE c = @@x)", true},
+		// Param inside an IN's subquery is NOT in the IN's value list — the
+		// SELECT at depth 0 walking back tells us we're in subquery scope.
+		{"WHERE a IN (SELECT b FROM t WHERE c = @@x)", false},
+		// SELECT at nested depth (e.g. the subquery is itself one of several
+		// IN-list elements) doesn't disqualify a sibling param.
+		{"WHERE a IN ((SELECT b FROM t), @@x)", true},
 		// Wrapping paren has nothing meaningful before it.
 		{"(@@x)", false},
 		{" (@@x)", false},
+		// Inline SQL comments between IN and ( must not break detection.
+		{"WHERE a IN /* ids */ (@@x)", true},
+		{"WHERE a IN -- ids\n (@@x)", true},
+		{"WHERE a IN -- ids\r (@@x)", true},
+		{"WHERE a IN # ids\n (@@x)", true},
+		{"WHERE a IN # ids\r (@@x)", true},
+		// MySQL requires `--` to be followed by whitespace to be a comment;
+		// otherwise it's arithmetic. We must still see and replace later params.
+		{"col--@@x", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
@@ -304,6 +315,51 @@ func Test_paramInINClause(t *testing.T) {
 			if got := paramInINClause(tokens, idx); got != tt.want {
 				t.Errorf("paramInINClause(%q) = %v, want %v", tt.query, got, tt.want)
 			}
+		})
+	}
+}
+
+type singleValueser struct{ v int }
+
+func (s singleValueser) MySQLValues() ([]driver.Value, error) {
+	return []driver.Value{s.v}, nil
+}
+
+// Test_InterpolateParams_ValueserScalar guards against Valueser returning a
+// single-element []driver.Value getting JSON-encoded (as `[7]`) instead of
+// expanded as the scalar `7`.
+func Test_InterpolateParams_ValueserScalar(t *testing.T) {
+	got, _, err := InterpolateParams("SET col = @@v", nil, nil, Params{"v": singleValueser{v: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SET col = 7"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Test_InterpolateParams_DoubleDashArithmetic confirms `--` only triggers a
+// SQL line comment when followed by whitespace; otherwise it's arithmetic
+// (`col--@@x` is `col - (-@@x)`) and the param must still be interpolated.
+func Test_InterpolateParams_DoubleDashArithmetic(t *testing.T) {
+	got, _, err := InterpolateParams("SELECT col--@@x", nil, nil, Params{"x": 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT col--3"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Test_parseQuery_UnterminatedBlockComment ensures the tokenizer doesn't panic
+// on `/*` at end-of-input — it should consume the rest as a misc token and
+// let the DB reject the malformed query.
+func Test_parseQuery_UnterminatedBlockComment(t *testing.T) {
+	for _, q := range []string{"/*", "SELECT 1 /*", "SELECT 1 /*a*"} {
+		t.Run(q, func(t *testing.T) {
+			_ = parseQuery(q)
 		})
 	}
 }

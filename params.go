@@ -308,6 +308,31 @@ func parseQuery(query string) []queryToken {
 			next()
 
 			pushToken(queryTokenKindString)
+		case b == '/' && i+1 < l && query[i+1] == '*':
+			nextN(2)
+			for i+1 < l && (query[i] != '*' || query[i+1] != '/') {
+				next()
+			}
+			if i+1 < l {
+				next()
+			} else if i >= l {
+				// Unterminated `/*` at EOF — clamp so the misc token's slice
+				// stays in bounds. The trailing next() advances to l.
+				i = l - 1
+			}
+			pushToken(queryTokenKindMisc)
+		case b == '-' && i+2 < l && query[i+1] == '-' && (query[i+2] == ' ' || query[i+2] == '\t' || query[i+2] == '\n' || query[i+2] == '\r'):
+			for i < l && query[i] != '\n' && query[i] != '\r' {
+				next()
+			}
+			prev()
+			pushToken(queryTokenKindMisc)
+		case b == '#':
+			for i < l && query[i] != '\n' && query[i] != '\r' {
+				next()
+			}
+			prev()
+			pushToken(queryTokenKindMisc)
 		case b == '(', b == ')':
 			pushToken(queryTokenKindParen)
 		case b == ',':
@@ -338,19 +363,23 @@ func parseQuery(query string) []queryToken {
 }
 
 // paramInINClause reports whether the param token at queryTokens[paramIdx] is
-// directly wrapped by an `IN (...)` or `NOT IN (...)` list. Used to decide
-// whether a slice value should marshal as a comma-separated value list or as
-// a JSON array — the former is correct for IN-clauses, the latter for column
-// assignments (SET col=@@list, VALUES(@@list)).
+// directly wrapped by an `IN (...)` or `NOT IN (...)` value-list. Used to
+// decide whether a slice value should marshal as a comma-separated value list
+// or as a JSON array — the former is correct for IN-clauses, the latter for
+// column assignments (SET col=@@list, VALUES(@@list)).
 //
 // The walk tracks paren depth so nested parens inside the IN list (e.g.
-// `IN (a, (b,c), @@x)`) don't fool it into matching the inner `(`. Only the
-// open paren that actually wraps the param is inspected, and only the
-// immediately preceding non-misc token determines the answer.
+// `IN (a, (b,c), @@x)`) don't fool it into matching the inner `(`. A `SELECT`
+// keyword at our own depth (before the wrapping paren) means the param lives
+// inside a subquery, not in the IN list — e.g. `IN (SELECT c FROM t WHERE
+// c=@@x)` — so we return false there.
 func paramInINClause(queryTokens []queryToken, paramIdx int) bool {
 	depth := 0
 	for j := paramIdx - 1; j >= 0; j-- {
 		t := queryTokens[j]
+		if depth == 0 && t.kind == queryTokenKindWord && strings.EqualFold(t.string, "select") {
+			return false
+		}
 		if t.kind != queryTokenKindParen {
 			continue
 		}
@@ -632,7 +661,10 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call MySQLValues on mysql.MySQLValues: %w", err)
 		}
-		return marshalAppend(dst, vs, opts, fieldName, valuerFuncs)
+		// Valueser intentionally returns a []driver.Value to be expanded
+		// comma-separated; suppress marshalOptJSONSlice so a 1-element return
+		// like `[]driver.Value{int(s)}` renders as `s`, not `[s]`.
+		return marshalAppend(dst, vs, opts&^marshalOptJSONSlice, fieldName, valuerFuncs)
 	}
 
 	if isNil(x) {
