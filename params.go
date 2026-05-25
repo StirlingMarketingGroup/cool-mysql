@@ -376,19 +376,24 @@ func parseQuery(query string) []queryToken {
 // User-defined functions are conservatively excluded — without knowing the
 // argument shape, JSON encoding matches the v0.0.26 Upsert UPDATE-path fix
 // (#155) for any caller that wraps a slice in a custom function call.
+// json_object is intentionally excluded: it takes alternating key/value
+// pairs, so expanding a Go slice into its arg list almost never matches
+// caller intent (`json_object('k', @@slice)` would emit
+// `json_object('k', 1, 2, 3)` → odd-arg error or accidental `{"k":1,"2":3}`).
+// Users who want a JSON array as a value should wrap explicitly:
+// `json_object('k', json_array(@@slice))`.
 var commaSeparatedArgFuncs = map[string]struct{}{
-	"in":          {},
-	"json_array":  {},
-	"json_object": {},
-	"concat":      {},
-	"concat_ws":   {},
-	"coalesce":    {},
-	"greatest":    {},
-	"least":       {},
-	"field":       {},
-	"elt":         {},
-	"make_set":    {},
-	"interval":    {},
+	"in":         {},
+	"json_array": {},
+	"concat":     {},
+	"concat_ws":  {},
+	"coalesce":   {},
+	"greatest":   {},
+	"least":      {},
+	"field":      {},
+	"elt":        {},
+	"make_set":   {},
+	"interval":   {},
 }
 
 // paramInCommaSeparatedList reports whether the param token at

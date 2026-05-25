@@ -367,7 +367,11 @@ func Test_paramInCommaSeparatedList(t *testing.T) {
 		{"SELECT coalesce(@@x, 'd')", true},
 		{"SELECT greatest(@@x)", true},
 		{"SELECT least(1, @@x)", true},
-		{"SELECT json_object('k', @@x)", true},
+		// json_object takes alternating key/value pairs — expanding a slice
+		// into its arg list almost never matches caller intent, so it falls
+		// through to JSON encoding. Callers wanting a JSON-array value
+		// should wrap explicitly: `json_object('k', json_array(@@x))`.
+		{"SELECT json_object('k', @@x)", false},
 		{"SELECT field(col, @@x)", true},
 		{"SELECT elt(1, @@x)", true},
 		{"SELECT make_set(7, @@x)", true},
@@ -376,6 +380,10 @@ func Test_paramInCommaSeparatedList(t *testing.T) {
 		// slice @@x JSON-encodes (the right thing if someone passes a slice
 		// they want treated as a JSON array document).
 		{"SELECT json_extract(@@x, '$.foo')", false},
+		// Token immediately before the wrapping `(` is non-word (here a
+		// preceding `)`, modeling `foo()(@@x)` chained-call style) — bail
+		// to JSON encoding rather than guessing.
+		{")(@@x)", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
