@@ -53,6 +53,14 @@ type Database struct {
 	cache  Cache
 	locker Locker
 
+	// Loc is the time.Location used to format time.Time values when building
+	// SQL literals. It is sourced from the DSN's `loc` parameter at
+	// construction time (defaulting to time.UTC) and is matched by
+	// go-sql-driver's own parsing on the read side, so a write/read
+	// round-trip preserves the original instant — including across DST.
+	// Constructors that take no DSN default Loc to time.UTC. See #157.
+	Loc *time.Location
+
 	// DisableForeignKeyChecks only affects foreign keys for transactions
 	DisableForeignKeyChecks bool
 
@@ -78,29 +86,33 @@ func (db *Database) Clone() *Database {
 	return &clone
 }
 
-// applyTimeZoneToConfig writes the current Loc offset to
-// Params["time_zone"] as a SQL-quoted offset string (e.g. "'+00:00'").
-// go-sql-driver passes Params verbatim into the `SET <k> = <v>` it runs
-// at connection init, so the single quotes must be part of the value.
+// applyTimeZoneToConfig pins Params["time_zone"] to '+00:00' so every
+// pooled conn has a predictable session time zone regardless of the
+// server default. go-sql-driver passes Params verbatim into the `SET
+// <k> = <v>` it runs at conn init, so the single quotes must be part
+// of the value.
 //
-// This is wired via BeforeConnect (see openPool) so it runs on every
-// new conn. Per-conn recomputation matters for Locs with DST — a pool
-// opened in EST (-05:00) would otherwise keep handing out `-05:00` to
-// every new conn after the DST transition to EDT (-04:00). See #152.
+// Time literals built by this library are formatted as naive
+// datetimes in cfg.Loc (see marshalAppend's time.Time case), so the
+// session time zone does not participate in the write/read round-trip
+// for DATETIME columns at all — pinning it to UTC just keeps NOW(),
+// CURRENT_TIMESTAMP, and TIMESTAMP-column behavior deterministic.
 //
-// No-op if Loc is nil or Params["time_zone"] is already set: caller
-// intent wins over the Loc-derived default.
+// Was previously the source of issue #157: deriving the offset from
+// cfg.Loc at process start handed every conn a single DST snapshot,
+// so writes used a fixed offset while reads used go-sql-driver's
+// DST-aware Loc, slipping by an hour across DST boundaries.
+//
+// No-op if Params["time_zone"] is already set: caller intent wins.
 func applyTimeZoneToConfig(cfg *mysql.Config) {
-	if cfg.Loc == nil || cfg.Params["time_zone"] != "" {
+	if cfg.Params["time_zone"] != "" {
 		return
 	}
-	_, offset := time.Now().In(cfg.Loc).Zone()
-	tzStr := time.Unix(0, 0).In(time.FixedZone("", offset)).Format("-07:00")
 
 	if cfg.Params == nil {
 		cfg.Params = make(map[string]string)
 	}
-	cfg.Params["time_zone"] = "'" + tzStr + "'"
+	cfg.Params["time_zone"] = "'+00:00'"
 }
 
 func (db *Database) WriterWithSubdir(subdir string) *Database {
@@ -282,6 +294,7 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 	}
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(writesDSN.MaxAllowedPacket)
+	db.Loc = locOrUTC(writesDSN.Loc)
 
 	if reads != writes {
 		readsConn, err := openPool(reads, "reads", db.MaxConnectionTime)
@@ -329,6 +342,7 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 	}
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(parsed.MaxAllowedPacket)
+	db.Loc = locOrUTC(parsed.Loc)
 
 	readsConn, err := openPool(dsn, "reads", db.MaxConnectionTime)
 	if err != nil {
@@ -344,11 +358,16 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 // NewFromConn creates a new Database given existing *sql.DB connections.
 // It will query the writesConn for @@max_allowed_packet to set MaxInsertSize.
 // If readsConn == writesConn, both Reads and Writes share the same pool.
+//
+// Loc is set to time.UTC because we don't have a DSN to read it from. If
+// the caller built the pools with a non-UTC loc, set db.Loc explicitly so
+// time.Time literals format in a location matching the read-side parser.
 func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	db := new(Database)
 	db.testMx = new(sync.Mutex)
 	db.MaxExecutionTime = MaxExecutionTime
 	db.MaxConnectionTime = MaxConnectionTime
+	db.Loc = time.UTC
 
 	// 1) Pull the server's max_allowed_packet value
 	var maxPacket int64
@@ -392,6 +411,7 @@ func NewLocalWriter(path string) (*Database, error) {
 	db.testMx = new(sync.Mutex)
 	db.MaxExecutionTime = MaxExecutionTime
 	db.MaxConnectionTime = MaxConnectionTime
+	db.Loc = time.UTC
 
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(1 << 20)
@@ -411,6 +431,7 @@ func NewWriter(w io.Writer) (*Database, error) {
 	db.testMx = new(sync.Mutex)
 	db.MaxExecutionTime = MaxExecutionTime
 	db.MaxConnectionTime = MaxConnectionTime
+	db.Loc = time.UTC
 
 	db.MaxInsertSize = new(synct[int])
 	db.MaxInsertSize.Set(1 << 20)
@@ -671,9 +692,25 @@ func (db *Database) UpsertContext(ctx context.Context, insert string, uniqueColu
 }
 
 func (db *Database) InterpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return InterpolateParams(query, db.tmplFuncs, db.valuerFuncs, params...)
+	return interpolateParams(query, db.tmplFuncs, db.valuerFuncs, db.location(), params...)
 }
 
 func (db *Database) interpolateParams(query string, params ...any) (replacedQuery string, normalizedParams Params, err error) {
-	return interpolateParams(query, db.tmplFuncs, db.valuerFuncs, params...)
+	return interpolateParams(query, db.tmplFuncs, db.valuerFuncs, db.location(), params...)
+}
+
+// location returns db.Loc, defaulting to time.UTC. Centralized so callers
+// that build SQL literals never have to nil-check.
+func (db *Database) location() *time.Location {
+	return locOrUTC(db.Loc)
+}
+
+// locOrUTC returns loc if non-nil, otherwise time.UTC. go-sql-driver
+// treats a nil Loc the same way, so matching that contract here keeps
+// our literal formatting in sync with what the driver will parse back.
+func locOrUTC(loc *time.Location) *time.Location {
+	if loc == nil {
+		return time.UTC
+	}
+	return loc
 }

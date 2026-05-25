@@ -556,7 +556,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
 			},
-			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
+			want: []byte("'2020-01-01 00:00:00.000000'"),
 		},
 		{
 			name: "civil date",
@@ -568,7 +568,7 @@ func Test_marshal(t *testing.T) {
 					}),
 				},
 			},
-			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
+			want: []byte("'2020-01-01 00:00:00.000000'"),
 		},
 		{
 			name: "civil date ptr",
@@ -580,7 +580,7 @@ func Test_marshal(t *testing.T) {
 					}),
 				},
 			},
-			want: []byte("convert_tz('2020-01-01 00:00:00.000000','UTC',@@session.time_zone)"),
+			want: []byte("'2020-01-01 00:00:00.000000'"),
 		},
 		{
 			name: "civil date nil ptr",
@@ -683,7 +683,7 @@ func Test_marshal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := marshal(tt.args.x, tt.args.opt, tt.args.fieldName, tt.args.valuerFuncs)
+			got, err := marshal(tt.args.x, tt.args.opt, tt.args.fieldName, tt.args.valuerFuncs, time.UTC)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("marshal() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -781,7 +781,7 @@ func Test_execTemplate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := execTemplate(tt.args.q, tt.args.params, nil, nil)
+			got, err := execTemplate(tt.args.q, tt.args.params, nil, nil, time.UTC)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("execTemplate() error = %v, wantErr %v", err, tt.wantErr)
 				return

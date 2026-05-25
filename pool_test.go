@@ -189,60 +189,29 @@ func TestNewFromDSNDualPool_ReadsOpenFailureClosesWrites(t *testing.T) {
 	require.NoError(t, writesMock.ExpectationsWereMet())
 }
 
-// applyTimeZoneToConfig is the per-conn hook wired via BeforeConnect (see
-// openPool) and is the core of the fix for issue #152. These tests
-// exercise it directly because BeforeConnect fires inside the driver's
-// Connect flow, which sqlmock doesn't simulate.
+// applyTimeZoneToConfig is the per-conn hook wired via BeforeConnect
+// (see openPool). It pins @@session.time_zone to '+00:00' so NOW(),
+// CURRENT_TIMESTAMP, and TIMESTAMP-column reads are deterministic
+// regardless of the server default — the marshaller now formats
+// time.Time values as naive Loc-formatted literals (see #157), so the
+// session time zone is no longer load-bearing for DATETIME round-trips.
+// These tests exercise the hook directly because BeforeConnect fires
+// inside the driver's Connect flow, which sqlmock doesn't simulate.
 
-func TestApplyTimeZoneToConfig_UTCLocProducesZeroOffset(t *testing.T) {
+func TestApplyTimeZoneToConfig_PinsToUTCRegardlessOfLoc(t *testing.T) {
 	cfg, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")
 	require.NoError(t, err)
-
 	applyTimeZoneToConfig(cfg)
 	require.Equal(t, "'+00:00'", cfg.Params["time_zone"])
-}
 
-func TestApplyTimeZoneToConfig_NonUTCLocUsesCurrentOffset(t *testing.T) {
+	// A DST-aware Loc must NOT change the answer — the previous behavior
+	// of deriving the offset from Loc was the source of issue #157.
 	loc, err := time.LoadLocation("America/New_York")
 	require.NoError(t, err)
-
-	cfg, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")
-	require.NoError(t, err)
+	cfg.Params = nil
 	cfg.Loc = loc
-
 	applyTimeZoneToConfig(cfg)
-
-	_, offset := time.Now().In(loc).Zone()
-	expected := "'" + time.Unix(0, 0).In(time.FixedZone("", offset)).Format("-07:00") + "'"
-	require.Equal(t, expected, cfg.Params["time_zone"])
-}
-
-// TestApplyTimeZoneToConfig_RecomputesPerInvocation mimics what
-// BeforeConnect does across a DST transition: the same base cfg is
-// cloned and mutated per conn, so simulating the two offsets on
-// separate cfg copies must yield the two different offsets. This is
-// the DST-safety guarantee openPool provides by wiring the hook
-// per-conn rather than baking the offset into the DSN once.
-func TestApplyTimeZoneToConfig_RecomputesPerInvocation(t *testing.T) {
-	winter := time.FixedZone("EST", -5*60*60)
-	summer := time.FixedZone("EDT", -4*60*60)
-
-	base, err := mysqldrv.ParseDSN("user:pass@tcp(localhost:3306)/db?parseTime=true&loc=UTC")
-	require.NoError(t, err)
-
-	winterCfg := base.Clone()
-	winterCfg.Loc = winter
-	applyTimeZoneToConfig(winterCfg)
-	require.Equal(t, "'-05:00'", winterCfg.Params["time_zone"])
-
-	summerCfg := base.Clone()
-	summerCfg.Loc = summer
-	applyTimeZoneToConfig(summerCfg)
-	require.Equal(t, "'-04:00'", summerCfg.Params["time_zone"])
-
-	// The base cfg's Params map must be untouched — BeforeConnect
-	// scopes mutation to the per-conn clone.
-	require.Empty(t, base.Params["time_zone"])
+	require.Equal(t, "'+00:00'", cfg.Params["time_zone"])
 }
 
 func TestApplyTimeZoneToConfig_PreservesExplicitParam(t *testing.T) {
@@ -254,11 +223,10 @@ func TestApplyTimeZoneToConfig_PreservesExplicitParam(t *testing.T) {
 		"an explicit caller-provided time_zone must be preserved verbatim")
 }
 
-func TestApplyTimeZoneToConfig_NilLocNoop(t *testing.T) {
+func TestApplyTimeZoneToConfig_NilParamsInitializes(t *testing.T) {
 	cfg := &mysqldrv.Config{}
 	applyTimeZoneToConfig(cfg)
-	require.Empty(t, cfg.Params["time_zone"])
-	require.Nil(t, cfg.Params)
+	require.Equal(t, "'+00:00'", cfg.Params["time_zone"])
 }
 
 // TestOpenPool_InvalidDSNReturnsError covers the ParseDSN error branch
