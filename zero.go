@@ -14,7 +14,7 @@ func isZero(v any) bool {
 	rv := reflect.ValueOf(v)
 
 	pv := rv
-	if rv.Kind() != reflect.Ptr {
+	if rv.Kind() != reflect.Pointer {
 		pv = reflect.New(rv.Type())
 		pv.Elem().Set(rv)
 	}

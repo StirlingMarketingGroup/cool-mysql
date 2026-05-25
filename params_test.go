@@ -284,6 +284,9 @@ func Test_paramInINClause(t *testing.T) {
 		// reports true. Harmless: this only affects slice values, and a slice
 		// at a scalar position (= comparison) would be invalid SQL either way.
 		{"WHERE a IN (SELECT b FROM t WHERE c = @@x)", true},
+		// Wrapping paren has nothing meaningful before it.
+		{"(@@x)", false},
+		{" (@@x)", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {

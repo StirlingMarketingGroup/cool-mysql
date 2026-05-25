@@ -260,7 +260,7 @@ DUPE_KEY_SEARCH:
 
 				if colOpts[col].insertDefault {
 					pv := v
-					if v.Kind() != reflect.Ptr {
+					if v.Kind() != reflect.Pointer {
 						pv = reflect.New(v.Type())
 						pv.Elem().Set(v)
 					}

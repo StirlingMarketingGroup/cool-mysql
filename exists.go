@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha3"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/go-sql-driver/mysql"
-	"golang.org/x/crypto/sha3"
 )
 
 // exists efficiently checks if there are any rows in the given query
