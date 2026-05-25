@@ -53,12 +53,23 @@ type Database struct {
 	cache  Cache
 	locker Locker
 
-	// Loc is the time.Location used to format time.Time values when building
-	// SQL literals. It is sourced from the DSN's `loc` parameter at
-	// construction time (defaulting to time.UTC) and is matched by
-	// go-sql-driver's own parsing on the read side, so a write/read
-	// round-trip preserves the original instant — including across DST.
-	// Constructors that take no DSN default Loc to time.UTC. See #157.
+	// Loc is the time.Location used to format time.Time values when
+	// building SQL literals. It is sourced from the DSN's `loc`
+	// parameter at construction time (defaulting to time.UTC) and is
+	// matched by go-sql-driver's own parsing on the read side, so a
+	// write/read round-trip preserves the original instant —
+	// including across DST. Constructors that take no DSN default Loc
+	// to time.UTC. See #157.
+	//
+	// The BeforeConnect hook installed by openPool also pins
+	// @@session.time_zone to Loc's current offset on every new conn,
+	// so TIMESTAMP columns and NOW() / CURRENT_TIMESTAMP stay
+	// consistent with the naive Loc-formatted DATETIME literals the
+	// marshaller emits. The unavoidable edge case is a single
+	// connection that lives across a DST transition: TIMESTAMP writes
+	// through that one conn drift by an hour until the pool cycles it
+	// (controlled by MaxConnectionTime). DATETIME columns are
+	// unaffected — they use Loc on both sides and ignore session.tz.
 	Loc *time.Location
 
 	// DisableForeignKeyChecks only affects foreign keys for transactions
@@ -86,33 +97,45 @@ func (db *Database) Clone() *Database {
 	return &clone
 }
 
-// applyTimeZoneToConfig pins Params["time_zone"] to '+00:00' so every
-// pooled conn has a predictable session time zone regardless of the
-// server default. go-sql-driver passes Params verbatim into the `SET
-// <k> = <v>` it runs at conn init, so the single quotes must be part
-// of the value.
+// applyTimeZoneToConfig writes cfg.Loc's current offset to
+// Params["time_zone"] as a SQL-quoted offset string (e.g. "'-05:00'").
+// go-sql-driver passes Params verbatim into the `SET <k> = <v>` it
+// runs at conn init, so the single quotes must be part of the value.
 //
-// Time literals built by this library are formatted as naive
-// datetimes in cfg.Loc (see marshalAppend's time.Time case), so the
-// session time zone does not participate in the write/read round-trip
-// for DATETIME columns at all — pinning it to UTC just keeps NOW(),
-// CURRENT_TIMESTAMP, and TIMESTAMP-column behavior deterministic.
+// The marshaller emits time.Time as a naive datetime literal formatted
+// in cfg.Loc (see marshalAppend's time.Time case), which makes DATETIME
+// columns round-trip correctly across DST regardless of what
+// session.time_zone is — that was the #157 fix. session.time_zone is
+// still load-bearing for TIMESTAMP columns and NOW() /
+// CURRENT_TIMESTAMP, though: MySQL uses it to convert the naive literal
+// into the UTC instant it stores for TIMESTAMP, and to format the wall
+// clock NOW() returns. Pinning it to match cfg.Loc's current offset
+// keeps all three (DATETIME, TIMESTAMP, NOW()) consistent under a
+// non-UTC Loc, which is what most callers actually want and what was
+// broken when a previous revision of this hook hard-coded '+00:00'.
 //
-// Was previously the source of issue #157: deriving the offset from
-// cfg.Loc at process start handed every conn a single DST snapshot,
-// so writes used a fixed offset while reads used go-sql-driver's
-// DST-aware Loc, slipping by an hour across DST boundaries.
+// The remaining edge case is a connection that lives across a DST
+// boundary: its session.time_zone is the offset at conn-open time, so
+// new TIMESTAMP writes through that conn drift by an hour until the
+// pool cycles it. BeforeConnect re-fires per conn (see openPool), so
+// short-lived conns and pools with a finite MaxConnectionTime
+// converge. Fully eliminating that drift requires a named-zone
+// session.time_zone, which MySQL only supports when the server's
+// `mysql.time_zone_name` table is populated — out of our control.
 //
-// No-op if Params["time_zone"] is already set: caller intent wins.
+// No-op if cfg.Loc is nil or Params["time_zone"] is already set:
+// caller intent wins over the Loc-derived default.
 func applyTimeZoneToConfig(cfg *mysql.Config) {
-	if cfg.Params["time_zone"] != "" {
+	if cfg.Loc == nil || cfg.Params["time_zone"] != "" {
 		return
 	}
+	_, offset := time.Now().In(cfg.Loc).Zone()
+	tzStr := time.Unix(0, 0).In(time.FixedZone("", offset)).Format("-07:00")
 
 	if cfg.Params == nil {
 		cfg.Params = make(map[string]string)
 	}
-	cfg.Params["time_zone"] = "'+00:00'"
+	cfg.Params["time_zone"] = "'" + tzStr + "'"
 }
 
 func (db *Database) WriterWithSubdir(subdir string) *Database {
