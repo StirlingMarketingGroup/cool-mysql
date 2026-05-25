@@ -245,6 +245,61 @@ func TestInterpolateParams(t *testing.T) {
 			wantReplacedQuery:    "SELECT * FROM `t` WHERE `c` IN (1, (2+3), 4,5)",
 			wantNormalizedParams: Params{"list": []int{4, 5}},
 		},
+		// Issue #159: slice params inside json_array(...) were getting
+		// JSON-encoded after #155, so `json_array(@@ids)` rendered as
+		// `json_array("[1,2,3]")` = `["[1,2,3]"]` instead of `[1,2,3]`. The
+		// downstream `json_overlaps(col, json_array(@@ids))` would never match.
+		{
+			name: "slice in json_array comma separates",
+			args: args{
+				query:  "select json_array(@@ids)",
+				params: []any{Params{"ids": []int{2459149}}},
+			},
+			wantReplacedQuery:    "select json_array(2459149)",
+			wantNormalizedParams: Params{"ids": []int{2459149}},
+		},
+		{
+			name: "slice in json_overlaps→json_array nested comma separates",
+			args: args{
+				query:  "select json_overlaps(`c`, json_array(@@ids))",
+				params: []any{Params{"ids": []int{1, 2, 3}}},
+			},
+			wantReplacedQuery:    "select json_overlaps(`c`, json_array(1,2,3))",
+			wantNormalizedParams: Params{"ids": []int{1, 2, 3}},
+		},
+		{
+			name: "string slice in concat comma separates",
+			args: args{
+				query:  "select concat(@@parts)",
+				params: []any{Params{"parts": []string{"a", "b", "c"}}},
+			},
+			wantReplacedQuery: "select concat(" +
+				"_utf8mb4 0x" + hex.EncodeToString([]byte("a")) + " collate utf8mb4_unicode_ci," +
+				"_utf8mb4 0x" + hex.EncodeToString([]byte("b")) + " collate utf8mb4_unicode_ci," +
+				"_utf8mb4 0x" + hex.EncodeToString([]byte("c")) + " collate utf8mb4_unicode_ci)",
+			wantNormalizedParams: Params{"parts": []string{"a", "b", "c"}},
+		},
+		{
+			name: "scalar in json_array unchanged",
+			args: args{
+				query:  "select json_array(@@id)",
+				params: []any{Params{"id": 2459149}},
+			},
+			wantReplacedQuery:    "select json_array(2459149)",
+			wantNormalizedParams: Params{"id": 2459149},
+		},
+		// User-defined functions stay JSON-encoded — we can't know the arg
+		// shape, and that matches the v0.0.26 fix for any caller wrapping a
+		// slice column-value in a custom function.
+		{
+			name: "slice in unknown function json encodes",
+			args: args{
+				query:  "select MY_FUNC(@@ids)",
+				params: []any{Params{"ids": []int{1, 2}}},
+			},
+			wantReplacedQuery:    "select MY_FUNC(_utf8mb4 0x" + hex.EncodeToString([]byte(`[1,2]`)) + " collate utf8mb4_unicode_ci)",
+			wantNormalizedParams: Params{"ids": []int{1, 2}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -263,7 +318,7 @@ func TestInterpolateParams(t *testing.T) {
 	}
 }
 
-func Test_paramInINClause(t *testing.T) {
+func Test_paramInCommaSeparatedList(t *testing.T) {
 	tests := []struct {
 		query string
 		want  bool
@@ -298,6 +353,29 @@ func Test_paramInINClause(t *testing.T) {
 		// MySQL requires `--` to be followed by whitespace to be a comment;
 		// otherwise it's arithmetic. We must still see and replace later params.
 		{"col--@@x", false},
+		// Known variadic SQL functions expand slice params comma-separated.
+		// json_array is the main case from issue #159 — json_overlaps was
+		// silently filtering out the user's own slice rows because the inner
+		// json_array(@@slice) was JSON-encoding the slice.
+		{"SELECT json_array(@@x)", true},
+		{"select JSON_ARRAY(@@x)", true},
+		{"SELECT json_array(1, @@x, 3)", true},
+		{"WHERE json_overlaps(col, json_array(@@x))", true},
+		{"SELECT concat(@@x)", true},
+		{"SELECT concat('a', @@x, 'b')", true},
+		{"SELECT concat_ws('-', @@x)", true},
+		{"SELECT coalesce(@@x, 'd')", true},
+		{"SELECT greatest(@@x)", true},
+		{"SELECT least(1, @@x)", true},
+		{"SELECT json_object('k', @@x)", true},
+		{"SELECT field(col, @@x)", true},
+		{"SELECT elt(1, @@x)", true},
+		{"SELECT make_set(7, @@x)", true},
+		{"SELECT interval(@@x, 1, 2, 3)", true},
+		// JSON_EXTRACT takes a JSON doc and a path — not in the allowlist, so
+		// slice @@x JSON-encodes (the right thing if someone passes a slice
+		// they want treated as a JSON array document).
+		{"SELECT json_extract(@@x, '$.foo')", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
@@ -312,8 +390,8 @@ func Test_paramInINClause(t *testing.T) {
 			if idx < 0 {
 				t.Fatalf("no param token found in %q", tt.query)
 			}
-			if got := paramInINClause(tokens, idx); got != tt.want {
-				t.Errorf("paramInINClause(%q) = %v, want %v", tt.query, got, tt.want)
+			if got := paramInCommaSeparatedList(tokens, idx); got != tt.want {
+				t.Errorf("paramInCommaSeparatedList(%q) = %v, want %v", tt.query, got, tt.want)
 			}
 		})
 	}

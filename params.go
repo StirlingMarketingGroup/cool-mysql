@@ -156,11 +156,12 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 						}
 					}
 				}
-				// Slices outside an IN(...) list are column values, not value
-				// lists — JSON-encode them so they're valid against JSON columns.
-				// Inside IN(...) keep the comma-separated form. Scalars are
-				// unaffected by the flag.
-				if !paramInINClause(queryTokens, i) {
+				// Slices used as a column value JSON-encode so they round-trip
+				// through a JSON column (SET col=@@list, VALUES(@@list)).
+				// Slices wrapped by an `IN (...)` value list or a known
+				// variadic function (json_array, concat, etc.) expand
+				// comma-separated instead. See commaSeparatedArgFuncs.
+				if !paramInCommaSeparatedList(queryTokens, i) {
 					opts |= marshalOptJSONSlice
 				}
 				b, err := marshal(v, opts, fieldName, valuerFuncs, loc)
@@ -366,18 +367,47 @@ func parseQuery(query string) []queryToken {
 	return queryTokens
 }
 
-// paramInINClause reports whether the param token at queryTokens[paramIdx] is
-// directly wrapped by an `IN (...)` or `NOT IN (...)` value-list. Used to
-// decide whether a slice value should marshal as a comma-separated value list
-// or as a JSON array — the former is correct for IN-clauses, the latter for
-// column assignments (SET col=@@list, VALUES(@@list)).
+// commaSeparatedArgFuncs lists the SQL keywords/functions whose argument list
+// is a flat, comma-separated value list rather than a single column value.
+// When a slice @@param is wrapped by one of these, the param expands as
+// `1,2,3`; outside them it JSON-encodes as `[1,2,3]` so it round-trips
+// through JSON columns (SET col=@@list, INSERT ... VALUES(@@list)).
 //
-// The walk tracks paren depth so nested parens inside the IN list (e.g.
-// `IN (a, (b,c), @@x)`) don't fool it into matching the inner `(`. A `SELECT`
-// keyword at our own depth (before the wrapping paren) means the param lives
-// inside a subquery, not in the IN list — e.g. `IN (SELECT c FROM t WHERE
-// c=@@x)` — so we return false there.
-func paramInINClause(queryTokens []queryToken, paramIdx int) bool {
+// User-defined functions are conservatively excluded — without knowing the
+// argument shape, JSON encoding matches the v0.0.26 Upsert UPDATE-path fix
+// (#155) for any caller that wraps a slice in a custom function call.
+var commaSeparatedArgFuncs = map[string]struct{}{
+	"in":          {},
+	"json_array":  {},
+	"json_object": {},
+	"concat":      {},
+	"concat_ws":   {},
+	"coalesce":    {},
+	"greatest":    {},
+	"least":       {},
+	"field":       {},
+	"elt":         {},
+	"make_set":    {},
+	"interval":    {},
+}
+
+// paramInCommaSeparatedList reports whether the param token at
+// queryTokens[paramIdx] sits inside an `IN (...)` / `NOT IN (...)` value list
+// or a known variadic SQL function. Used to decide whether a slice value
+// expands comma-separated (correct for value lists and variadic functions) or
+// JSON-encodes (correct for column assignments like SET col=@@list).
+//
+// The walk tracks paren depth so nested parens (`IN (a, (b,c), @@x)` or
+// `json_overlaps(col, json_array(@@x))`) don't pick up an inner `(`. A
+// `SELECT` keyword at our own depth (before the wrapping paren) means the
+// param lives in a subquery expression — e.g. `IN (SELECT c FROM t WHERE
+// c=@@x)` — not in the value list, so we return false.
+//
+// The identifier immediately before the wrapping `(` is looked up in
+// commaSeparatedArgFuncs (case-insensitively). Anything not on the list
+// (`VALUES`, user-defined functions, bare grouping parens) falls through
+// to JSON encoding.
+func paramInCommaSeparatedList(queryTokens []queryToken, paramIdx int) bool {
 	depth := 0
 	for j := paramIdx - 1; j >= 0; j-- {
 		t := queryTokens[j]
@@ -400,7 +430,11 @@ func paramInINClause(queryTokens []queryToken, paramIdx int) bool {
 			if tt.kind == queryTokenKindMisc {
 				continue
 			}
-			return tt.kind == queryTokenKindWord && strings.EqualFold(tt.string, "in")
+			if tt.kind != queryTokenKindWord {
+				return false
+			}
+			_, ok := commaSeparatedArgFuncs[strings.ToLower(tt.string)]
+			return ok
 		}
 		return false
 	}
