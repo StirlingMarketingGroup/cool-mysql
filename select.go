@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha3"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -18,7 +19,6 @@ import (
 	"github.com/fatih/structtag"
 	"github.com/go-sql-driver/mysql"
 	"github.com/vmihailenco/msgpack/v5"
-	"golang.org/x/crypto/sha3"
 )
 
 var (
@@ -59,7 +59,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	t, multiRow := getElementTypeFromDest(destRef)
 	indirectType := t
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		indirectType = t.Elem()
 	}
 
@@ -563,7 +563,7 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int, ptrDests map[int]*ptrDest) {
 	indirectType := ref.Type()
 	indirectRef := ref
-	if indirectType.Kind() == reflect.Ptr {
+	if indirectType.Kind() == reflect.Pointer {
 		ref.Set(reflect.New(indirectType.Elem()))
 		indirectRef = ref.Elem()
 		indirectType = indirectType.Elem()

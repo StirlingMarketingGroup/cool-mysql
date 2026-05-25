@@ -218,6 +218,33 @@ func TestInterpolateParams(t *testing.T) {
 			wantReplacedQuery:    "SELECT 1 `bar`",
 			wantNormalizedParams: Params{"foo": 1},
 		},
+		{
+			name: "slice in SET clause json encodes",
+			args: args{
+				query:  "UPDATE `t` SET `col` = @@list",
+				params: []any{Params{"list": []string{"a", "b"}}},
+			},
+			wantReplacedQuery:    "UPDATE `t` SET `col` = _utf8mb4 0x" + hex.EncodeToString([]byte(`["a","b"]`)) + " collate utf8mb4_unicode_ci",
+			wantNormalizedParams: Params{"list": []string{"a", "b"}},
+		},
+		{
+			name: "slice in NOT IN clause comma separates",
+			args: args{
+				query:  "SELECT * FROM `t` WHERE `c` NOT IN (@@list)",
+				params: []any{Params{"list": []string{"a", "b"}}},
+			},
+			wantReplacedQuery:    "SELECT * FROM `t` WHERE `c` NOT IN (_utf8mb4 0x" + hex.EncodeToString([]byte("a")) + " collate utf8mb4_unicode_ci,_utf8mb4 0x" + hex.EncodeToString([]byte("b")) + " collate utf8mb4_unicode_ci)",
+			wantNormalizedParams: Params{"list": []string{"a", "b"}},
+		},
+		{
+			name: "slice in IN clause with neighbor parens comma separates",
+			args: args{
+				query:  "SELECT * FROM `t` WHERE `c` IN (1, (2+3), @@list)",
+				params: []any{Params{"list": []int{4, 5}}},
+			},
+			wantReplacedQuery:    "SELECT * FROM `t` WHERE `c` IN (1, (2+3), 4,5)",
+			wantNormalizedParams: Params{"list": []int{4, 5}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,6 +259,107 @@ func TestInterpolateParams(t *testing.T) {
 			if !reflect.DeepEqual(gotNormalizedParams, tt.wantNormalizedParams) {
 				t.Errorf("InterpolateParams() gotNormalizedParams = %v, want %v", gotNormalizedParams, tt.wantNormalizedParams)
 			}
+		})
+	}
+}
+
+func Test_paramInINClause(t *testing.T) {
+	tests := []struct {
+		query string
+		want  bool
+	}{
+		{"WHERE a IN (@@x)", true},
+		{"WHERE a in (@@x)", true},
+		{"WHERE a NOT IN (@@x)", true},
+		{"WHERE a IN(@@x)", true},
+		{"WHERE a IN (1, 2, @@x)", true},
+		{"WHERE a IN (1, (2+3), @@x)", true},
+		{"WHERE a IN (SELECT b FROM t WHERE c IN (@@x))", true},
+		{"SET col = @@x", false},
+		{"VALUES (@@x)", false},
+		{"@@x", false},
+		{"WHERE (a = @@x)", false},
+		{"MY_FUNC(@@x)", false},
+		// Param inside an IN's subquery is NOT in the IN's value list — the
+		// SELECT at depth 0 walking back tells us we're in subquery scope.
+		{"WHERE a IN (SELECT b FROM t WHERE c = @@x)", false},
+		// SELECT at nested depth (e.g. the subquery is itself one of several
+		// IN-list elements) doesn't disqualify a sibling param.
+		{"WHERE a IN ((SELECT b FROM t), @@x)", true},
+		// Wrapping paren has nothing meaningful before it.
+		{"(@@x)", false},
+		{" (@@x)", false},
+		// Inline SQL comments between IN and ( must not break detection.
+		{"WHERE a IN /* ids */ (@@x)", true},
+		{"WHERE a IN -- ids\n (@@x)", true},
+		{"WHERE a IN -- ids\r (@@x)", true},
+		{"WHERE a IN # ids\n (@@x)", true},
+		{"WHERE a IN # ids\r (@@x)", true},
+		// MySQL requires `--` to be followed by whitespace to be a comment;
+		// otherwise it's arithmetic. We must still see and replace later params.
+		{"col--@@x", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			tokens := parseQuery(tt.query)
+			var idx int = -1
+			for i, tok := range tokens {
+				if tok.kind == queryTokenKindParam {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				t.Fatalf("no param token found in %q", tt.query)
+			}
+			if got := paramInINClause(tokens, idx); got != tt.want {
+				t.Errorf("paramInINClause(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+type singleValueser struct{ v int }
+
+func (s singleValueser) MySQLValues() ([]driver.Value, error) {
+	return []driver.Value{s.v}, nil
+}
+
+// Test_InterpolateParams_ValueserScalar guards against Valueser returning a
+// single-element []driver.Value getting JSON-encoded (as `[7]`) instead of
+// expanded as the scalar `7`.
+func Test_InterpolateParams_ValueserScalar(t *testing.T) {
+	got, _, err := InterpolateParams("SET col = @@v", nil, nil, Params{"v": singleValueser{v: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SET col = 7"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Test_InterpolateParams_DoubleDashArithmetic confirms `--` only triggers a
+// SQL line comment when followed by whitespace; otherwise it's arithmetic
+// (`col--@@x` is `col - (-@@x)`) and the param must still be interpolated.
+func Test_InterpolateParams_DoubleDashArithmetic(t *testing.T) {
+	got, _, err := InterpolateParams("SELECT col--@@x", nil, nil, Params{"x": 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT col--3"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Test_parseQuery_UnterminatedBlockComment ensures the tokenizer doesn't panic
+// on `/*` at end-of-input — it should consume the rest as a misc token and
+// let the DB reject the malformed query.
+func Test_parseQuery_UnterminatedBlockComment(t *testing.T) {
+	for _, q := range []string{"/*", "SELECT 1 /*", "SELECT 1 /*a*"} {
+		t.Run(q, func(t *testing.T) {
+			_ = parseQuery(q)
 		})
 	}
 }

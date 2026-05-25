@@ -281,7 +281,7 @@ func convertAssignRows(dest, src any) error {
 		sv = reflect.ValueOf(src)
 	}
 
-	if sv.Kind() == reflect.Ptr && !sv.IsNil() {
+	if sv.Kind() == reflect.Pointer && !sv.IsNil() {
 		return convertAssignRows(dest, sv.Elem().Interface())
 	}
 
