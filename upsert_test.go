@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"encoding/hex"
 	"regexp"
 	"testing"
 	"time"
@@ -91,6 +92,77 @@ func TestUpsertExistsInsertWithWhere(t *testing.T) {
 
 	err = db.Upsert("people", []string{"id"}, nil, "deleted=0", p)
 	require.NoError(t, err)
+}
+
+// TestUpsertSliceFieldJSONEncodesOnUpdate is the regression test for issue
+// #155: a struct field that's a non-[]byte slice targeting a JSON column must
+// JSON-encode on the UPDATE path the same way it does on the INSERT path.
+// Before the fix, the UPDATE path emitted comma-separated values and produced
+// `update foos set Permissions=_utf8mb4 0x... ,_utf8mb4 0x...` — invalid SQL
+// against a JSON column.
+func TestUpsertSliceFieldJSONEncodesOnUpdate(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	type foo struct {
+		FooID       uint
+		Name        string
+		Permissions []string
+	}
+
+	row := foo{FooID: 36, Name: "y", Permissions: []string{"w/c"}}
+
+	jsonHex := hex.EncodeToString([]byte(`["w/c"]`))
+	nameHex := hex.EncodeToString([]byte("y"))
+	wantUpdate := "update `foos` set" +
+		"`Name`=_utf8mb4 0x" + nameHex + " collate utf8mb4_unicode_ci," +
+		"`Permissions`=_utf8mb4 0x" + jsonHex + " collate utf8mb4_unicode_ci " +
+		"where`FooID`<=>36"
+
+	mock.ExpectExec(regexp.QuoteMeta(wantUpdate)).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := db.Upsert("foos", []string{"FooID"}, []string{"Name", "Permissions"}, "", row)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestUpsertSliceFieldKeepsINClauseSemantics confirms that the JSON-encoding
+// behavior is scoped to non-IN contexts: a `where` predicate using
+// `IN (@@field)` against a slice field still expands to a comma-separated list.
+func TestUpsertSliceFieldKeepsINClauseSemantics(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	type foo struct {
+		FooID       uint
+		Name        string
+		Permissions []string
+	}
+
+	row := foo{FooID: 36, Name: "y", Permissions: []string{"a", "b"}}
+
+	// Confirm via InterpolateParams that an `IN (@@Permissions)` predicate
+	// still produces a comma-separated list, not a JSON array.
+	check := "select 0 from `foos` where `Permissions` in (@@Permissions)"
+	replaced, _, err := db.InterpolateParams(check, row)
+	require.NoError(t, err)
+	require.Contains(t, replaced, "in (_utf8mb4 0x"+hex.EncodeToString([]byte("a"))+
+		" collate utf8mb4_unicode_ci,_utf8mb4 0x"+hex.EncodeToString([]byte("b"))+
+		" collate utf8mb4_unicode_ci)")
+	// And it must NOT have JSON-encoded the slice as `["a","b"]`.
+	require.NotContains(t, replaced, hex.EncodeToString([]byte(`["a","b"]`)))
+
+	// Sanity check: the UPDATE path's @@Permissions (no IN wrapper) DOES
+	// JSON-encode.
+	updateQ := "update `foos` set`Permissions`=@@Permissions where`FooID`<=>@@FooID"
+	updateReplaced, _, err := db.InterpolateParams(updateQ, row)
+	require.NoError(t, err)
+	require.Contains(t, updateReplaced, hex.EncodeToString([]byte(`["a","b"]`)))
+
+	mock.ExpectExec(regexp.QuoteMeta(updateReplaced)).WillReturnResult(sqlmock.NewResult(0, 1))
+	err = db.Upsert("foos", []string{"FooID"}, []string{"Permissions"}, "", row)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestUpsertDefaultZeroUsesColumnName(t *testing.T) {

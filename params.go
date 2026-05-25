@@ -152,6 +152,13 @@ func interpolateParams(query string, tmplFuncs template.FuncMap, valuerFuncs map
 						}
 					}
 				}
+				// Slices outside an IN(...) list are column values, not value
+				// lists — JSON-encode them so they're valid against JSON columns.
+				// Inside IN(...) keep the comma-separated form. Scalars are
+				// unaffected by the flag.
+				if !paramInINClause(queryTokens, i) {
+					opts |= marshalOptJSONSlice
+				}
 				b, err := marshal(v, opts, fieldName, valuerFuncs)
 				if err != nil {
 					return "", nil, err
@@ -328,6 +335,43 @@ func parseQuery(query string) []queryToken {
 	}
 
 	return queryTokens
+}
+
+// paramInINClause reports whether the param token at queryTokens[paramIdx] is
+// directly wrapped by an `IN (...)` or `NOT IN (...)` list. Used to decide
+// whether a slice value should marshal as a comma-separated value list or as
+// a JSON array — the former is correct for IN-clauses, the latter for column
+// assignments (SET col=@@list, VALUES(@@list)).
+//
+// The walk tracks paren depth so nested parens inside the IN list (e.g.
+// `IN (a, (b,c), @@x)`) don't fool it into matching the inner `(`. Only the
+// open paren that actually wraps the param is inspected, and only the
+// immediately preceding non-misc token determines the answer.
+func paramInINClause(queryTokens []queryToken, paramIdx int) bool {
+	depth := 0
+	for j := paramIdx - 1; j >= 0; j-- {
+		t := queryTokens[j]
+		if t.kind != queryTokenKindParen {
+			continue
+		}
+		if t.string == ")" {
+			depth++
+			continue
+		}
+		if depth > 0 {
+			depth--
+			continue
+		}
+		for k := j - 1; k >= 0; k-- {
+			tt := queryTokens[k]
+			if tt.kind == queryTokenKindMisc {
+				continue
+			}
+			return tt.kind == queryTokenKindWord && strings.EqualFold(tt.string, "in")
+		}
+		return false
+	}
+	return false
 }
 
 func Marshal(x any, valuerFuncs map[reflect.Type]reflect.Value) ([]byte, error) {
