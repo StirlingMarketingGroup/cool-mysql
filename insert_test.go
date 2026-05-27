@@ -34,7 +34,7 @@ func Test_colNamesFromStruct(t *testing.T) {
 		D int
 	}
 
-	cols, opts, fieldMap, err := colNamesFromStruct(reflect.TypeOf(example{}))
+	cols, opts, fieldMap, err := colNamesFromStruct(reflect.TypeFor[example]())
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b", "D"}, cols)
 	require.True(t, opts["a"].insertDefault)
@@ -247,7 +247,7 @@ func TestNoInsertTagOption(t *testing.T) {
 			LineItemModel  string `mysql:"LineItemModel,noinsert"` // should be skipped for insert
 		}
 
-		cols, opts, fieldMap, err := colNamesFromStruct(reflect.TypeOf(OrderLineItem{}))
+		cols, opts, fieldMap, err := colNamesFromStruct(reflect.TypeFor[OrderLineItem]())
 		require.NoError(t, err)
 
 		// Should only have ID and LineItem columns, NOT LineItemModel
@@ -284,4 +284,88 @@ func TestNoInsertTagOption(t *testing.T) {
 		require.Contains(t, buf.String(), "`id`")
 		require.Contains(t, buf.String(), "`name`")
 	})
+}
+
+// orderedValueser is a deterministic Valueser-backed slice type used to
+// exercise the Insert / Upsert single-column code paths. The prod incident in
+// issue #161 used set.Set[string], which is map-backed and non-deterministic;
+// an ordered slice keeps the test stable while preserving the same
+// `MySQLValues() ([]driver.Value, error)` shape.
+type orderedValueser []string
+
+func (s orderedValueser) MySQLValues() ([]driver.Value, error) {
+	out := make([]driver.Value, 0, len(s))
+	for _, v := range s {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// TestInsert_ValueserMultiElementJSONEncodes is the regression test for issue
+// #161. A struct field whose type implements Valueser (e.g. set.Set) targets
+// a single column on INSERT — it must JSON-encode into one placeholder rather
+// than expand to N comma-separated placeholders, which would mis-align row
+// values against the column list and trigger MySQL 1136.
+func TestInsert_ValueserMultiElementJSONEncodes(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type row struct {
+		ID   int             `mysql:"id"`
+		Tags orderedValueser `mysql:"tags"`
+	}
+
+	err = db.Insert("t", row{ID: 1, Tags: orderedValueser{"a", "b", "c"}})
+	require.NoError(t, err)
+
+	// Expected: a single placeholder containing the JSON array literal
+	// `["a","b","c"]`. Before the fix this would emit three comma-separated
+	// values and break alignment with the 2-column header.
+	jsonHex := hex.EncodeToString([]byte(`["a","b","c"]`))
+	expected := "insert into`t`(`id`,`tags`)values(1,_utf8mb4 0x" + jsonHex + " collate utf8mb4_unicode_ci);\n\n"
+	require.Equal(t, expected, buf.String())
+}
+
+// TestInsert_ValueserSingleElementJSONEncodes guards against the
+// single-element optimization in the existing IN-clause Valueser path bleeding
+// into INSERT row values. A 1-element Valueser must still render as a
+// 1-element JSON array (`["a"]`), not the bare scalar `'a'`.
+func TestInsert_ValueserSingleElementJSONEncodes(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type row struct {
+		ID   int             `mysql:"id"`
+		Tags orderedValueser `mysql:"tags"`
+	}
+
+	err = db.Insert("t", row{ID: 1, Tags: orderedValueser{"a"}})
+	require.NoError(t, err)
+
+	jsonHex := hex.EncodeToString([]byte(`["a"]`))
+	expected := "insert into`t`(`id`,`tags`)values(1,_utf8mb4 0x" + jsonHex + " collate utf8mb4_unicode_ci);\n\n"
+	require.Equal(t, expected, buf.String())
+}
+
+// TestInsert_ValueserEmptyEncodesAsJSONArray covers the zero-element case: an
+// empty (non-nil) Valueser should render as the JSON literal `[]` so the
+// column stays a valid JSON value.
+func TestInsert_ValueserEmptyEncodesAsJSONArray(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type row struct {
+		ID   int             `mysql:"id"`
+		Tags orderedValueser `mysql:"tags"`
+	}
+
+	err = db.Insert("t", row{ID: 1, Tags: orderedValueser{}})
+	require.NoError(t, err)
+
+	jsonHex := hex.EncodeToString([]byte(`[]`))
+	expected := "insert into`t`(`id`,`tags`)values(1,_utf8mb4 0x" + jsonHex + " collate utf8mb4_unicode_ci);\n\n"
+	require.Equal(t, expected, buf.String())
 }

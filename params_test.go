@@ -411,15 +411,58 @@ func (s singleValueser) MySQLValues() ([]driver.Value, error) {
 	return []driver.Value{s.v}, nil
 }
 
-// Test_InterpolateParams_ValueserScalar guards against Valueser returning a
-// single-element []driver.Value getting JSON-encoded (as `[7]`) instead of
-// expanded as the scalar `7`.
-func Test_InterpolateParams_ValueserScalar(t *testing.T) {
+// Test_InterpolateParams_ValueserScalar_INClause guards against Valueser
+// returning a single-element []driver.Value getting JSON-encoded (as `[7]`)
+// instead of expanded as the scalar `7` inside an IN-clause / variadic
+// context. This is the original intent of the Valueser scalar shortcut.
+//
+// Outside an IN-clause / variadic call (e.g. an UPDATE SET or INSERT VALUES),
+// a Valueser targets a single column and JSON-encodes — see issue #161 and
+// the TestInsert_Valueser* tests in insert_test.go.
+func Test_InterpolateParams_ValueserScalar_INClause(t *testing.T) {
+	got, _, err := InterpolateParams("SELECT 0 WHERE col IN(@@v)", nil, nil, Params{"v": singleValueser{v: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT 0 WHERE col IN(7)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Test_InterpolateParams_ValueserMultiElement_INClause is the regression
+// guard for issue #161's IN-clause behavior: a multi-element Valueser inside
+// `IN(...)` must keep expanding to comma-separated values, not collapse to a
+// JSON array.
+func Test_InterpolateParams_ValueserMultiElement_INClause(t *testing.T) {
+	v := multiValueser{vals: []driver.Value{1, 2, 3}}
+	got, _, err := InterpolateParams("SELECT 0 WHERE col IN(@@v)", nil, nil, Params{"v": v})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT 0 WHERE col IN(1,2,3)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+type multiValueser struct{ vals []driver.Value }
+
+func (m multiValueser) MySQLValues() ([]driver.Value, error) { return m.vals, nil }
+
+// Test_InterpolateParams_ValueserScalar_AssignmentJSONEncodes is the
+// regression test for issue #161 on assignment-style placement (UPDATE SET,
+// INSERT VALUES, etc.): outside an IN-clause / variadic function call a
+// Valueser must JSON-encode rather than expand. A single-element Valueser
+// must render as a 1-element JSON array (`[7]`) — anything else would
+// silently corrupt JSON columns.
+func Test_InterpolateParams_ValueserScalar_AssignmentJSONEncodes(t *testing.T) {
 	got, _, err := InterpolateParams("SET col = @@v", nil, nil, Params{"v": singleValueser{v: 7}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "SET col = 7"
+	jsonHex := hex.EncodeToString([]byte(`[7]`))
+	want := "SET col = _utf8mb4 0x" + jsonHex + " collate utf8mb4_unicode_ci"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -649,7 +692,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: civil.Date{Year: 2020, Month: 1, Day: 1},
 				valuerFuncs: map[reflect.Type]reflect.Value{
-					reflect.TypeOf(civil.Date{}): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
+					reflect.TypeFor[civil.Date](): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
 						return d.In(time.UTC), nil
 					}),
 				},
@@ -661,7 +704,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: p(civil.Date{Year: 2020, Month: 1, Day: 1}),
 				valuerFuncs: map[reflect.Type]reflect.Value{
-					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+					reflect.TypeFor[*civil.Date](): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
 						return d.In(time.UTC), nil
 					}),
 				},
@@ -673,7 +716,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: (*civil.Date)(nil),
 				valuerFuncs: map[reflect.Type]reflect.Value{
-					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+					reflect.TypeFor[*civil.Date](): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
 						if d == nil {
 							return nil, nil
 						}
@@ -688,7 +731,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: civil.Date{Year: 2020, Month: 1, Day: 1},
 				valuerFuncs: map[reflect.Type]reflect.Value{
-					reflect.TypeOf((*civil.Date)(nil)): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
+					reflect.TypeFor[*civil.Date](): reflect.ValueOf(func(d *civil.Date) (driver.Value, error) {
 						if d == nil {
 							return nil, nil
 						}
@@ -703,7 +746,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: &civil.Date{Year: 2020, Month: 1, Day: 1},
 				valuerFuncs: map[reflect.Type]reflect.Value{
-					reflect.TypeOf(civil.Date{}): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
+					reflect.TypeFor[civil.Date](): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
 						return d.String(), nil
 					}),
 				},
@@ -715,7 +758,7 @@ func Test_marshal(t *testing.T) {
 			args: args{
 				x: (*civil.Date)(nil),
 				valuerFuncs: map[reflect.Type]reflect.Value{
-					reflect.TypeOf(civil.Date{}): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
+					reflect.TypeFor[civil.Date](): reflect.ValueOf(func(d civil.Date) (driver.Value, error) {
 						return d.String(), nil
 					}),
 				},

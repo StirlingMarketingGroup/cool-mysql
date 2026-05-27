@@ -165,6 +165,37 @@ func TestUpsertSliceFieldKeepsINClauseSemantics(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUpsertValueserFieldJSONEncodesOnUpdate is the Upsert-UPDATE-path
+// counterpart to issue #161: a struct field whose type implements Valueser
+// (e.g. set.Set) must JSON-encode on the UPDATE path, not expand to
+// comma-separated values that would produce invalid SQL against a JSON
+// column.
+func TestUpsertValueserFieldJSONEncodesOnUpdate(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	type foo struct {
+		FooID uint
+		Name  string
+		Tags  orderedValueser
+	}
+
+	row := foo{FooID: 36, Name: "y", Tags: orderedValueser{"a", "b"}}
+
+	jsonHex := hex.EncodeToString([]byte(`["a","b"]`))
+	nameHex := hex.EncodeToString([]byte("y"))
+	wantUpdate := "update `foos` set" +
+		"`Name`=_utf8mb4 0x" + nameHex + " collate utf8mb4_unicode_ci," +
+		"`Tags`=_utf8mb4 0x" + jsonHex + " collate utf8mb4_unicode_ci " +
+		"where`FooID`<=>36"
+
+	mock.ExpectExec(regexp.QuoteMeta(wantUpdate)).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := db.Upsert("foos", []string{"FooID"}, []string{"Name", "Tags"}, "", row)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUpsertDefaultZeroUsesColumnName(t *testing.T) {
 	db, mock, cleanup := getTestDatabase(t)
 	defer cleanup()
