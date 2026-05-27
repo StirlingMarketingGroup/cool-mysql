@@ -719,14 +719,24 @@ func marshalAppend(dst []byte, x any, opts marshalOpt, fieldName string, valuerF
 			}
 		}
 
-		vs, err := vs.MySQLValues()
+		values, err := vs.MySQLValues()
 		if err != nil {
 			return nil, fmt.Errorf("cool-mysql: failed to call MySQLValues on mysql.MySQLValues: %w", err)
 		}
-		// Valueser intentionally returns a []driver.Value to be expanded
-		// comma-separated; suppress marshalOptJSONSlice so a 1-element return
-		// like `[]driver.Value{int(s)}` renders as `s`, not `[s]`.
-		return marshalAppend(dst, vs, opts&^marshalOptJSONSlice, fieldName, valuerFuncs, loc)
+		// marshalOptJSONSlice is set by callers (INSERT row values, UPDATE
+		// SET assignments, any non-IN @@param) to mean "this param targets a
+		// single column" — JSON-encode the result so it lands as one
+		// placeholder. The IN-clause / variadic path leaves the flag clear
+		// and we fall through to the comma-separated expansion below. See
+		// issue #161 (Valueser counterpart to #155).
+		if opts&marshalOptJSONSlice != 0 {
+			j, err := json.Marshal(values)
+			if err != nil {
+				return nil, fmt.Errorf("cool-mysql: failed to JSON-encode Valueser for single-column context: %w", err)
+			}
+			return marshalAppend(dst, json.RawMessage(j), opts&^marshalOptJSONSlice, fieldName, valuerFuncs, loc)
+		}
+		return marshalAppend(dst, values, opts, fieldName, valuerFuncs, loc)
 	}
 
 	if isNil(x) {
