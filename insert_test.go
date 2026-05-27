@@ -349,6 +349,34 @@ func TestInsert_ValueserSingleElementJSONEncodes(t *testing.T) {
 	require.Equal(t, expected, buf.String())
 }
 
+// unmarshalableValueser returns a value that json.Marshal can't encode
+// (channels have no JSON representation), exercising the error branch in the
+// single-column Valueser path added in issue #161.
+type unmarshalableValueser struct{}
+
+func (unmarshalableValueser) MySQLValues() ([]driver.Value, error) {
+	return []driver.Value{make(chan int)}, nil
+}
+
+// TestInsert_ValueserJSONMarshalError covers the error branch when
+// MySQLValues returns a driver.Value that json.Marshal can't encode. The
+// caller's error wrapping must surface so misconfigured user types don't
+// fail silently.
+func TestInsert_ValueserJSONMarshalError(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type row struct {
+		ID   int                   `mysql:"id"`
+		Tags unmarshalableValueser `mysql:"tags"`
+	}
+
+	err = db.Insert("t", row{ID: 1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "JSON-encode Valueser")
+}
+
 // TestInsert_ValueserEmptyEncodesAsJSONArray covers the zero-element case: an
 // empty (non-nil) Valueser should render as the JSON literal `[]` so the
 // column stays a valid JSON value.
