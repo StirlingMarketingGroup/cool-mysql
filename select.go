@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha3"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -221,9 +222,161 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	start := time.Now()
 
+	// swapConn handles a retriable connection-level error (ErrInvalidConn /
+	// ErrBadConn) by reconnecting the pool if it is down and swapping the
+	// dead dedicated conn for a fresh one, so the retry doesn't hit the same
+	// dead conn and burn the whole retry budget. It returns the error to hand
+	// back to backoff — either err (retry) or a backoff.Permanent wrapper
+	// (give up). It's used for both establishment failures and mid-stream
+	// connection drops during scanning.
+	swapConn := func(err error) error {
+		// Reconnect if the pool itself is down. Test is a no-op when the
+		// pool is healthy and only this dedicated conn died.
+		if testErr := db.Test(); testErr != nil {
+			return testErr
+		}
+		// If conn wasn't a *sql.DB (e.g. inside a *sql.Tx), we can't
+		// reacquire — the tx is bound to the dead conn, so fail fast.
+		if getFreshConn == nil {
+			return backoff.Permanent(err)
+		}
+		if currentConn != nil {
+			if closeErr := currentConn.Close(); closeErr != nil {
+				db.Logger.Warn("failed to close stale connection", "err", closeErr)
+			}
+			currentConn = nil
+		}
+		fresh, acqErr := getFreshConn(ctx)
+		if acqErr != nil {
+			return acqErr
+		}
+		currentConn = fresh
+		conn = fresh
+		return err
+	}
+
+	// retryable reports whether a connection that drops mid-stream (after rows
+	// have started flowing) can be recovered by discarding partial results and
+	// re-running the whole query. That's only safe for buffered dests — slice
+	// (*[]T) and single (*T) — because results accumulate into destRef.Elem()
+	// and aren't observed by the caller until query() returns. Channel and func
+	// dests emit each row via sendElement as it is scanned, so their rows are
+	// already out the door; they keep establishment-only retry.
+	retryable := destKind != reflect.Chan && destKind != reflect.Func
+
+	// resetAccumulator discards partially-collected results before a
+	// mid-stream retry so the re-run starts from a clean slate.
+	resetAccumulator := func() {
+		switch {
+		case multiRow && destKind == reflect.Slice:
+			destRef.Elem().Set(reflect.MakeSlice(destRef.Elem().Type(), 0, 0))
+		case !multiRow:
+			destRef.Elem().Set(reflect.Zero(destRef.Elem().Type()))
+		}
+		if cacheDuration > 0 {
+			cacheSlice = reflect.New(reflect.SliceOf(t)).Elem()
+		}
+	}
+
+	// scanRows runs the full row-streaming phase — column metadata, the scan
+	// loop, and rows.Err() — returning the number of rows observed. For
+	// buffered dests this runs inside the retry so a mid-stream connection
+	// drop is recoverable; for channel/func dests it still runs inside the
+	// operation but a mid-stream failure is treated as permanent (see below).
+	scanRows := func(rows *sql.Rows) (int, error) {
+		columns, err := rows.Columns()
+		if err != nil {
+			return 0, err
+		}
+
+		if t != mapRowType {
+			// since the map keys are literally the column names, we don't need to compare
+			// without case sensitivity. But for structs, we do.
+			for i := range columns {
+				columns[i] = strings.ToLower(columns[i])
+			}
+		}
+
+		ptrs, jsonFields, fieldsMap, ptrDests, isStruct, err := setupElementPtrs(db, t, indirectType, columns)
+		if err != nil {
+			return 0, err
+		}
+
+		i := 0
+		for rows.Next() {
+			el := reflect.New(t).Elem()
+			switch indirectType {
+			case mapRowType:
+				el.Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
+			case sliceRowType:
+				el.Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
+			}
+
+			updateElementPtrs(el, &ptrs, jsonFields, columns, fieldsMap, ptrDests)
+
+			if err := rows.Scan(ptrs...); err != nil {
+				return i, err
+			}
+
+			for _, dest := range ptrDests {
+				if err := dest.assign(); err != nil {
+					return i, err
+				}
+			}
+
+			indirectEl := reflect.Indirect(el)
+
+			if indirectType == mapRowType {
+				// our map row is actually a map to pointers, not actual values, since
+				// you can't take the address of a value by map and key, so we need to fix that here
+				// to make usage intuitive
+
+				for _, k := range indirectEl.MapKeys() {
+					indirectEl.SetMapIndex(k, indirectEl.MapIndex(k).Elem().Elem())
+				}
+			}
+
+			for _, jsonField := range jsonFields {
+				if len(jsonField.j) == 0 {
+					continue
+				}
+
+				if !isStruct {
+					if err := json.Unmarshal(jsonField.j, el.Interface()); err != nil {
+						return i, fmt.Errorf("failed to unmarshal json into dest: %w", err)
+					}
+				} else {
+					f := indirectEl.FieldByIndex(jsonField.index)
+					if err := json.Unmarshal(jsonField.j, f.Addr().Interface()); err != nil {
+						return i, fmt.Errorf("failed to unmarshal json into struct field %q: %w", indirectEl.Type().FieldByIndex(jsonField.index).Name, err)
+					}
+				}
+			}
+
+			if len(cacheKey) != 0 {
+				cacheSlice = reflect.Append(cacheSlice, el)
+			}
+
+			i++
+
+			if err := sendElement(el); err != nil {
+				return i, err
+			}
+			if !multiRow {
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return i, err
+		}
+
+		return i, nil
+	}
+
 	b := backoff.NewExponentialBackOff()
 	var attempt int
-	operation := func() (*sql.Rows, error) {
+	var rowCount int
+	operation := func() (struct{}, error) {
 		attempt++
 		rows, err := conn.QueryContext(ctx, replacedQuery)
 
@@ -245,41 +398,33 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			}
 
 			if checkRetryError(err) {
-				return nil, err
+				return struct{}{}, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
-				// Reconnect if the pool itself is down. Test is a no-op
-				// when the pool is healthy and only this dedicated conn
-				// died.
-				if testErr := db.Test(); testErr != nil {
-					return nil, testErr
-				}
-				// Swap the dead dedicated conn for a fresh one from the
-				// current pool so the retry doesn't hit the same dead
-				// conn and burn the whole retry budget. If conn wasn't a
-				// *sql.DB (e.g. inside a *sql.Tx), we can't reacquire
-				// the tx is bound to the dead conn, so fail fast.
-				if getFreshConn == nil {
-					return nil, backoff.Permanent(err)
-				}
-				if currentConn != nil {
-					if closeErr := currentConn.Close(); closeErr != nil {
-						db.Logger.Warn("failed to close stale connection", "err", closeErr)
-					}
-					currentConn = nil
-				}
-				fresh, acqErr := getFreshConn(ctx)
-				if acqErr != nil {
-					return nil, acqErr
-				}
-				currentConn = fresh
-				conn = fresh
-				return nil, err
+				return struct{}{}, swapConn(err)
 			}
-			return nil, backoff.Permanent(err)
+			return struct{}{}, backoff.Permanent(err)
 		}
 
-		return rows, nil
+		n, scanErr := scanRows(rows)
+		if closeErr := rows.Close(); closeErr != nil {
+			db.Logger.Warn("failed to close rows", "err", closeErr)
+		}
+		if scanErr != nil {
+			// A connection that dies mid-stream surfaces as ErrInvalidConn /
+			// ErrBadConn from rows.Scan or rows.Err. For buffered dests the
+			// caller hasn't observed any rows yet, so discard the partial
+			// result and re-run the whole query on a fresh conn. Everything
+			// else — and every error on a channel/func dest — is permanent.
+			if retryable && (errors.Is(scanErr, mysql.ErrInvalidConn) || errors.Is(scanErr, driver.ErrBadConn)) {
+				resetAccumulator()
+				return struct{}{}, swapConn(scanErr)
+			}
+			return struct{}{}, backoff.Permanent(scanErr)
+		}
+
+		rowCount = n
+		return struct{}{}, nil
 	}
 
 	options := []backoff.RetryOption{
@@ -290,113 +435,11 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
 	}
 
-	rows, err := backoff.Retry(ctx, operation, options...)
-	if err != nil {
+	if _, err := backoff.Retry(ctx, operation, options...); err != nil {
 		return unwrapBackoffPermanent(err)
 	}
 
-	if rows == nil {
-		return fmt.Errorf("query returned nil rows without error")
-	}
-
-	defer func() {
-		if rows != nil {
-			if err := rows.Close(); err != nil {
-				db.Logger.Warn("failed to close rows", "err", err)
-			}
-		}
-	}()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return err
-	}
-
-	if t != mapRowType {
-		// since the map keys are literally the column names, we don't need to compare
-		// without case sensitivity. But for structs, we do.
-		for i := range columns {
-			columns[i] = strings.ToLower(columns[i])
-		}
-	}
-
-	ptrs, jsonFields, fieldsMap, ptrDests, isStruct, err := setupElementPtrs(db, t, indirectType, columns)
-	if err != nil {
-		return err
-	}
-
-	i := 0
-	for rows.Next() {
-		el := reflect.New(t).Elem()
-		switch indirectType {
-		case mapRowType:
-			el.Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
-		case sliceRowType:
-			el.Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
-		}
-
-		updateElementPtrs(el, &ptrs, jsonFields, columns, fieldsMap, ptrDests)
-
-		err = rows.Scan(ptrs...)
-		if err != nil {
-			return err
-		}
-
-		for _, dest := range ptrDests {
-			if err := dest.assign(); err != nil {
-				return err
-			}
-		}
-
-		indirectEl := reflect.Indirect(el)
-
-		if indirectType == mapRowType {
-			// our map row is actually a map to pointers, not actual values, since
-			// you can't take the address of a value by map and key, so we need to fix that here
-			// to make usage intuitive
-
-			for _, k := range indirectEl.MapKeys() {
-				indirectEl.SetMapIndex(k, indirectEl.MapIndex(k).Elem().Elem())
-			}
-		}
-
-		for _, jsonField := range jsonFields {
-			if len(jsonField.j) == 0 {
-				continue
-			}
-
-			if !isStruct {
-				err = json.Unmarshal(jsonField.j, el.Interface())
-				if err != nil {
-					return fmt.Errorf("failed to unmarshal json into dest: %w", err)
-				}
-			} else {
-				f := indirectEl.FieldByIndex(jsonField.index)
-				err = json.Unmarshal(jsonField.j, f.Addr().Interface())
-				if err != nil {
-					return fmt.Errorf("failed to unmarshal json into struct field %q: %w", indirectEl.Type().FieldByIndex(jsonField.index).Name, err)
-				}
-			}
-		}
-
-		if len(cacheKey) != 0 {
-			cacheSlice = reflect.Append(cacheSlice, el)
-		}
-
-		i++
-
-		if err = sendElement(el); err != nil {
-			return err
-		}
-		if !multiRow {
-			break
-		}
-	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-
-	if !multiRow && i == 0 {
+	if !multiRow && rowCount == 0 {
 		return sql.ErrNoRows
 	}
 

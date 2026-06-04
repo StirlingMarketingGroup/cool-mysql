@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"reflect"
 	"regexp"
 	"sync"
@@ -839,4 +840,123 @@ func TestSelectFailsWhenInitialConnAcquireFails(t *testing.T) {
 	err = db.Select(&v, "SELECT 1", 0)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "failed to get connection")
+}
+
+// TestSelectRetriesMidStreamConnDrop verifies that a buffered (slice) dest
+// whose connection drops *mid-stream* — after rows have started flowing — is
+// retried and succeeds within the existing retry budget. Before the fix the
+// retry only wrapped query establishment, so a drop during scanning surfaced
+// straight to the caller. The partial first-attempt row must be discarded so
+// the result reflects only the successful re-run.
+func TestSelectRetriesMidStreamConnDrop(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	// First attempt: one good row, then the connection dies on the 2nd row.
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(1)).
+			AddRow(int64(2)).
+			RowError(1, mysql.ErrInvalidConn),
+	)
+	// Retry on a fresh conn returns a clean result set.
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(10)).
+			AddRow(int64(20)),
+	)
+
+	var ns []int64
+	require.NoError(t, db.Select(&ns, "SELECT n", 0))
+	require.Equal(t, []int64{10, 20}, ns)
+}
+
+// TestSelectRetriesMidStreamSingleDest covers the single-value (*T) buffered
+// dest: a mid-stream drop discards the partial result and the re-run wins.
+func TestSelectRetriesMidStreamSingleDest(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(1)).
+			RowError(0, mysql.ErrInvalidConn),
+	)
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).AddRow(int64(42)),
+	)
+
+	var v int64
+	require.NoError(t, db.Select(&v, "SELECT n", 0))
+	require.Equal(t, int64(42), v)
+}
+
+// TestSelectDoesNotRetryMidStreamNonConnError verifies a non-transient
+// mid-stream error (anything that isn't ErrInvalidConn / ErrBadConn) is not
+// retried and surfaces immediately. Only one query is issued.
+func TestSelectDoesNotRetryMidStreamNonConnError(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	boom := errors.New("mid-stream type error")
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(1)).
+			AddRow(int64(2)).
+			RowError(1, boom),
+	)
+
+	var ns []int64
+	err := db.Select(&ns, "SELECT n", 0)
+	require.Error(t, err)
+	require.ErrorIs(t, err, boom)
+}
+
+// TestSelectChannelDestDoesNotRetryMidStream verifies channel dests keep
+// establishment-only retry semantics: rows are emitted to the caller as they
+// are scanned, so a mid-stream drop can't be re-run and surfaces as-is. Only
+// one query is issued and the already-streamed row stays visible.
+func TestSelectChannelDestDoesNotRetryMidStream(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(1)).
+			AddRow(int64(2)).
+			RowError(1, mysql.ErrInvalidConn),
+	)
+
+	ch := make(chan int64, 10)
+	err := db.Select(ch, "SELECT n", 0)
+	close(ch)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, mysql.ErrInvalidConn)
+
+	var got []int64
+	for v := range ch {
+		got = append(got, v)
+	}
+	require.Equal(t, []int64{1}, got)
+}
+
+// TestExistsRetriesMidStreamConnDrop verifies Exists re-runs the query when
+// the connection drops during the single-row read phase.
+func TestExistsRetriesMidStreamConnDrop(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT 1$").WillReturnRows(
+		sqlmock.NewRows([]string{"1"}).
+			AddRow(int64(1)).
+			RowError(0, mysql.ErrInvalidConn),
+	)
+	mock.ExpectQuery("^SELECT 1$").WillReturnRows(
+		sqlmock.NewRows([]string{"1"}).AddRow(int64(1)),
+	)
+
+	exists, err := db.Exists("SELECT 1", 0)
+	require.NoError(t, err)
+	require.True(t, exists)
 }

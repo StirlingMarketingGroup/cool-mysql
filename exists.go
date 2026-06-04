@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha3"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -106,7 +107,7 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 
 	b := backoff.NewExponentialBackOff()
 	var attempt int
-	operation := func() (*sql.Rows, error) {
+	operation := func() (bool, error) {
 		attempt++
 		rows, err := conn.QueryContext(ctx, replacedQuery)
 		tx, _ := conn.(*sql.Tx)
@@ -120,15 +121,37 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		})
 		if err != nil {
 			if checkRetryError(err) {
-				return nil, err
+				return false, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
-				return nil, db.Test()
+				return false, db.Test()
 			}
-			return nil, backoff.Permanent(err)
+			return false, backoff.Permanent(err)
 		}
 
-		return rows, nil
+		// The row-streaming phase (rows.Next / rows.Err) runs inside the
+		// retry so a connection that drops mid-stream is recoverable. exists
+		// reads a single boolean that the caller can't observe until we
+		// return, so re-running the whole query is always safe here.
+		got := rows.Next()
+		scanErr := rows.Err()
+		if closeErr := rows.Close(); closeErr != nil {
+			db.Logger.Warn("failed to close rows", "err", closeErr)
+		}
+		if scanErr != nil {
+			if errors.Is(scanErr, mysql.ErrInvalidConn) || errors.Is(scanErr, driver.ErrBadConn) {
+				// Reconnect if the pool is down, then return the error so
+				// backoff re-runs the whole query (exists hasn't surfaced a
+				// result yet, so a re-run is always safe).
+				if testErr := db.Test(); testErr != nil {
+					return false, testErr
+				}
+				return false, scanErr
+			}
+			return false, backoff.Permanent(scanErr)
+		}
+
+		return got, nil
 	}
 
 	options := []backoff.RetryOption{
@@ -139,21 +162,9 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
 	}
 
-	rows, err := backoff.Retry(ctx, operation, options...)
+	exists, err = backoff.Retry(ctx, operation, options...)
 	if err != nil {
 		return exists, unwrapBackoffPermanent(err)
-	}
-	defer func() {
-		if rows != nil {
-			if err := rows.Close(); err != nil {
-				db.Logger.Warn("failed to close rows", "err", err)
-			}
-		}
-	}()
-
-	exists = rows.Next()
-	if err = rows.Err(); err != nil {
-		return exists, err
 	}
 
 	if len(cacheKey) != 0 {
