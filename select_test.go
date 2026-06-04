@@ -871,6 +871,32 @@ func TestSelectRetriesMidStreamConnDrop(t *testing.T) {
 	require.Equal(t, []int64{10, 20}, ns)
 }
 
+// TestSelectRetriesMidStreamPreservesExistingSlice verifies that a mid-stream
+// retry discards only the rows collected on the failed attempt, not the
+// elements the caller had already accumulated into the slice. Select appends
+// onto the passed-in slice, so the reset must truncate back to the caller's
+// pre-query length rather than emptying it.
+func TestSelectRetriesMidStreamPreservesExistingSlice(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(1)).
+			AddRow(int64(2)).
+			RowError(1, mysql.ErrInvalidConn),
+	)
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).
+			AddRow(int64(10)).
+			AddRow(int64(20)),
+	)
+
+	ns := []int64{99}
+	require.NoError(t, db.Select(&ns, "SELECT n", 0))
+	require.Equal(t, []int64{99, 10, 20}, ns)
+}
+
 // TestSelectRetriesMidStreamSingleDest covers the single-value (*T) buffered
 // dest: a mid-stream drop discards the partial result and the re-run wins.
 func TestSelectRetriesMidStreamSingleDest(t *testing.T) {

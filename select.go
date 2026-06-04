@@ -264,14 +264,23 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	// already out the door; they keep establishment-only retry.
 	retryable := destKind != reflect.Chan && destKind != reflect.Func
 
-	// resetAccumulator discards partially-collected results before a
-	// mid-stream retry so the re-run starts from a clean slate.
+	// initialSliceLen is the caller-supplied length of a slice dest before the
+	// query runs. Select appends results onto whatever the caller passed in, so
+	// a mid-stream retry must truncate back to this length — not zero — to keep
+	// any pre-existing elements the caller is accumulating into.
+	var initialSliceLen int
+	if multiRow && destKind == reflect.Slice {
+		initialSliceLen = destRef.Elem().Len()
+	}
+
+	// resetAccumulator discards the partial results collected on a failed
+	// attempt before a mid-stream retry so the re-run starts from the caller's
+	// pre-query state. Only slice dests accumulate across rows; single (*T)
+	// dests Set exactly once after a full row scan, which a mid-stream drop
+	// can't reach, so they need no reset.
 	resetAccumulator := func() {
-		switch {
-		case multiRow && destKind == reflect.Slice:
-			destRef.Elem().Set(reflect.MakeSlice(destRef.Elem().Type(), 0, 0))
-		case !multiRow:
-			destRef.Elem().Set(reflect.Zero(destRef.Elem().Type()))
+		if multiRow && destKind == reflect.Slice {
+			destRef.Elem().Set(destRef.Elem().Slice(0, initialSliceLen))
 		}
 		if cacheDuration > 0 {
 			cacheSlice = reflect.New(reflect.SliceOf(t)).Elem()
