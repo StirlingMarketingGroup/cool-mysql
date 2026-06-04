@@ -124,7 +124,20 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 				return false, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
-				return false, db.Test()
+				// A *sql.Tx is bound to its (now dead) conn and can't be
+				// resumed on a fresh one, so fail fast. Otherwise reconnect
+				// if the pool is down and return the error so backoff
+				// re-runs — the next QueryContext draws a healthy pooled
+				// conn. Returning db.Test() directly would report (false,
+				// nil) as success when the pool is healthy, silently turning
+				// a dead conn into a "no rows" answer.
+				if tx != nil {
+					return false, backoff.Permanent(err)
+				}
+				if testErr := db.Test(); testErr != nil {
+					return false, testErr
+				}
+				return false, err
 			}
 			return false, backoff.Permanent(err)
 		}
@@ -140,6 +153,10 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		}
 		if scanErr != nil {
 			if errors.Is(scanErr, mysql.ErrInvalidConn) || errors.Is(scanErr, driver.ErrBadConn) {
+				// A *sql.Tx can't be resumed on a fresh conn, so fail fast.
+				if tx != nil {
+					return false, backoff.Permanent(scanErr)
+				}
 				// Reconnect if the pool is down, then return the error so
 				// backoff re-runs the whole query (exists hasn't surfaced a
 				// result yet, so a re-run is always safe).

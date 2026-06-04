@@ -986,3 +986,68 @@ func TestExistsRetriesMidStreamConnDrop(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, exists)
 }
+
+// TestExistsRetriesEstablishmentConnDrop guards against a silent false
+// negative: when QueryContext fails with ErrInvalidConn on a healthy pool,
+// exists must re-run the query (the next QueryContext draws a fresh pooled
+// conn) rather than reporting a dead conn as "no rows". Returning db.Test()
+// directly would return (false, nil) and stop the retry.
+func TestExistsRetriesEstablishmentConnDrop(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT 1$").WillReturnError(mysql.ErrInvalidConn)
+	mock.ExpectQuery("^SELECT 1$").WillReturnRows(
+		sqlmock.NewRows([]string{"1"}).AddRow(int64(1)),
+	)
+
+	exists, err := db.Exists("SELECT 1", 0)
+	require.NoError(t, err)
+	require.True(t, exists)
+}
+
+// TestExistsTxFailsFastOnEstablishmentConnDrop verifies that an ErrInvalidConn
+// inside a transaction is not retried — the tx is bound to its dead conn and
+// can't be resumed on a fresh one, so it must surface immediately.
+func TestExistsTxFailsFastOnEstablishmentConnDrop(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("^SELECT 1$").WillReturnError(mysql.ErrInvalidConn)
+	mock.ExpectRollback()
+
+	tx, _, err := db.BeginTx()
+	require.NoError(t, err)
+
+	_, err = tx.Exists("SELECT 1", 0)
+	require.Error(t, err)
+	require.ErrorIs(t, err, mysql.ErrInvalidConn)
+
+	require.NoError(t, tx.Cancel())
+}
+
+// TestExistsTxFailsFastOnMidStreamConnDrop covers the same tx fail-fast for a
+// connection that drops during the single-row read rather than at
+// establishment.
+func TestExistsTxFailsFastOnMidStreamConnDrop(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("^SELECT 1$").WillReturnRows(
+		sqlmock.NewRows([]string{"1"}).
+			AddRow(int64(1)).
+			RowError(0, mysql.ErrInvalidConn),
+	)
+	mock.ExpectRollback()
+
+	tx, _, err := db.BeginTx()
+	require.NoError(t, err)
+
+	_, err = tx.Exists("SELECT 1", 0)
+	require.Error(t, err)
+	require.ErrorIs(t, err, mysql.ErrInvalidConn)
+
+	require.NoError(t, tx.Cancel())
+}
