@@ -66,6 +66,18 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, n
 					return backoff.Permanent(err)
 				}
 
+				// the deadlock rolled back the whole transaction AND ended it on
+				// the session, so anything executed on this connection from here
+				// on runs in autocommit mode. The replay below is only sound when
+				// a retry of the failing statement follows to resume the work; if
+				// the retry budget is already spent, replaying would commit each
+				// recorded query individually outside any transaction — beyond
+				// the reach of the caller's eventual rollback — leaving phantom
+				// rows. Surface the deadlock as-is instead.
+				if MaxAttempts > 0 && attempt >= MaxAttempts {
+					return backoff.Permanent(err)
+				}
+
 				// deadlock occurred, which means *every* query in this transaction
 				// was rolled back, so we need to run them all again
 				tx.updates.RLock()
