@@ -621,7 +621,7 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 
 // ExecContext executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return db.exec(db.Writes, ctx, nil, true, query, params...)
+	return db.exec(db.Writes, ctx, nil, query, params...)
 }
 
 // ExecContext executes a query and nothing more

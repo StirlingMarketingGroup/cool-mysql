@@ -1,9 +1,12 @@
 package mysql
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	stdMysql "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,6 +146,67 @@ func TestPostRollbackHooksNotRunWhenAlreadyCommitted(t *testing.T) {
 	err = cancel()
 	require.NoError(t, err)
 	require.False(t, called, "PostRollbackHook should not run when tx was already committed")
+}
+
+// db.ExecResult runs on the writes pool outside any transaction; the result is
+// returned to the caller.
+func TestDatabaseExecResult(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(7, 1))
+
+	res, err := db.ExecResult("insert into `t` (`a`) values (1)")
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	require.Equal(t, int64(7), id)
+}
+
+// tx.ExecResult runs the statement on the transaction's connection; the work is
+// only durable once the caller commits.
+func TestTxExecResult(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("update `t`").WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	tx, cancel, err := db.BeginTx()
+	require.NoError(t, err)
+	defer cancel()
+
+	res, err := tx.ExecResult("update `t` set `a` = 1")
+	require.NoError(t, err)
+	n, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), n)
+
+	require.NoError(t, tx.Commit())
+}
+
+// A deadlock (1213) inside an explicit transaction must surface to the caller
+// unchanged — no inline retry and no autocommit replay (either would appear
+// here as an unexpected second Exec or a `start transaction`, which sqlmock
+// would reject). The caller then rolls back the dead transaction and is free to
+// restart it from Begin (#167).
+func TestTxExecDeadlockSurfacesForCallerRetry(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnError(errTestDeadlock)
+	mock.ExpectRollback()
+
+	tx, cancel, err := db.BeginTx()
+	require.NoError(t, err)
+	defer cancel() // rolls back the deadlocked transaction
+
+	err = tx.Exec("insert into `t` (`a`) values (1)")
+	require.Error(t, err)
+	var mysqlErr *stdMysql.MySQLError
+	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1213, "want error 1213, got %v", err)
 }
 
 func TestPostRollbackHooksMultiple(t *testing.T) {

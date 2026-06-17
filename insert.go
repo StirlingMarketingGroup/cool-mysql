@@ -338,7 +338,7 @@ DUPE_KEY_SEARCH:
 
 		// One string copy per chunk (not per row) — amortized across thousands
 		// of rows, negligible next to the row-build savings.
-		result, err := in.db.exec(in.conn, ctx, in.tx, true, string(insertBuf))
+		result, err := in.db.exec(in.conn, ctx, in.tx, string(insertBuf))
 		if err != nil {
 			return err
 		}

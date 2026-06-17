@@ -41,9 +41,9 @@ Every read path (`query` in select.go) and write path (`exec` in exec.go) runs t
 4. `backoff.Retry` with exponential backoff bounded by `MaxExecutionTime` and optionally `MaxAttempts`. Retryable MySQL error numbers are enumerated in `checkRetryError` (error.go:60) — 1213 (deadlock), 1205, 2006, 2003, 1047, 1452, 1317, 1146, 1305, 1105.
 5. `backoff.PermanentError` is an **internal** signal only — `unwrapBackoffPermanent` must strip it before returning so callers' own `backoff.Retry` loops aren't hijacked. This was added in commit f2d0b1b; preserve this invariant when touching exec/select/exists.
 
-### Transactions and deadlock replay
+### Transactions and deadlock handling
 
-`Tx` (tx.go) tracks every `exec` call's replaced query in `tx.updates.queries`. On a 1213 deadlock mid-transaction, the `handleDeadlock` closure in exec.go replays every prior query on the same `*sql.Tx` before returning the error, so the outer `backoff.Retry` can retry the *current* statement against a state equivalent to before the deadlock. Replayed queries pass `newQuery=false` so they don't re-append to `updates.queries` and don't recurse into their own replay. Only `Exec`-style queries are tracked; `Select` is not.
+A 1213 deadlock is retryable in autocommit (`checkRetryError` lists it), but **inside an explicit transaction it is not retried**: a deadlock rolls back *and* ends the whole transaction on the session, leaving the connection in autocommit mode. The `exec` deadlock guard (`tx != nil && checkDeadlockError(err)`) returns `backoff.Permanent(err)` so the deadlock surfaces to the caller unchanged. The caller must restart the whole transaction from `Begin` — the only way to preserve atomicity, including any non-recorded `Select ... FOR UPDATE` locks and read-snapshot state. Earlier versions replayed the transaction's recorded writes (in autocommit, then later inside a re-opened tx); both were unsound and were removed in #167 — do not reintroduce mid-tx replay.
 
 `PostCommitHooks` fire only after a successful `Commit`. `PostRollbackHooks` fire after a rollback via `Cancel()` but **not** when `Cancel()` runs after a successful commit (detected via `sql.ErrTxDone`).
 
