@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	stdMysql "github.com/go-sql-driver/mysql"
 )
@@ -211,5 +212,67 @@ func TestExecDeadlockReplayAbortsWhenReopenFails(t *testing.T) {
 		if h.queries[i] != want[i] {
 			t.Fatalf("expected queries %q, got %q", want, h.queries)
 		}
+	}
+}
+
+// A non-deadlock failure during replay can't be recovered by re-opening and
+// replaying again, so it is terminal: the reconstruction stops and the error
+// surfaces instead of looping.
+func TestExecDeadlockReplayAbortsOnNonDeadlockReplayFailure(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 3
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	replayErr := errors.New("table is gone")
+	// call 0: original insert deadlocks; call 1: `start transaction`; call 2:
+	// replayed update fails with a non-deadlock, terminal error.
+	h := &recordingExecHandler{errors: []error{errTestDeadlock, nil, replayErr}}
+
+	db := &Database{}
+	_, err := db.exec(h, context.Background(), newDeadlockTestTx(), true, "insert into `t` (`a`) values (2)")
+	if err == nil {
+		t.Fatal("expected the non-deadlock replay failure to surface")
+	}
+	if !errors.Is(err, replayErr) {
+		t.Fatalf("expected the replay error, got %v", err)
+	}
+	want := []string{
+		"insert into `t` (`a`) values (2)",
+		"start transaction",
+		"update `t` set `a` = 1", // replay fails terminally — no restart
+	}
+	if len(h.queries) != len(want) {
+		t.Fatalf("expected the replay to abort, got %q", h.queries)
+	}
+	for i := range want {
+		if h.queries[i] != want[i] {
+			t.Fatalf("expected queries %q, got %q", want, h.queries)
+		}
+	}
+}
+
+// When attempts are uncapped (MaxAttempts == 0), MaxExecutionTime must bound the
+// reconstruction loop so a persistently deadlocking replay can't spin forever.
+// With the budget already exhausted the deadlock surfaces before any replay.
+func TestExecDeadlockReplayBoundedByMaxExecutionTime(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 0 // uncapped — only MaxExecutionTime can bound the loop
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	h := &recordingExecHandler{errors: []error{errTestDeadlock}}
+
+	// any elapsed time exceeds a 1ns budget, so the loop aborts on its first
+	// pass before re-opening the transaction.
+	db := &Database{MaxExecutionTime: time.Nanosecond}
+	_, err := db.exec(h, context.Background(), newDeadlockTestTx(), true, "insert into `t` (`a`) values (2)")
+	if err == nil {
+		t.Fatal("expected the deadlock error to surface")
+	}
+	var mysqlErr *stdMysql.MySQLError
+	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1213 {
+		t.Fatalf("expected error 1213, got %v", err)
+	}
+	if len(h.queries) != 1 {
+		t.Fatalf("expected the time budget to abort before any replay, got %q", h.queries)
 	}
 }
