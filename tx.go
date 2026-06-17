@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -17,12 +16,7 @@ type Tx struct {
 	Tx   *sql.Tx
 	Time time.Time
 
-	updates *struct {
-		sync.RWMutex
-		queries []string
-	}
-
-	PostCommitHooks    []func() error
+	PostCommitHooks   []func() error
 	PostRollbackHooks []func()
 }
 
@@ -36,11 +30,6 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 		db:   db,
 		Tx:   t,
 		Time: time.Now(),
-
-		updates: &struct {
-			sync.RWMutex
-			queries []string
-		}{queries: make([]string, 0)},
 	}
 
 	db.callLog(LogDetail{
@@ -152,7 +141,7 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return tx.db.exec(tx.Tx, ctx, tx, true, query, params...)
+	return tx.db.exec(tx.Tx, ctx, tx, query, params...)
 }
 
 // ExecContext executes a query and nothing more

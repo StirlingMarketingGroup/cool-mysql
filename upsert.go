@@ -230,7 +230,7 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 			}
 
 			if len(updateColumns) != 0 {
-				res, err := in.db.exec(in.conn, ctx, in.tx, true, q, r)
+				res, err := in.db.exec(in.conn, ctx, in.tx, q, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to update: %w", err), query, q, r)
 				}
