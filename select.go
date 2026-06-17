@@ -406,6 +406,13 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				}
 			}
 
+			if tx != nil && checkTxRetryError(err) {
+				// A tx-fatal deadlock / lock-wait timeout ends the transaction on
+				// the session; statement-level retry would run in autocommit and
+				// silently drop any FOR UPDATE locks the tx held. Surface it so the
+				// caller (or RunInTx) can restart the whole transaction (#167).
+				return struct{}{}, backoff.Permanent(err)
+			}
 			if checkRetryError(err) {
 				return struct{}{}, err
 			}
