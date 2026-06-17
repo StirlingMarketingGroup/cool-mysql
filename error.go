@@ -66,12 +66,30 @@ func checkRetryError(err error) (ok bool) {
 	return false
 }
 
-func checkDeadlockError(err error) (ok bool) {
+// checkTxRetryError reports whether err is a transaction-fatal MySQL error that
+// can only be recovered by restarting the whole transaction from a fresh Begin:
+// a deadlock (1213, SQLSTATE 40001) or a lock-wait timeout (1205). Inside an
+// explicit transaction these can end the transaction on the session — a deadlock
+// always, a lock-wait timeout when innodb_rollback_on_timeout is ON — leaving
+// the connection in autocommit mode, so replaying individual statements would
+// commit piecewise outside the caller's transaction and strand phantom rows (the
+// unsound path removed in #167). exec/query/exists therefore surface these
+// unchanged when in a tx instead of retrying them statement-by-statement, and
+// db.RunInTx restarts the whole closure on them. It is intentionally narrower
+// than checkRetryError, whose broader set is safe to re-run in place in
+// autocommit.
+func checkTxRetryError(err error) (ok bool) {
 	var mysqlErr *stdMysql.MySQLError
-	if errors.As(err, &mysqlErr) {
-		return mysqlErr.Number == 1213
+	if !errors.As(err, &mysqlErr) {
+		return false
 	}
-	return false
+	switch mysqlErr.Number {
+	case 1213, 1205:
+		return true
+	}
+	// Galera/PXC and some proxies surface a deadlock under SQLSTATE 40001 with a
+	// different vendor code; honor the standard serialization-failure state too.
+	return mysqlErr.SQLState == [5]byte{'4', '0', '0', '0', '1'}
 }
 
 func Wrap(err error, originalQuery, replaceQuery string, params any) Error {

@@ -75,6 +75,8 @@ func (h *recordingExecHandler) QueryContext(ctx context.Context, query string, a
 
 var errTestDeadlock = &stdMysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock; try restarting transaction"}
 
+var errTestLockWait = &stdMysql.MySQLError{Number: 1205, Message: "Lock wait timeout exceeded; try restarting transaction"}
+
 // Within an explicit transaction a deadlock (1213) rolls back AND ends the
 // whole transaction on the session, leaving the connection in autocommit mode.
 // cool-mysql must not transparently retry it: re-running the failing statement
@@ -107,6 +109,52 @@ func TestExecTxDeadlockSurfacesWithoutRetry(t *testing.T) {
 	}
 	if len(h.queries) != 1 {
 		t.Fatalf("expected the single failing statement with no retry or replay, got %q", h.queries)
+	}
+}
+
+// A lock-wait timeout (1205) inside a transaction is treated like a deadlock:
+// under innodb_rollback_on_timeout it ends the whole transaction, so a
+// statement-level retry would run in autocommit and strand phantom rows. It must
+// surface unchanged for a whole-transaction restart (via RunInTx), not be
+// retried in place.
+func TestExecTxLockWaitTimeoutSurfacesWithoutRetry(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 5 // budget to spare — it must still not be retried inside the tx
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	h := &recordingExecHandler{errors: []error{errTestLockWait}}
+
+	db := &Database{}
+	_, err := db.exec(h, context.Background(), &Tx{}, "insert into `t` (`a`) values (2)")
+	if err == nil {
+		t.Fatal("expected the lock-wait timeout to surface")
+	}
+
+	var mysqlErr *stdMysql.MySQLError
+	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1205 {
+		t.Fatalf("expected error 1205, got %v", err)
+	}
+	if len(h.queries) != 1 {
+		t.Fatalf("expected the single failing statement with no in-tx retry, got %q", h.queries)
+	}
+}
+
+// Outside a transaction a lock-wait timeout is safely retryable in place — the
+// statement ran in autocommit. The tx-only guard must not suppress that retry.
+func TestExecAutocommitLockWaitTimeoutStillRetries(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 3
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	h := &recordingExecHandler{errors: []error{errTestLockWait}}
+
+	db := &Database{}
+	_, err := db.exec(h, context.Background(), nil, "insert into `t` (`a`) values (2)")
+	if err != nil {
+		t.Fatalf("expected the autocommit retry to recover, got %v", err)
+	}
+	if len(h.queries) != 2 {
+		t.Fatalf("expected the statement to run twice (timeout then retry), got %q", h.queries)
 	}
 }
 

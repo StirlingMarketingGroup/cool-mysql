@@ -120,6 +120,13 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 			Error:    err,
 		})
 		if err != nil {
+			if tx != nil && checkTxRetryError(err) {
+				// A tx-fatal deadlock / lock-wait timeout ends the transaction on
+				// the session; statement-level retry would run in autocommit and
+				// silently drop any FOR UPDATE locks the tx held. Surface it so the
+				// caller (or RunInTx) can restart the whole transaction (#167).
+				return false, backoff.Permanent(err)
+			}
 			if checkRetryError(err) {
 				return false, err
 			}
