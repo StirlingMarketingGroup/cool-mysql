@@ -72,7 +72,20 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, q
 				return nil, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
-				return nil, db.Test()
+				// A *sql.Tx is bound to its (now dead) conn and can't be
+				// resumed on a fresh one, so fail fast. Otherwise reconnect
+				// if the pool is down and return the error so backoff
+				// re-runs — the next ExecContext draws a healthy pooled
+				// conn. Returning db.Test() directly would report (nil, nil)
+				// as success when the pool is healthy, silently turning a
+				// failed write into a no-op "success" (mirrors exists.go).
+				if tx != nil {
+					return nil, backoff.Permanent(err)
+				}
+				if testErr := db.Test(); testErr != nil {
+					return nil, testErr
+				}
+				return nil, err
 			}
 			return nil, backoff.Permanent(err)
 		}
