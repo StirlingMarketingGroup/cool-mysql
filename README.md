@@ -79,6 +79,9 @@ cool-mysql can be configured using environment variables:
 | `COOL_MAX_ATTEMPTS` | `0` (attempts) | Maximum query attempts including the first try (<=0 disables the cap) |
 | `COOL_REDIS_LOCK_RETRY_DELAY` | `0.020` (seconds) | Delay between Redis lock retry attempts |
 | `COOL_MYSQL_MAX_QUERY_LOG_LENGTH` | `4096` (bytes) | Maximum length of queries in error logs |
+| `COOL_READ_TIMEOUT` | `0` (off) | Socket read timeout (seconds) applied to every pool. Bounds a half-open connection that would otherwise hang the read until your context deadline; on timeout the query retries on a fresh connection. The driver resets it per packet read, so steady streaming queries are unaffected. A non-zero `readTimeout=` in the DSN wins. |
+| `COOL_WRITE_TIMEOUT` | `0` (off) | Socket write timeout (seconds), symmetric with `COOL_READ_TIMEOUT`. |
+| `COOL_DIAL_TIMEOUT` | `0` (off) | New-connection dial timeout (seconds). |
 
 **Example:**
 
@@ -87,6 +90,7 @@ export COOL_MAX_EXECUTION_TIME_TIME=60  # 60 second timeout
 export COOL_MAX_ATTEMPTS=5              # limit to 5 attempts per query
 export COOL_REDIS_LOCK_RETRY_DELAY=0.050  # 50ms retry delay
 export COOL_MYSQL_MAX_QUERY_LOG_LENGTH=8192  # 8KB log limit
+export COOL_READ_TIMEOUT=25             # fail a silent read after 25s, then retry on a fresh conn
 ```
 
 ### Enabling caching

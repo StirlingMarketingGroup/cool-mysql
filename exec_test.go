@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/cenkalti/backoff/v5"
 	stdMysql "github.com/go-sql-driver/mysql"
 )
@@ -176,5 +178,77 @@ func TestExecAutocommitDeadlockStillRetries(t *testing.T) {
 	}
 	if len(h.queries) != 2 {
 		t.Fatalf("expected the statement to run twice (deadlock then retry), got %q", h.queries)
+	}
+}
+
+// Inside an explicit transaction a dead connection (mysql.ErrInvalidConn —
+// which ReadTimeout now makes reachable on the write path, #172) cannot be
+// resumed on a fresh conn, since the *sql.Tx is bound to it. exec must fail
+// fast and NOT retry — the caller must restart the whole transaction. The
+// backoff.Permanent wrapper used to stop the loop must not leak.
+func TestExecTxInvalidConnFailsFastWithoutRetry(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 5 // budget to spare — it must still not be retried inside the tx
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	h := &recordingExecHandler{errors: []error{stdMysql.ErrInvalidConn}}
+
+	db := &Database{}
+	_, err := db.exec(h, context.Background(), &Tx{}, "insert into `t` (`a`) values (2)")
+	if err == nil {
+		t.Fatal("expected ErrInvalidConn to surface inside a tx")
+	}
+	if !errors.Is(err, stdMysql.ErrInvalidConn) {
+		t.Fatalf("expected ErrInvalidConn, got %v", err)
+	}
+	var perm *backoff.PermanentError
+	if errors.As(err, &perm) {
+		t.Fatalf("returned error chain still contains *backoff.PermanentError: %#v", err)
+	}
+	if len(h.queries) != 1 {
+		t.Fatalf("a tx-bound dead conn must not be retried, got %q", h.queries)
+	}
+}
+
+// Outside a transaction, a dead connection (ErrInvalidConn) must reconnect
+// and retry on a fresh pooled conn rather than report (nil, nil) as success
+// (the bug #172 made reachable on the write pool). When the pool itself is
+// down so db.Test()/Reconnect fails, that error surfaces and the statement
+// is never falsely reported as having succeeded.
+func TestExecInvalidConnPoolDownSurfacesError(t *testing.T) {
+	originalMax := MaxAttempts
+	MaxAttempts = 2
+	t.Cleanup(func() { MaxAttempts = originalMax })
+
+	// A closed pool whose Ping fails, so db.Test() attempts a Reconnect...
+	closedPool, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	closedPool.Close()
+
+	// ...and Reconnect fails because sqlOpenFunc can't build a new pool, so
+	// db.Test() returns a non-nil error.
+	origOpen := sqlOpenFunc
+	t.Cleanup(func() { sqlOpenFunc = origOpen })
+	sqlOpenFunc = func(*stdMysql.Config) (*sql.DB, error) {
+		return nil, errors.New("dial refused")
+	}
+
+	h := &recordingExecHandler{errors: []error{stdMysql.ErrInvalidConn, stdMysql.ErrInvalidConn}}
+	db := &Database{
+		testMx:    new(sync.Mutex),
+		Writes:    closedPool,
+		WritesDSN: testDSN,
+		ReadsDSN:  testDSN,
+		Logger:    DefaultLogger(),
+	}
+
+	_, err = db.exec(h, context.Background(), nil, "insert into `t` (`a`) values (2)")
+	if err == nil {
+		t.Fatal("expected the failed Test()/Reconnect error to surface, not a phantom success")
+	}
+	if len(h.queries) != MaxAttempts {
+		t.Fatalf("statement must re-run each attempt (never falsely succeed) and stay bounded by MaxAttempts; got %d calls", len(h.queries))
 	}
 }

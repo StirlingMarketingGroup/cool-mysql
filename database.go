@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"path/filepath"
 	"reflect"
@@ -138,6 +139,26 @@ func applyTimeZoneToConfig(cfg *mysql.Config) {
 	cfg.Params["time_zone"] = "'" + tzStr + "'"
 }
 
+// applyNetTimeoutsToConfig copies the package-level ReadTimeout /
+// WriteTimeout / DialTimeout defaults onto cfg, but only for fields the DSN
+// left at zero — an explicit *non-zero* DSN value (readTimeout= /
+// writeTimeout= / timeout=) always wins, matching applyTimeZoneToConfig's
+// caller-intent precedence. (A parsed value of zero is indistinguishable
+// from an omitted one, so an explicit DSN zero can't override a non-zero
+// default — see ReadTimeout's doc.) All three default to 0 (off), so this
+// is a no-op unless a caller opts in. See #172 for why these matter.
+func applyNetTimeoutsToConfig(cfg *mysql.Config) {
+	if cfg.ReadTimeout == 0 && ReadTimeout > 0 {
+		cfg.ReadTimeout = ReadTimeout
+	}
+	if cfg.WriteTimeout == 0 && WriteTimeout > 0 {
+		cfg.WriteTimeout = WriteTimeout
+	}
+	if cfg.Timeout == 0 && DialTimeout > 0 {
+		cfg.Timeout = DialTimeout
+	}
+}
+
 func (db *Database) WriterWithSubdir(subdir string) *Database {
 	db = db.Clone()
 	db.Writes = &sqlWriter{
@@ -267,6 +288,12 @@ func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, err
 		return nil, fmt.Errorf("failed to parse %s DSN: %w", connType, err)
 	}
 
+	// Apply the package-level socket timeouts (off by default) before
+	// building the connector so a half-open conn surfaces as
+	// mysql.ErrInvalidConn for the retry path instead of hanging the read
+	// to the caller's deadline. See #172.
+	applyNetTimeoutsToConfig(cfg)
+
 	// The driver hands BeforeConnect a fresh Clone() of cfg for every
 	// new conn, so mutating c here scopes to that one conn.
 	_ = cfg.Apply(mysql.BeforeConnect(func(_ context.Context, c *mysql.Config) error {
@@ -385,6 +412,11 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 // Loc is set to time.UTC because we don't have a DSN to read it from. If
 // the caller built the pools with a non-UTC loc, set db.Loc explicitly so
 // time.Time literals format in a location matching the read-side parser.
+//
+// The ReadTimeout / WriteTimeout / DialTimeout defaults are NOT applied
+// here — the pools are already built, so their socket timeouts are fixed by
+// whatever DSN/connector the caller used. Bake readTimeout= into that DSN
+// if you want the half-open recovery described on ReadTimeout (#172).
 func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	db := new(Database)
 	db.testMx = new(sync.Mutex)
@@ -485,9 +517,7 @@ func (db *Database) AddTemplateFuncs(funcs template.FuncMap) {
 		db.tmplFuncs = make(template.FuncMap)
 	}
 
-	for k, v := range funcs {
-		db.tmplFuncs[k] = v
-	}
+	maps.Copy(db.tmplFuncs, funcs)
 }
 
 func (db *Database) AddValuerFuncs(funcs ...any) {

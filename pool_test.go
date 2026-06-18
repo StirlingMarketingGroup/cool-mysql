@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -22,6 +23,10 @@ type mockOpen struct {
 	calls int
 	pools []*sql.DB
 	mocks []sqlmock.Sqlmock
+	// cfgs records the *mysql.Config passed to sqlOpenFunc for each pool,
+	// in open order, so tests can assert what openPool applied (timeouts,
+	// BeforeConnect, etc.) before building the connector.
+	cfgs []*mysqldrv.Config
 }
 
 // installMockOpen replaces sqlOpenFunc for the duration of a test with a
@@ -44,6 +49,7 @@ func installMockOpen(t *testing.T) *mockOpen {
 		mo.calls++
 		mo.pools = append(mo.pools, pool)
 		mo.mocks = append(mo.mocks, m)
+		mo.cfgs = append(mo.cfgs, cfg)
 		return pool, nil
 	}
 
@@ -329,4 +335,111 @@ func TestOpenPool_WiresBeforeConnectTimeZone(t *testing.T) {
 
 	require.Equal(t, "'+00:00'", observed,
 		"BeforeConnect must have run applyTimeZoneToConfig on the per-conn cfg clone")
+}
+
+// setNetTimeouts overrides the package-level socket-timeout defaults for the
+// duration of a test and restores them afterward, so the off-by-default
+// global state isn't leaked between tests.
+func setNetTimeouts(t *testing.T, read, write, dial time.Duration) {
+	t.Helper()
+	origR, origW, origD := ReadTimeout, WriteTimeout, DialTimeout
+	t.Cleanup(func() {
+		ReadTimeout, WriteTimeout, DialTimeout = origR, origW, origD
+	})
+	ReadTimeout, WriteTimeout, DialTimeout = read, write, dial
+}
+
+func TestApplyNetTimeouts_DefaultsOffAreNoop(t *testing.T) {
+	setNetTimeouts(t, 0, 0, 0)
+
+	cfg := mysqldrv.NewConfig()
+	applyNetTimeoutsToConfig(cfg)
+
+	require.Zero(t, cfg.ReadTimeout, "ReadTimeout must stay off when the default is 0")
+	require.Zero(t, cfg.WriteTimeout, "WriteTimeout must stay off when the default is 0")
+	require.Zero(t, cfg.Timeout, "dial Timeout must stay off when the default is 0")
+}
+
+func TestApplyNetTimeouts_AppliesPackageDefaults(t *testing.T) {
+	setNetTimeouts(t, 5*time.Second, 6*time.Second, 7*time.Second)
+
+	cfg := mysqldrv.NewConfig()
+	applyNetTimeoutsToConfig(cfg)
+
+	require.Equal(t, 5*time.Second, cfg.ReadTimeout)
+	require.Equal(t, 6*time.Second, cfg.WriteTimeout)
+	require.Equal(t, 7*time.Second, cfg.Timeout)
+}
+
+func TestApplyNetTimeouts_ExplicitDSNValueWins(t *testing.T) {
+	setNetTimeouts(t, 5*time.Second, 5*time.Second, 5*time.Second)
+
+	// Mimic a DSN that already carried explicit timeouts: applyNet... must
+	// leave those alone (caller intent wins) while still filling fields the
+	// DSN left at zero.
+	cfg := mysqldrv.NewConfig()
+	cfg.ReadTimeout = 99 * time.Second
+	applyNetTimeoutsToConfig(cfg)
+
+	require.Equal(t, 99*time.Second, cfg.ReadTimeout, "explicit DSN ReadTimeout must win over the default")
+	require.Equal(t, 5*time.Second, cfg.WriteTimeout, "unset WriteTimeout still gets the default")
+	require.Equal(t, 5*time.Second, cfg.Timeout, "unset dial Timeout still gets the default")
+}
+
+func TestNewFromDSN_AppliesNetTimeoutsToBothPools(t *testing.T) {
+	setNetTimeouts(t, 11*time.Second, 12*time.Second, 13*time.Second)
+	mo := installMockOpen(t)
+
+	// Distinct DSNs so both a writes and a reads pool are opened.
+	db, err := NewFromDSN(testDSN, testDSN+"?charset=utf8mb4")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	require.Len(t, mo.cfgs, 2, "expected two pools opened")
+	for i, cfg := range mo.cfgs {
+		require.Equalf(t, 11*time.Second, cfg.ReadTimeout, "pool %d ReadTimeout", i)
+		require.Equalf(t, 12*time.Second, cfg.WriteTimeout, "pool %d WriteTimeout", i)
+		require.Equalf(t, 13*time.Second, cfg.Timeout, "pool %d dial Timeout", i)
+	}
+}
+
+func TestNewFromDSNDualPool_AppliesNetTimeouts(t *testing.T) {
+	setNetTimeouts(t, 11*time.Second, 0, 0)
+	mo := installMockOpen(t)
+
+	db, err := NewFromDSNDualPool(testDSN)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	require.Len(t, mo.cfgs, 2, "dual pool opens two independent pools")
+	for i, cfg := range mo.cfgs {
+		require.Equalf(t, 11*time.Second, cfg.ReadTimeout, "pool %d ReadTimeout", i)
+	}
+}
+
+func TestAddTemplateFuncs_InitializesThenMerges(t *testing.T) {
+	db := &Database{}
+
+	// First call must lazily initialize the (nil) map and add the func.
+	db.AddTemplateFuncs(template.FuncMap{"a": func() string { return "A" }})
+	require.Contains(t, db.tmplFuncs, "a", "first call must initialize the map and add the func")
+
+	// Second call: the map is already non-nil, so it must merge — not replace.
+	db.AddTemplateFuncs(template.FuncMap{"b": func() string { return "B" }})
+	require.Contains(t, db.tmplFuncs, "a", "existing funcs must be preserved across calls")
+	require.Contains(t, db.tmplFuncs, "b", "new funcs must be merged in")
+}
+
+func TestNewFromDSN_DSNReadTimeoutOverridesDefault(t *testing.T) {
+	setNetTimeouts(t, 11*time.Second, 0, 0)
+	mo := installMockOpen(t)
+
+	// The DSN carries an explicit readTimeout, which must survive openPool.
+	db, err := NewFromDSN(testDSN+"?readTimeout=3s", testDSN+"?readTimeout=3s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	require.Len(t, mo.cfgs, 1, "same DSN shares one pool")
+	require.Equal(t, 3*time.Second, mo.cfgs[0].ReadTimeout,
+		"explicit DSN readTimeout must win over the package default")
 }
