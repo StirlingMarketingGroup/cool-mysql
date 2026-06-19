@@ -35,6 +35,7 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, q
 	var rowsAffected int64
 	operation := func() (sql.Result, error) {
 		attempt++
+		attemptStart := time.Now()
 		res, err := conn.ExecContext(ctx, replacedQuery)
 		if res != nil {
 			rowsAffected, _ = res.RowsAffected()
@@ -82,6 +83,11 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, q
 				if tx != nil {
 					return nil, backoff.Permanent(err)
 				}
+				// Don't follow a near-budget attempt with another full-length
+				// one (the ReadTimeout doubling in #174).
+				if !db.retryWithinBudget(ctx, start, attemptStart) {
+					return nil, backoff.Permanent(err)
+				}
 				if testErr := db.Test(); testErr != nil {
 					return nil, testErr
 				}
@@ -95,7 +101,9 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, q
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-		backoff.WithMaxElapsedTime(db.MaxExecutionTime),
+		// Pass the budget unconditionally: backoff defaults an omitted
+		// MaxElapsedTime to 15m, whereas WithMaxElapsedTime(0) means uncapped (#174).
+		backoff.WithMaxElapsedTime(db.retryElapsedBudget(ctx)),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))

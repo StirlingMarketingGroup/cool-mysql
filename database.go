@@ -159,6 +159,52 @@ func applyNetTimeoutsToConfig(cfg *mysql.Config) {
 	}
 }
 
+// keepAliveNet is the private go-sql-driver network name cool-mysql registers
+// its keepalive-tuned dialer under. Using a dedicated name (rather than
+// re-registering "tcp") scopes the keepalive settings to cool-mysql's own pools
+// so other go-sql-driver users in the same process are unaffected.
+const keepAliveNet = "cool-mysql-tcp-keepalive"
+
+var registerKeepAliveOnce sync.Once
+
+// keepAliveDialer builds a *net.Dialer carrying the package-level keepalive
+// settings (read at dial time so a value set before pool open applies to every
+// conn the pool dials). go-sql-driver applies cfg.Timeout as a ctx deadline
+// around the dial, so the dialer itself sets no Timeout.
+func keepAliveDialer() *net.Dialer {
+	d := &net.Dialer{}
+	if TCPKeepAlive > 0 {
+		d.KeepAliveConfig = net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     TCPKeepAlive,
+			Interval: TCPKeepAlive,
+			Count:    TCPKeepAliveCount,
+		}
+	}
+	return d
+}
+
+func registerKeepAliveDialer() {
+	registerKeepAliveOnce.Do(func() {
+		mysql.RegisterDialContext(keepAliveNet, func(ctx context.Context, addr string) (net.Conn, error) {
+			return keepAliveDialer().DialContext(ctx, "tcp", addr)
+		})
+	})
+}
+
+// applyKeepAliveToConfig switches a TCP pool onto cool-mysql's keepalive-tuned
+// dialer when TCPKeepAlive is set, so a half-open connection is torn down by the
+// OS and surfaces as a connection error for the swap-and-retry path — without a
+// whole-query socket read deadline. No-op when keepalive tuning is off or the
+// pool isn't TCP (e.g. a unix socket). See TCPKeepAlive and #174.
+func applyKeepAliveToConfig(cfg *mysql.Config) {
+	if TCPKeepAlive <= 0 || cfg.Net != "tcp" {
+		return
+	}
+	registerKeepAliveDialer()
+	cfg.Net = keepAliveNet
+}
+
 func (db *Database) WriterWithSubdir(subdir string) *Database {
 	db = db.Clone()
 	db.Writes = &sqlWriter{
@@ -293,6 +339,11 @@ func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, err
 	// mysql.ErrInvalidConn for the retry path instead of hanging the read
 	// to the caller's deadline. See #172.
 	applyNetTimeoutsToConfig(cfg)
+
+	// Switch onto the keepalive-tuned dialer (off by default) so a half-open
+	// TCP conn is torn down at the network layer without a whole-query read
+	// cap — the liveness counterpart that doesn't cut healthy long reads (#174).
+	applyKeepAliveToConfig(cfg)
 
 	// The driver hands BeforeConnect a fresh Clone() of cfg for every
 	// new conn, so mutating c here scopes to that one conn.

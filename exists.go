@@ -109,7 +109,13 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 	var attempt int
 	operation := func() (bool, error) {
 		attempt++
-		rows, err := conn.QueryContext(ctx, replacedQuery)
+		attemptStart := time.Now()
+
+		// Bound the read server-side with a ctx-deadline-derived
+		// MAX_EXECUTION_TIME hint so an over-budget query aborts cleanly with
+		// ER_QUERY_TIMEOUT instead of running to the deadline or tripping a
+		// socket ReadTimeout that gets replayed (#174).
+		rows, err := conn.QueryContext(ctx, db.queryWithBudgetHint(ctx, replacedQuery))
 		tx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
 			Query:    replacedQuery,
@@ -141,6 +147,11 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 				if tx != nil {
 					return false, backoff.Permanent(err)
 				}
+				// Don't follow a near-budget attempt with another full-length
+				// one (the ReadTimeout doubling in #174).
+				if !db.retryWithinBudget(ctx, start, attemptStart) {
+					return false, backoff.Permanent(err)
+				}
 				if testErr := db.Test(); testErr != nil {
 					return false, testErr
 				}
@@ -164,6 +175,9 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 				if tx != nil {
 					return false, backoff.Permanent(scanErr)
 				}
+				if !db.retryWithinBudget(ctx, start, attemptStart) {
+					return false, backoff.Permanent(scanErr)
+				}
 				// Reconnect if the pool is down, then return the error so
 				// backoff re-runs the whole query (exists hasn't surfaced a
 				// result yet, so a re-run is always safe).
@@ -180,7 +194,9 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-		backoff.WithMaxElapsedTime(db.MaxExecutionTime),
+		// Pass the budget unconditionally: backoff defaults an omitted
+		// MaxElapsedTime to 15m, whereas WithMaxElapsedTime(0) means uncapped (#174).
+		backoff.WithMaxElapsedTime(db.retryElapsedBudget(ctx)),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
