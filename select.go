@@ -387,7 +387,23 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 	var rowCount int
 	operation := func() (struct{}, error) {
 		attempt++
-		rows, err := conn.QueryContext(ctx, replacedQuery)
+		attemptStart := time.Now()
+
+		// When the caller's ctx carries a deadline, bound the read server-side
+		// with a MAX_EXECUTION_TIME hint derived from the remaining budget, so
+		// an over-budget query aborts cleanly with ER_QUERY_TIMEOUT (3024 — not
+		// in checkRetryError, so it fails once and leaves the conn valid)
+		// instead of running to the deadline or tripping a socket ReadTimeout
+		// that gets blindly replayed. Recomputed per attempt so a retried query
+		// reflects the budget actually left. See #174.
+		runQuery := replacedQuery
+		if deadline, ok := ctx.Deadline(); ok {
+			if hinted, ok := injectMaxExecutionTime(replacedQuery, maxExecutionTimeMillis(time.Until(deadline))); ok {
+				runQuery = hinted
+			}
+		}
+
+		rows, err := conn.QueryContext(ctx, runQuery)
 
 		tx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
@@ -417,6 +433,11 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				return struct{}{}, err
 			}
 			if errors.Is(err, mysql.ErrInvalidConn) {
+				// Don't follow a near-budget attempt with another full-length one
+				// (the 25s→50s ReadTimeout doubling in #174).
+				if !db.retryWithinBudget(ctx, start, attemptStart) {
+					return struct{}{}, backoff.Permanent(err)
+				}
 				return struct{}{}, swapConn(err)
 			}
 			return struct{}{}, backoff.Permanent(err)
@@ -433,6 +454,9 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			// result and re-run the whole query on a fresh conn. Everything
 			// else — and every error on a channel/func dest — is permanent.
 			if retryable && (errors.Is(scanErr, mysql.ErrInvalidConn) || errors.Is(scanErr, driver.ErrBadConn)) {
+				if !db.retryWithinBudget(ctx, start, attemptStart) {
+					return struct{}{}, backoff.Permanent(scanErr)
+				}
 				resetAccumulator()
 				return struct{}{}, swapConn(scanErr)
 			}
@@ -445,7 +469,9 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-		backoff.WithMaxElapsedTime(db.MaxExecutionTime),
+	}
+	if budget := db.retryElapsedBudget(ctx); budget > 0 {
+		options = append(options, backoff.WithMaxElapsedTime(budget))
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))

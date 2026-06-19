@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -280,7 +281,10 @@ func TestReadTimeout_HalfOpenSurfacesAsInvalidConn(t *testing.T) {
 	t.Cleanup(func() { MaxAttempts = origAttempts })
 
 	srv := startFakeServer(t, func(q string) (queryAction, string, time.Duration) {
-		if q == stallSentinel {
+		// Match on the literal rather than the whole statement: a ctx with a
+		// deadline makes SelectContext inject a MAX_EXECUTION_TIME hint, so the
+		// query text the server sees is "SELECT /*+ ... */ 'stall-me'" (#174).
+		if strings.Contains(q, "'stall-me'") {
 			return actionStall, "", 0
 		}
 		return actionOK, "", 0
@@ -319,7 +323,7 @@ func TestReadTimeout_RetrySwapsConnAndSucceeds(t *testing.T) {
 	// on a fresh connection.
 	var sentinelSeen atomic.Int64
 	srv := startFakeServer(t, func(q string) (queryAction, string, time.Duration) {
-		if q == stallSentinel {
+		if strings.Contains(q, "'stall-me'") {
 			if sentinelSeen.Add(1) == 1 {
 				return actionStall, "", 0
 			}
@@ -391,7 +395,7 @@ func TestReadTimeout_HealthyStreamingQueryUnaffected(t *testing.T) {
 	// spuriously trip the deadline between packets.
 	perPacket := 150 * time.Millisecond
 	srv := startFakeServer(t, func(q string) (queryAction, string, time.Duration) {
-		if q == streamQuery {
+		if strings.Contains(q, "'stream'") {
 			return actionRows, "streamed", perPacket
 		}
 		return actionOK, "", 0
