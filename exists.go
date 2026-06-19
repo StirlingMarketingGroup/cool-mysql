@@ -115,14 +115,7 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 		// MAX_EXECUTION_TIME hint so an over-budget query aborts cleanly with
 		// ER_QUERY_TIMEOUT instead of running to the deadline or tripping a
 		// socket ReadTimeout that gets replayed (#174).
-		runQuery := replacedQuery
-		if deadline, ok := ctx.Deadline(); ok {
-			if hinted, ok := injectMaxExecutionTime(replacedQuery, maxExecutionTimeMillis(time.Until(deadline))); ok {
-				runQuery = hinted
-			}
-		}
-
-		rows, err := conn.QueryContext(ctx, runQuery)
+		rows, err := conn.QueryContext(ctx, db.queryWithBudgetHint(ctx, replacedQuery))
 		tx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
 			Query:    replacedQuery,
@@ -201,9 +194,9 @@ func (db *Database) exists(conn handlerWithContext, ctx context.Context, query s
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-	}
-	if budget := db.retryElapsedBudget(ctx); budget > 0 {
-		options = append(options, backoff.WithMaxElapsedTime(budget))
+		// Pass the budget unconditionally: backoff defaults an omitted
+		// MaxElapsedTime to 15m, whereas WithMaxElapsedTime(0) means uncapped (#174).
+		backoff.WithMaxElapsedTime(db.retryElapsedBudget(ctx)),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))

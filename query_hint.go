@@ -1,10 +1,32 @@
 package mysql
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// queryWithBudgetHint returns q with a MAX_EXECUTION_TIME hint derived from the
+// ctx deadline, for the read paths (select / exists). When ctx carries no
+// deadline, or q isn't a leading SELECT (see injectMaxExecutionTime), q is
+// returned unchanged. Callers recompute this per attempt so the hint reflects
+// the budget actually left. See #174.
+//
+// Note: the hint only governs read-only top-level SELECTs. A statement that
+// leads with WITH (CTE) is left unhinted (the hint must lead the SELECT), and
+// MySQL ignores MAX_EXECUTION_TIME on locking reads (FOR UPDATE / LOCK IN SHARE
+// MODE); those fall back to the ctx deadline as the only bound.
+func (db *Database) queryWithBudgetHint(ctx context.Context, q string) string {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return q
+	}
+	if hinted, ok := injectMaxExecutionTime(q, maxExecutionTimeMillis(time.Until(deadline))); ok {
+		return hinted
+	}
+	return q
+}
 
 // maxExecutionTimeMillis converts a remaining context budget into the
 // millisecond value for a MAX_EXECUTION_TIME optimizer hint. It subtracts a

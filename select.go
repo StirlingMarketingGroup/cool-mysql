@@ -396,14 +396,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		// instead of running to the deadline or tripping a socket ReadTimeout
 		// that gets blindly replayed. Recomputed per attempt so a retried query
 		// reflects the budget actually left. See #174.
-		runQuery := replacedQuery
-		if deadline, ok := ctx.Deadline(); ok {
-			if hinted, ok := injectMaxExecutionTime(replacedQuery, maxExecutionTimeMillis(time.Until(deadline))); ok {
-				runQuery = hinted
-			}
-		}
-
-		rows, err := conn.QueryContext(ctx, runQuery)
+		rows, err := conn.QueryContext(ctx, db.queryWithBudgetHint(ctx, replacedQuery))
 
 		tx, _ := conn.(*sql.Tx)
 		db.callLog(LogDetail{
@@ -469,9 +462,10 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-	}
-	if budget := db.retryElapsedBudget(ctx); budget > 0 {
-		options = append(options, backoff.WithMaxElapsedTime(budget))
+		// Pass the budget unconditionally: backoff defaults an omitted
+		// MaxElapsedTime to 15m, whereas WithMaxElapsedTime(0) means uncapped —
+		// the behavior the no-deadline/MaxExecutionTime==0 path relies on (#174).
+		backoff.WithMaxElapsedTime(db.retryElapsedBudget(ctx)),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))

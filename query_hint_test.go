@@ -1,11 +1,28 @@
 package mysql
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestQueryWithBudgetHint(t *testing.T) {
+	db := &Database{}
+
+	// No deadline → unchanged.
+	require.Equal(t, "SELECT 1", db.queryWithBudgetHint(context.Background(), "SELECT 1"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Deadline + leading SELECT → hinted.
+	require.Contains(t, db.queryWithBudgetHint(ctx, "SELECT 1"), "MAX_EXECUTION_TIME")
+
+	// Deadline but not a leading SELECT → unchanged (inject returns false).
+	require.Equal(t, "UPDATE t SET x = 1", db.queryWithBudgetHint(ctx, "UPDATE t SET x = 1"))
+}
 
 func TestInjectMaxExecutionTime(t *testing.T) {
 	tests := []struct {

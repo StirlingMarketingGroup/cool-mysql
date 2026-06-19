@@ -14,8 +14,10 @@ import (
 // regardless of the caller's real budget. Without a deadline the fixed
 // db.MaxExecutionTime applies, preserving the historical behavior of the
 // non-context APIs (which pass context.Background()). A non-positive result
-// means "no elapsed-time cap" (matching backoff's WithMaxElapsedTime(0)). See
-// #174.
+// means "no elapsed-time cap" — but only because callers pass it to
+// backoff.WithMaxElapsedTime *unconditionally*: WithMaxElapsedTime(0) is
+// uncapped, whereas omitting the option lets backoff apply its 15m default.
+// See #174.
 func (db *Database) retryElapsedBudget(ctx context.Context) time.Duration {
 	if deadline, ok := ctx.Deadline(); ok {
 		return time.Until(deadline)

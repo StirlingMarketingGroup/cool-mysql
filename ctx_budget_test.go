@@ -17,6 +17,12 @@ func TestRetryElapsedBudget(t *testing.T) {
 	// No deadline → the fixed global budget (preserves non-ctx API behavior).
 	require.Equal(t, 27*time.Second, db.retryElapsedBudget(context.Background()))
 
+	// MaxExecutionTime==0 + no deadline → 0, which callers pass to
+	// WithMaxElapsedTime(0) for an uncapped retry loop (#174). The bug this
+	// guards: a `budget > 0` gate would omit the option and let backoff apply
+	// its 15m default instead of leaving it uncapped.
+	require.Equal(t, time.Duration(0), (&Database{MaxExecutionTime: 0}).retryElapsedBudget(context.Background()))
+
 	// A deadline below the global cap governs.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

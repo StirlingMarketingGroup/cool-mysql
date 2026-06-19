@@ -101,9 +101,9 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, q
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-	}
-	if budget := db.retryElapsedBudget(ctx); budget > 0 {
-		options = append(options, backoff.WithMaxElapsedTime(budget))
+		// Pass the budget unconditionally: backoff defaults an omitted
+		// MaxElapsedTime to 15m, whereas WithMaxElapsedTime(0) means uncapped (#174).
+		backoff.WithMaxElapsedTime(db.retryElapsedBudget(ctx)),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
