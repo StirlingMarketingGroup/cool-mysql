@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	stdMysql "github.com/go-sql-driver/mysql"
@@ -15,6 +16,13 @@ func withMaxAttempts(t *testing.T, n int) {
 	orig := MaxAttempts
 	MaxAttempts = n
 	t.Cleanup(func() { MaxAttempts = orig })
+}
+
+func withMaxExcusedLockWaits(t *testing.T, n int) {
+	t.Helper()
+	orig := MaxExcusedLockWaits
+	MaxExcusedLockWaits = n
+	t.Cleanup(func() { MaxExcusedLockWaits = orig })
 }
 
 // checkTxRetryError is the narrow gate for whole-transaction retries: a deadlock
@@ -453,4 +461,130 @@ func TestRunInTxCommitDeadlockRetries(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, 2, calls, "fn re-runs from a fresh Begin after a commit-time deadlock")
+}
+
+// A lock-wait block far longer than MaxExecutionTime must not exhaust the
+// retry budget — that blocked time is excused, up to MaxExcusedLockWaits
+// attempts (#7829). Without the fix this is exactly today's prod bug: a
+// single blocked attempt burns the whole elapsed-time budget and RunInTx
+// never gets a second attempt.
+func TestRunInTxExcusesLockWaitBlockedTimeFromBudget(t *testing.T) {
+	withMaxAttempts(t, 5)
+	withMaxExcusedLockWaits(t, 1)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+	db.MaxExecutionTime = 20 * time.Millisecond // far smaller than the 150ms block below
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillDelayFor(150 * time.Millisecond).WillReturnError(errTestLockWait)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	var calls int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "the 150ms lock-wait block must not be charged against the 20ms budget")
+}
+
+// MaxExcusedLockWaits=1 excuses only the FIRST 1205; the second is charged in
+// full and blows the tiny budget, so RunInTx must stop instead of retrying
+// forever on a permanently stuck lock.
+func TestRunInTxLockWaitExcuseCapStopsRunaway(t *testing.T) {
+	withMaxAttempts(t, 10) // generous — the elapsed-budget gate, not MaxTries, must be what stops this
+	withMaxExcusedLockWaits(t, 1)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+	db.MaxExecutionTime = 5 * time.Millisecond
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillDelayFor(30 * time.Millisecond).WillReturnError(errTestLockWait)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillDelayFor(30 * time.Millisecond).WillReturnError(errTestLockWait)
+	mock.ExpectRollback()
+
+	var calls int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
+	})
+	require.Error(t, err)
+	require.Equal(t, 2, calls, "only the first 1205 is excused; the second is charged and exhausts the 5ms budget")
+
+	var mysqlErr *stdMysql.MySQLError
+	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1205, "want 1205, got %v", err)
+}
+
+// A non-lock-wait retryable error (1213) is charged in full, exactly like
+// before #7829 — MaxExecutionTime must still bound a stuck-deadlock loop even
+// though RunInTx no longer passes it to backoff.WithMaxElapsedTime directly.
+func TestRunInTxNonLockWaitErrorStillBoundedByMaxExecutionTime(t *testing.T) {
+	withMaxAttempts(t, 100) // generous — the elapsed-budget gate, not MaxTries, must be what stops this
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+	db.MaxExecutionTime = 5 * time.Millisecond
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillDelayFor(20 * time.Millisecond).WillReturnError(errTestDeadlock)
+	mock.ExpectRollback()
+
+	var calls int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, calls, "a non-lock-wait error is charged in full and must still exhaust MaxExecutionTime")
+
+	var mysqlErr *stdMysql.MySQLError
+	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1213, "want 1213, got %v", err)
+}
+
+// A ctx deadline must cut retries short regardless of how generous
+// MaxExcusedLockWaits/MaxExecutionTime are — the excuse mechanism only exists
+// for the no-deadline path (#7829). sqlmock's ExecContext races the fabricated
+// 200ms block against ctx.Done() and returns early when the ctx dies first.
+func TestRunInTxCtxDeadlineBoundsRetriesRegardlessOfLockWaitCap(t *testing.T) {
+	withMaxAttempts(t, 100)
+	withMaxExcusedLockWaits(t, 100) // absurdly generous — the deadline, not the cap, must be what stops this
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+	db.MaxExecutionTime = 10 * time.Second // large — proves MaxExecutionTime isn't the limiter either
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillDelayFor(200 * time.Millisecond).WillReturnError(errTestLockWait)
+	mock.ExpectRollback()
+
+	start := time.Now()
+	var calls int
+	err := db.RunInTx(ctx, func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
+	})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.Equal(t, 1, calls, "a ctx deadline must cut the first blocked attempt short — no excusing under a deadline")
+	require.Less(t, elapsed, time.Second, "must not wait out the full 200ms fabricated block, let alone retry")
+
+	// database/sql's BeginTx(ctx) starts awaitDone, which rolls back asynchronously
+	// when the ctx deadline fires. That can race RunInTx's own deferred Rollback
+	// for the driver call: if awaitDone wins the done-flag CAS but has not yet
+	// invoked driver.Rollback when we return, ExpectationsWereMet would spuriously
+	// report an unmatched ExpectRollback. Wait briefly for the async path.
+	require.Eventually(t, func() bool {
+		return mock.ExpectationsWereMet() == nil
+	}, time.Second, time.Millisecond)
 }
