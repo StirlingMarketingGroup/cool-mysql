@@ -15,6 +15,24 @@ var MaxConnectionTime = MaxExecutionTime
 // MaxAttempts caps total attempts per query, including the first try (<=0 disables the cap).
 var MaxAttempts = getenvInt("COOL_MAX_ATTEMPTS", 0)
 
+// MaxExcusedLockWaits caps how many attempts within a single RunInTx call may
+// have their innodb_lock_wait_timeout (1205) blocked wall-clock time excused
+// from the elapsed-time retry budget (db.MaxExecutionTime / db.retryElapsedBudget).
+// That blocked time is not retry effort — it's the cost of correctly waiting
+// out someone else's transaction — so charging it against the same budget that
+// bounds real retry attempts made a genuine 1205 whose lock-wait timeout
+// exceeds MaxExecutionTime structurally un-retriable (#7829). Without a cap, a
+// permanently stuck lock would let RunInTx retry forever when no ctx deadline
+// and no MaxAttempts cap are in play; capping the number of EXCUSED attempts
+// (not a separate elapsed-time ceiling) keeps the worst case bounded and
+// simple: at most MaxExcusedLockWaits full lock-wait-timeout blocks before a
+// 1205 is charged normally like any other error. <=0 disables excusing
+// entirely (every 1205 is charged in full, matching pre-#7829 behavior).
+//
+// Only applies when RunInTx's ctx carries no deadline — a caller-supplied
+// deadline is an absolute ceiling and is never excused (see RunInTx in tx.go).
+var MaxExcusedLockWaits = getenvInt("COOL_MAX_EXCUSED_LOCK_WAITS", 3)
+
 var RedisLockRetryDelay = time.Duration(getenvFloat("COOL_REDIS_LOCK_RETRY_DELAY", .020)) * time.Second
 
 // ReadTimeout, WriteTimeout, and DialTimeout are go-sql-driver socket

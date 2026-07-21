@@ -87,8 +87,20 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 // safely restart from Begin. Nesting is therefore a transparent pass-through;
 // only the outermost RunInTx retries.
 //
-// Retries are bounded by the package-level MaxAttempts (total tries) and
-// db.MaxExecutionTime (total elapsed) with exponential backoff, mirroring exec.
+// Retries are bounded by the package-level MaxAttempts (total tries, when >0)
+// and an elapsed-time budget — db.retryElapsedBudget(ctx): the ctx deadline
+// when set, else db.MaxExecutionTime — with exponential backoff, mirroring
+// exec/select/exists. Unlike those, an attempt's wall-clock time spent
+// genuinely blocked on innodb_lock_wait_timeout (MySQL error 1205) is excused
+// from that budget, up to MaxExcusedLockWaits attempts: that time isn't retry
+// effort, it's the unavoidable cost of correctly waiting for someone else's
+// transaction to release a lock, and charging it against the same budget that
+// bounds real retries made a genuine prod 1205 (lock-wait timeout 50s,
+// MaxExecutionTime 27s) structurally un-retriable — the whole budget was
+// always spent inside the first attempt's own block (#7829). A ctx deadline
+// is never excused: it is an absolute ceiling on the caller's behalf, and
+// ctx cancellation already interrupts a blocked attempt on its own (see
+// gateRetry below).
 func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	// A tx already in ctx means we're nested inside a unit of work we don't own.
 	// Run fn once on the existing tx and let any deadlock propagate to the
@@ -107,12 +119,45 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 	var committed bool
 	var lastRolledBack bool
 
+	// budget is the total elapsed-time allowance for this RunInTx call: the
+	// ctx deadline when the caller set one (never excused — see gateRetry),
+	// else db.MaxExecutionTime (the historical, excusable budget). Computed
+	// once, matching backoff's own startedAt-relative accounting style.
+	budget := db.retryElapsedBudget(ctx)
+	_, hasDeadline := ctx.Deadline()
+	var chargeable time.Duration
+	var excusedLockWaits int
+
+	// gateRetry decides whether a retryable tx-fatal error (checkTxRetryError
+	// == true) gets another attempt or becomes terminal. It replaces passing
+	// db.MaxExecutionTime to backoff.WithMaxElapsedTime: that option gates on
+	// RAW wall-clock time since backoff.Retry's own internal loop start
+	// (cenkalti/backoff/v5 retry.go), which always includes time an attempt
+	// spent blocked in a lock wait — making the excuse below impossible to
+	// implement through backoff's own accounting. gateRetry is the sole
+	// elapsed-time authority; RunInTx passes backoff.WithMaxElapsedTime(0)
+	// (uncapped) below so backoff's internal gate never independently fires.
+	gateRetry := func(attemptStart time.Time, err error) error {
+		elapsed := time.Since(attemptStart)
+		if !hasDeadline && isLockWaitTimeout(err) && excusedLockWaits < MaxExcusedLockWaits {
+			excusedLockWaits++
+			return err
+		}
+		chargeable += elapsed
+		if budget > 0 && chargeable > budget {
+			return backoff.Permanent(err)
+		}
+		return err
+	}
+
 	operation := func() (struct{}, error) {
 		// Reset both first so that if this attempt's Begin fails, the previous
 		// (already retried-away) attempt's tx can't be mistaken for the final
 		// outcome and fire its rollback hooks below.
 		lastTx = nil
 		lastRolledBack = false
+
+		attemptStart := time.Now()
 
 		tx, _, err := db.BeginTxContext(ctx)
 		if err != nil {
@@ -137,7 +182,7 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 
 		if err := fn(NewContextWithTx(ctx, tx)); err != nil {
 			if checkTxRetryError(err) {
-				return struct{}{}, err
+				return struct{}{}, gateRetry(attemptStart, err)
 			}
 			return struct{}{}, backoff.Permanent(err)
 		}
@@ -150,7 +195,7 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 		// code.
 		if err := tx.commit(); err != nil {
 			if checkTxRetryError(err) {
-				return struct{}{}, err
+				return struct{}{}, gateRetry(attemptStart, err)
 			}
 			return struct{}{}, backoff.Permanent(err)
 		}
@@ -165,7 +210,12 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 
 	options := []backoff.RetryOption{
 		backoff.WithBackOff(b),
-		backoff.WithMaxElapsedTime(db.MaxExecutionTime),
+		// gateRetry above owns all elapsed-time accounting (#7829); backoff's
+		// own MaxElapsedTime gate uses raw wall-clock time that always
+		// includes lock-wait-blocked time, which would defeat the excuse.
+		// ctx cancellation (checked by backoff.Retry itself) still bounds a
+		// caller-supplied deadline.
+		backoff.WithMaxElapsedTime(0),
 	}
 	if MaxAttempts > 0 {
 		options = append(options, backoff.WithMaxTries(uint(MaxAttempts)))
