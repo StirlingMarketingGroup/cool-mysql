@@ -121,7 +121,28 @@ func TestInsert_DefaultZero(t *testing.T) {
 	err = db.Insert("t", s{})
 	require.NoError(t, err)
 
-	expected := "insert into`t`(`a`)values(default(`a`));\n\n"
+	expected := "insert into`t`(`a`)values(default);\n\n"
+	require.Equal(t, expected, buf.String())
+}
+
+// TestInsert_DefaultZero_TimeUsesBareDefaultKeyword pins the bare DEFAULT
+// keyword for zero defaultzero values in VALUES lists. The DEFAULT(`col`)
+// function form evaluates to the ZERO DATE for DEFAULT CURRENT_TIMESTAMP
+// columns, which non-strict sql_mode silently inserts as '0000-00-00'.
+func TestInsert_DefaultZero_TimeUsesBareDefaultKeyword(t *testing.T) {
+	var buf bytes.Buffer
+	db, err := NewWriter(&buf)
+	require.NoError(t, err)
+
+	type s struct {
+		A int       `mysql:"a"`
+		B time.Time `mysql:"b,defaultzero"`
+	}
+
+	err = db.Insert("t", s{A: 1})
+	require.NoError(t, err)
+
+	expected := "insert into`t`(`a`,`b`)values(1,default);\n\n"
 	require.Equal(t, expected, buf.String())
 }
 
@@ -169,7 +190,7 @@ func TestInsert_DefaultZero_Zeroer(t *testing.T) {
 	err = db.Insert("t", s{})
 	require.NoError(t, err)
 
-	expected := "insert into`t`(`a`)values(default(`a`));\n\n"
+	expected := "insert into`t`(`a`)values(default);\n\n"
 	require.Equal(t, expected, buf.String())
 }
 

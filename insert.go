@@ -290,7 +290,13 @@ DUPE_KEY_SEARCH:
 				if colOpts[col].defaultZero {
 					marshalOpts |= marshalOptDefaultZero
 				}
-				if err := writeValue(v, marshalOpts, col); err != nil {
+				// Empty fieldName so a zero value renders as the bare DEFAULT
+				// keyword, which is valid in a VALUES list. The DEFAULT(`col`)
+				// function form (needed when interpolating into arbitrary
+				// expression positions like WHERE clauses) evaluates to the
+				// ZERO DATE for DEFAULT CURRENT_TIMESTAMP columns — under
+				// non-strict sql_mode that silently inserts '0000-00-00'.
+				if err := writeValue(v, marshalOpts, ""); err != nil {
 					return err
 				}
 			}
