@@ -25,6 +25,13 @@ func withMaxExcusedLockWaits(t *testing.T, n int) {
 	t.Cleanup(func() { MaxExcusedLockWaits = orig })
 }
 
+func withMaxExcusedDeadlocks(t *testing.T, n int) {
+	t.Helper()
+	orig := MaxExcusedDeadlocks
+	MaxExcusedDeadlocks = n
+	t.Cleanup(func() { MaxExcusedDeadlocks = orig })
+}
+
 // checkTxRetryError is the narrow gate for whole-transaction retries: a deadlock
 // (1213), a lock-wait timeout (1205), or anything reporting SQLSTATE 40001 — and
 // nothing else, including other retryable-in-autocommit MySQL errors.
@@ -522,11 +529,73 @@ func TestRunInTxLockWaitExcuseCapStopsRunaway(t *testing.T) {
 	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1205, "want 1205, got %v", err)
 }
 
-// A non-lock-wait retryable error (1213) is charged in full, exactly like
-// before #7829 — MaxExecutionTime must still bound a stuck-deadlock loop even
-// though RunInTx no longer passes it to backoff.WithMaxElapsedTime directly.
-func TestRunInTxNonLockWaitErrorStillBoundedByMaxExecutionTime(t *testing.T) {
-	withMaxAttempts(t, 100) // generous — the elapsed-budget gate, not MaxTries, must be what stops this
+// A deadlock's attempt time is charged in full (no blocked-time excuse), so
+// MaxExecutionTime still bounds a stuck-deadlock loop — but past-budget
+// deadlocks are granted MaxExcusedDeadlocks replays before the gate turns
+// terminal, so the bound is budget + N re-runs, not "first over-budget 1213
+// is instantly fatal". Here every attempt outruns the 5ms budget and
+// deadlocks; with the grant capped at 2 the loop must stop after exactly
+// 1 charged attempt + 2 excused replays.
+func TestRunInTxDeadlockChargedInFullBoundedPastBudgetByExcuseCap(t *testing.T) {
+	withMaxAttempts(t, 100) // generous — the elapsed-budget gate + excuse cap, not MaxTries, must be what stops this
+	withMaxExcusedDeadlocks(t, 2)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+	db.MaxExecutionTime = 5 * time.Millisecond
+
+	for range 3 {
+		mock.ExpectBegin()
+		mock.ExpectExec("insert into `t`").WillDelayFor(20 * time.Millisecond).WillReturnError(errTestDeadlock)
+		mock.ExpectRollback()
+	}
+
+	var calls int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
+	})
+	require.Error(t, err)
+	require.Equal(t, 3, calls, "over-budget deadlocks get exactly MaxExcusedDeadlocks replays past the budget, then surface")
+
+	var mysqlErr *stdMysql.MySQLError
+	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1213, "want 1213, got %v", err)
+}
+
+// The CI/prod failure shape this grant exists for: the closure's real work
+// alone outruns the whole budget, then the deadlock-detector kills it
+// near-instantly. Charging that work time exhausted the budget before any
+// replay could run, so the very first 1213 surfaced un-retried. The grant
+// must give it a replay, and the clean second attempt commits.
+func TestRunInTxExcusesFirstDeadlockPastBudget(t *testing.T) {
+	withMaxAttempts(t, 5)
+	withMaxExcusedDeadlocks(t, 1)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+	db.MaxExecutionTime = 5 * time.Millisecond // far smaller than the 30ms of "work" below
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillDelayFor(30 * time.Millisecond).WillReturnError(errTestDeadlock)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	var calls int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "a slow first attempt's deadlock must still get a replay past the exhausted budget")
+}
+
+// MaxExcusedDeadlocks<=0 restores the prior behavior: an over-budget deadlock
+// is terminal immediately, with zero replays.
+func TestRunInTxDeadlockPastBudgetTerminalWhenGrantDisabled(t *testing.T) {
+	withMaxAttempts(t, 100)
+	withMaxExcusedDeadlocks(t, 0)
 
 	db, mock, cleanup := getTestDatabase(t)
 	defer cleanup()
@@ -542,7 +611,7 @@ func TestRunInTxNonLockWaitErrorStillBoundedByMaxExecutionTime(t *testing.T) {
 		return TxFromContext(ctx).ExecContext(ctx, "insert into `t` (`a`) values (1)")
 	})
 	require.Error(t, err)
-	require.Equal(t, 1, calls, "a non-lock-wait error is charged in full and must still exhaust MaxExecutionTime")
+	require.Equal(t, 1, calls, "with the grant disabled an over-budget deadlock must not replay")
 
 	var mysqlErr *stdMysql.MySQLError
 	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1213, "want 1213, got %v", err)

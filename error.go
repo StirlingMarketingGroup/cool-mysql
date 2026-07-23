@@ -96,10 +96,12 @@ func checkTxRetryError(err error) (ok bool) {
 // timeout, as opposed to a 1213 deadlock (or the SQLSTATE 40001 vendor
 // variants checkTxRetryError also treats as a deadlock). RunInTx uses this to
 // decide whether an attempt's blocked wall-clock time is eligible to be
-// excused from the elapsed-time retry budget (MaxExcusedLockWaits, #7829). It
-// deliberately does NOT excuse 1213/40001 — those are near-instant
-// server-side deadlock-detector kills, not a genuine block, so there is
-// nothing to excuse and no reason to widen the exemption.
+// excused from the elapsed-time retry budget (MaxExcusedLockWaits, #7829).
+// 1213/40001 deliberately don't qualify for THAT excuse — a deadlock kill is
+// near-instant, not a genuine block, so its attempt time is real work and
+// stays charged. Deadlocks instead get their own bounded grant at the budget
+// gate (MaxExcusedDeadlocks in RunInTx): replays past an already-exhausted
+// budget, covering closures whose single attempt outruns the budget.
 func isLockWaitTimeout(err error) bool {
 	var mysqlErr *stdMysql.MySQLError
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1205

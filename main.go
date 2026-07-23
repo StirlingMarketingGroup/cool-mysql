@@ -33,6 +33,24 @@ var MaxAttempts = getenvInt("COOL_MAX_ATTEMPTS", 0)
 // deadline is an absolute ceiling and is never excused (see RunInTx in tx.go).
 var MaxExcusedLockWaits = getenvInt("COOL_MAX_EXCUSED_LOCK_WAITS", 3)
 
+// MaxExcusedDeadlocks caps how many deadlock (1213 / SQLSTATE 40001, not 1205)
+// replays a single RunInTx call may be granted AFTER its elapsed-time retry
+// budget is exhausted. A deadlock's attempt time is genuine work and stays
+// charged in full — but a closure slow enough that one attempt outruns the
+// budget (heavy unit of work under load) would otherwise surface its first
+// 1213 with zero replays, making the deadlock structurally un-retriable: the
+// same failure shape MaxExcusedLockWaits fixed for 1205s (#7829), reached
+// through work time instead of blocked time. Capping the excused replays (not
+// adding a second elapsed-time ceiling) keeps a genuinely stuck deadlock loop
+// bounded: at most MaxExcusedDeadlocks past-budget re-runs before the 1213
+// surfaces. <=0 disables the grant (past-budget deadlocks are terminal
+// immediately, matching prior behavior). Under-budget deadlocks are unaffected
+// — they retry as always without consuming this allowance.
+//
+// Only applies when RunInTx's ctx carries no deadline — a caller-supplied
+// deadline is an absolute ceiling and is never excused (see RunInTx in tx.go).
+var MaxExcusedDeadlocks = getenvInt("COOL_MAX_EXCUSED_DEADLOCKS", 3)
+
 var RedisLockRetryDelay = time.Duration(getenvFloat("COOL_REDIS_LOCK_RETRY_DELAY", .020)) * time.Second
 
 // ReadTimeout, WriteTimeout, and DialTimeout are go-sql-driver socket

@@ -97,10 +97,15 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 // transaction to release a lock, and charging it against the same budget that
 // bounds real retries made a genuine prod 1205 (lock-wait timeout 50s,
 // MaxExecutionTime 27s) structurally un-retriable — the whole budget was
-// always spent inside the first attempt's own block (#7829). A ctx deadline
-// is never excused: it is an absolute ceiling on the caller's behalf, and
-// ctx cancellation already interrupts a blocked attempt on its own (see
-// gateRetry below).
+// always spent inside the first attempt's own block (#7829). Deadlocks (1213)
+// get the mirror-image guarantee at the budget gate: their attempt time is
+// real work and is charged in full, but once the budget is exhausted a
+// deadlock is still granted up to MaxExcusedDeadlocks replays — otherwise a
+// closure whose single attempt outruns the budget under load would surface
+// its first 1213 with zero replays, structurally un-retried. A ctx deadline
+// is never excused by either mechanism: it is an absolute ceiling on the
+// caller's behalf, and ctx cancellation already interrupts a blocked attempt
+// on its own (see gateRetry below).
 func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	// A tx already in ctx means we're nested inside a unit of work we don't own.
 	// Run fn once on the existing tx and let any deadlock propagate to the
@@ -127,6 +132,7 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 	_, hasDeadline := ctx.Deadline()
 	var chargeable time.Duration
 	var excusedLockWaits int
+	var excusedDeadlocks int
 
 	// gateRetry decides whether a retryable tx-fatal error (checkTxRetryError
 	// == true) gets another attempt or becomes terminal. It replaces passing
@@ -145,6 +151,21 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 		}
 		chargeable += elapsed
 		if budget > 0 && chargeable > budget {
+			// A deadlock's own kill is near-instant, so unlike a 1205 there is
+			// no blocked time to excuse — but when the closure's real work
+			// alone outruns the budget (a slow attempt under load), a 1213 on
+			// the first attempt would surface with ZERO replays, making it
+			// structurally un-retriable exactly like the pre-#7829 1205. So
+			// past-budget deadlocks (and 40001 vendor variants — anything here
+			// that isn't a 1205) are still granted up to MaxExcusedDeadlocks
+			// replays before the budget gate turns terminal. Exhausted-excuse
+			// 1205s falling through to here do NOT get a second excuse pool:
+			// their cap already bounded a permanently stuck lock, and stacking
+			// the two would double the worst case.
+			if !hasDeadline && !isLockWaitTimeout(err) && excusedDeadlocks < MaxExcusedDeadlocks {
+				excusedDeadlocks++
+				return err
+			}
 			return backoff.Permanent(err)
 		}
 		return err
