@@ -69,7 +69,7 @@ A 1213 deadlock (and a 1205 lock-wait timeout under `innodb_rollback_on_timeout`
 
 ### Caching
 
-`Cache` (cache.go) is `Get`/`Set` with a TTL. `Locker` is optional and enables single-flight query execution to prevent stampedes. Concrete caches: `RedisCache` (also implements `Locker` via redsync), `MemcacheCache`, `WeakCache` (in-memory `weak.Pointer` — GC may reclaim entries), and `MultiCache` (stacked; reads propagate hits up to earlier caches, writes fan out). The `cacheDuration` argument on `Select*`/`Exists*` is the TTL; `0` disables caching for that call even if a cache is configured.
+`Cache` (cache.go) is `Get`/`Set` with a TTL. `Locker` is optional and enables single-flight query execution to prevent stampedes. Concrete caches: `RedisCache` (also implements `Locker` via redsync), `MemcacheCache`, `WeakCache` (in-memory `weak.Pointer` — GC may reclaim entries), and `MultiCache` (stacked; reads propagate hits up to earlier caches, writes fan out). `TTLCache` is an optional `GetWithTTL` interface (implemented by `RedisCache` via a pipelined GET+PTTL, `WeakCache`, and `MultiCache` itself); `MultiCache` back-populates earlier tiers with the source entry's **remaining** TTL, and skips back-population entirely when the source tier can't report one, because an entry stored with no expiry would outlive every declared `cacheDuration`; `WeakCache.Set` refuses a `ttl <= 0` for the same reason. The `cacheDuration` argument on `Select*`/`Exists*` is the TTL; `0` disables caching for that call even if a cache is configured.
 
 ### Parameter interpolation & struct tags
 
