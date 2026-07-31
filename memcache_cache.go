@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -28,7 +29,13 @@ func (m *MemcacheCache) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (m *MemcacheCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
-	return m.Client.Set(&memcache.Item{Key: key, Value: val, Expiration: int32(ttl.Seconds())})
+	var exp int32
+	if ttl > 0 {
+		// memcached treats 0 as no expiry; int32(ttl.Seconds()) would turn any
+		// sub-second TTL into an immortal entry, so round up.
+		exp = int32(math.Ceil(ttl.Seconds()))
+	}
+	return m.Client.Set(&memcache.Item{Key: key, Value: val, Expiration: exp})
 }
 
 var _ Cache = (*MemcacheCache)(nil)

@@ -20,8 +20,21 @@ type Locker interface {
 	Lock(ctx context.Context, key string) (func() error, error)
 }
 
+// TTLCache is an optional interface a Cache may implement to report how much
+// lifetime a cached entry has left. MultiCache uses it so a hit in a later tier
+// can be back-populated into earlier tiers with the entry's remaining lifetime
+// instead of forever.
+type TTLCache interface {
+	Cache
+
+	// GetWithTTL returns the value along with its remaining lifetime. A ttl of
+	// zero or less means the cache cannot report one for that entry.
+	GetWithTTL(ctx context.Context, key string) ([]byte, time.Duration, error)
+}
+
 // MultiCache composes multiple caches. Reads check each cache in order and
-// populate earlier caches on a hit. Writes fan out to all caches.
+// back-populate earlier caches on a hit with the source entry's remaining TTL
+// (skipped when the source can't report one). Writes fan out to all caches.
 type MultiCache struct {
 	caches []Cache
 }
@@ -30,24 +43,44 @@ type MultiCache struct {
 func NewMultiCache(caches ...Cache) *MultiCache { return &MultiCache{caches: caches} }
 
 func (m *MultiCache) Get(ctx context.Context, key string) ([]byte, error) {
+	b, _, err := m.GetWithTTL(ctx, key)
+	return b, err
+}
+
+func (m *MultiCache) GetWithTTL(ctx context.Context, key string) ([]byte, time.Duration, error) {
 	var lastMiss error
 	for i, c := range m.caches {
-		b, err := c.Get(ctx, key)
+		b, ttl, err := cacheGetWithTTL(ctx, c, key)
 		if err == nil {
-			for j := 0; j < i; j++ {
-				_ = m.caches[j].Set(ctx, key, b, 0)
+			// Back-populating with an unknown lifetime would store the entry
+			// forever in the earlier tier, serving it long past the TTL the
+			// caller asked for, so only propagate a lifetime the source reports.
+			if ttl > 0 {
+				for j := range i {
+					_ = m.caches[j].Set(ctx, key, b, ttl)
+				}
 			}
-			return b, nil
+			return b, ttl, nil
 		}
 		if !errors.Is(err, ErrCacheMiss) {
-			return nil, err
+			return nil, 0, err
 		}
 		lastMiss = err
 	}
 	if lastMiss == nil {
 		lastMiss = ErrCacheMiss
 	}
-	return nil, lastMiss
+	return nil, 0, lastMiss
+}
+
+// cacheGetWithTTL reads from c, reporting the entry's remaining lifetime when c
+// can supply one.
+func cacheGetWithTTL(ctx context.Context, c Cache, key string) ([]byte, time.Duration, error) {
+	if t, ok := c.(TTLCache); ok {
+		return t.GetWithTTL(ctx, key)
+	}
+	b, err := c.Get(ctx, key)
+	return b, 0, err
 }
 
 func (m *MultiCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
@@ -61,3 +94,4 @@ func (m *MultiCache) Set(ctx context.Context, key string, val []byte, ttl time.D
 }
 
 var _ Cache = (*MultiCache)(nil)
+var _ TTLCache = (*MultiCache)(nil)
