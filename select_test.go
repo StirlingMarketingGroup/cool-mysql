@@ -1349,3 +1349,59 @@ func TestSelectCacheMissLockerRetryAndUnlockWarn(t *testing.T) {
 	require.NoError(t, msgpack.Unmarshal(b, &check))
 	require.Equal(t, dest, check)
 }
+
+// erroringGetCache wraps WeakCache with a Get that always fails with a
+// non-miss error.
+type erroringGetCache struct {
+	*WeakCache
+}
+
+func (c *erroringGetCache) Get(ctx context.Context, key string) ([]byte, error) {
+	return nil, fmt.Errorf("redis down")
+}
+
+// TestSelectCacheGetErrorReturned covers the non-miss cache Get error path:
+// with no HandleCacheError set, the select fails with the wrapped error.
+func TestSelectCacheGetErrorReturned(t *testing.T) {
+	db, _, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	db.UseCache(&erroringGetCache{WeakCache: NewWeakCache()})
+
+	type Row struct {
+		Name string
+	}
+
+	var dest []Row
+	err := db.Select(&dest, "select name from t", time.Minute)
+	require.ErrorContains(t, err, "failed to get data from cache")
+	require.ErrorContains(t, err, "redis down")
+}
+
+// TestSelectCacheGetErrorSwallowed covers HandleCacheError swallowing a cache
+// Get error so the select proceeds to MySQL without the stampede lock.
+func TestSelectCacheGetErrorSwallowed(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	db.UseCache(&erroringGetCache{WeakCache: NewWeakCache()})
+	var handled error
+	db.HandleCacheError = func(err error) error {
+		handled = err
+		return nil
+	}
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name"}).AddRow("erin"),
+	)
+
+	var dest []Row
+	require.NoError(t, db.Select(&dest, query, time.Minute))
+	require.Equal(t, []Row{{Name: "erin"}}, dest)
+	require.ErrorContains(t, handled, "redis down")
+}
