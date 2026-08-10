@@ -27,6 +27,19 @@ var (
 	ErrUnexportedField = fmt.Errorf("cool-mysql: struct has unexported fields and cannot be used with channels")
 )
 
+// unmarshalCacheValue decodes a cached msgpack blob, converting decode
+// panics (reflect panics when the blob was written for a differently-shaped
+// dest type by another binary) into errors so a bad entry can be treated as
+// a cache miss.
+func unmarshalCacheValue(b []byte, dest any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic decoding cached value: %v", r)
+		}
+	}()
+	return msgpack.Unmarshal(b, dest)
+}
+
 func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any, query string, cacheDuration time.Duration, params ...any) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -119,9 +132,55 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 	CHECK_CACHE:
 		b, err := db.cache.Get(ctx, cacheKey)
-		if errors.Is(err, ErrCacheMiss) {
-			// cache miss!
+		cacheMiss := errors.Is(err, ErrCacheMiss)
+		if err != nil && !cacheMiss {
+			err = fmt.Errorf("failed to get data from cache: %w", err)
+			if db.HandleCacheError != nil {
+				err = db.HandleCacheError(err)
+			}
+			if err != nil {
+				return err
+			}
+		} else if !cacheMiss {
+			tx, _ := conn.(*sql.Tx)
+			db.callLog(LogDetail{
+				Query:    replacedQuery,
+				Params:   normalizedParams,
+				Duration: time.Since(start),
+				CacheHit: true,
+				Tx:       tx,
+				Attempt:  1,
+			})
 
+			if decodeErr := unmarshalCacheValue(b, cacheSlice.Addr().Interface()); decodeErr != nil {
+				// Blob was written for a differently-shaped dest (e.g. after a
+				// deploy flipped pointer fields to values). Treat as a miss so
+				// we re-query MySQL and overwrite the bad entry — never fail
+				// the select for reconstructible cache data (SMG#8686).
+				db.Logger.Warn("failed to decode cached select result; treating as cache miss", "err", decodeErr)
+				cacheSlice = reflect.New(reflect.SliceOf(t)).Elem()
+				cacheMiss = true
+			} else {
+				l := cacheSlice.Len()
+				if !multiRow && l == 0 {
+					return sql.ErrNoRows
+				}
+
+				for i := range l {
+					err = sendElement(cacheSlice.Index(i))
+					if err != nil {
+						return err
+					}
+					if !multiRow {
+						break
+					}
+				}
+
+				return nil
+			}
+		}
+
+		if cacheMiss {
 			// grab a lock so we can update the cache
 			var unlockFn func() error
 			if db.locker != nil {
@@ -139,46 +198,6 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 					}
 				}
 			}()
-		} else if err != nil {
-			err = fmt.Errorf("failed to get data from cache: %w", err)
-			if db.HandleCacheError != nil {
-				err = db.HandleCacheError(err)
-			}
-			if err != nil {
-				return err
-			}
-		} else {
-			tx, _ := conn.(*sql.Tx)
-			db.callLog(LogDetail{
-				Query:    replacedQuery,
-				Params:   normalizedParams,
-				Duration: time.Since(start),
-				CacheHit: true,
-				Tx:       tx,
-				Attempt:  1,
-			})
-
-			err = msgpack.Unmarshal(b, cacheSlice.Addr().Interface())
-			if err != nil {
-				return fmt.Errorf("failed to unmarshal from cache: %w", err)
-			}
-
-			l := cacheSlice.Len()
-			if !multiRow && l == 0 {
-				return sql.ErrNoRows
-			}
-
-			for i := range l {
-				err = sendElement(cacheSlice.Index(i))
-				if err != nil {
-					return err
-				}
-				if !multiRow {
-					break
-				}
-			}
-
-			return nil
 		}
 	}
 
