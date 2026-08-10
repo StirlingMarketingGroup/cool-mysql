@@ -2,10 +2,14 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha3"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +19,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 func getTestDatabase(t *testing.T) (*Database, sqlmock.Sqlmock, func()) {
@@ -662,7 +667,7 @@ func TestSelectNoInsertFieldMapping(t *testing.T) {
 
 	require.Len(t, dest, 1)
 	require.Equal(t, 1, dest[0].ID)
-	require.Equal(t, "item-value", dest[0].CustomLineItem)  // LineItem column -> CustomLineItem field
+	require.Equal(t, "item-value", dest[0].CustomLineItem) // LineItem column -> CustomLineItem field
 	require.Equal(t, "model-value", dest[0].LineItemModel) // LineItemModel column -> LineItemModel field
 }
 
@@ -1050,4 +1055,297 @@ func TestExistsTxFailsFastOnMidStreamConnDrop(t *testing.T) {
 	require.ErrorIs(t, err, mysql.ErrInvalidConn)
 
 	require.NoError(t, tx.Cancel())
+}
+
+// selectCacheKey computes the cache key the same way Database.query does for a
+// multi-row (slice) select whose element type is elemType.
+func selectCacheKey(elemType reflect.Type, replacedQuery string, cacheDuration time.Duration) string {
+	key := "cool-mysql:" + elemType.String() + ":" + replacedQuery + ":" + strconv.FormatInt(int64(cacheDuration), 10)
+	h := sha3.Sum224([]byte(key))
+	return hex.EncodeToString(h[:])
+}
+
+// TestSelectUndecodableCacheTreatedAsMiss_Garbage plants non-msgpack bytes under
+// the select cache key and asserts Select falls through to MySQL, succeeds, and
+// overwrites the bad entry with a clean blob.
+func TestSelectUndecodableCacheTreatedAsMiss_Garbage(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	cache := NewWeakCache()
+	db.UseCache(cache)
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	cacheDuration := time.Minute
+
+	replacedQuery, _, err := db.InterpolateParams(query)
+	require.NoError(t, err)
+	require.Equal(t, query, replacedQuery, "param-free query should pass through unchanged")
+
+	cacheKey := selectCacheKey(reflect.TypeOf(Row{}), replacedQuery, cacheDuration)
+	require.NoError(t, cache.Set(context.Background(), cacheKey, []byte("not msgpack"), cacheDuration))
+
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name"}).AddRow("alice"),
+	)
+
+	var dest []Row
+	err = db.Select(&dest, query, cacheDuration)
+	require.NoError(t, err)
+	require.Equal(t, []Row{{Name: "alice"}}, dest)
+
+	// Bad entry must have been overwritten with a clean msgpack blob.
+	b, err := cache.Get(context.Background(), cacheKey)
+	require.NoError(t, err)
+	var check []Row
+	require.NoError(t, msgpack.Unmarshal(b, &check))
+	require.Equal(t, dest, check)
+}
+
+// TestSelectUndecodableCacheTreatedAsMiss_ShapeChange reproduces the prod panic
+// shape from SMG#8686: a msgpack blob written for a struct with *time.Time is
+// read into a same-named type with time.Time. Before the fix, msgpack's
+// nilAwareDecoder panics with 'reflect: call of reflect.Value.IsNil on struct
+// Value'. After the fix, Select must treat it as a cache miss and succeed from DB.
+func TestSelectUndecodableCacheTreatedAsMiss_ShapeChange(t *testing.T) {
+	// Old shape: Created is a pointer (nil in the cached blob).
+	type Row struct {
+		Name    string
+		Created *time.Time
+	}
+	oldBlob, err := msgpack.Marshal([]Row{{Name: "old", Created: nil}})
+	require.NoError(t, err)
+
+	// Nested scope so the new-shape type can reuse the name "Row" — the cache
+	// key uses t.String() which for a local named type includes the package
+	// path and function name, so old vs new type names need not collide; we
+	// still name both Row for fidelity to the deploy-time shape flip.
+	t.Run("new-shape-reader", func(t *testing.T) {
+		type Row struct {
+			Name    string
+			Created time.Time
+		}
+
+		// Confirm the raw decode panics with the prod IsNil message (documents
+		// the failure mode even after the library fix swallows it).
+		func() {
+			defer func() {
+				r := recover()
+				require.NotNil(t, r, "expected msgpack decode of pointer-nil into value field to panic")
+				t.Logf("reproduced decode panic mode: %v", r)
+				require.Contains(t, fmt.Sprint(r), "reflect: call of reflect.Value.IsNil on struct Value")
+			}()
+			var probe []Row
+			_ = msgpack.Unmarshal(oldBlob, &probe)
+			t.Fatal("expected panic from msgpack.Unmarshal of old-shape blob into new-shape dest")
+		}()
+
+		db, mock, cleanup := getTestDatabase(t)
+		defer cleanup()
+
+		cache := NewWeakCache()
+		db.UseCache(cache)
+
+		const query = "select name, created from t"
+		cacheDuration := time.Minute
+
+		replacedQuery, _, err := db.InterpolateParams(query)
+		require.NoError(t, err)
+		require.Equal(t, query, replacedQuery)
+
+		cacheKey := selectCacheKey(reflect.TypeOf(Row{}), replacedQuery, cacheDuration)
+		require.NoError(t, cache.Set(context.Background(), cacheKey, oldBlob, cacheDuration))
+
+		wantTime := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
+		mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+			sqlmock.NewRows([]string{"Name", "Created"}).AddRow("alice", wantTime),
+		)
+
+		var dest []Row
+		// Must not panic; decode failure is a cache miss → DB path.
+		require.NotPanics(t, func() {
+			err = db.Select(&dest, query, cacheDuration)
+		})
+		require.NoError(t, err)
+		require.Len(t, dest, 1)
+		require.Equal(t, "alice", dest[0].Name)
+		require.True(t, dest[0].Created.Equal(wantTime), "Created = %v, want %v", dest[0].Created, wantTime)
+	})
+}
+
+// TestSelectCacheHitSlice populates the cache via a first Select, then serves a
+// second identical Select entirely from cache (no second SQL expectation).
+func TestSelectCacheHitSlice(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	db.UseCache(NewWeakCache())
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	cacheDuration := time.Minute
+
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name"}).AddRow("alice"),
+	)
+
+	var first []Row
+	require.NoError(t, db.Select(&first, query, cacheDuration))
+	require.Equal(t, []Row{{Name: "alice"}}, first)
+
+	// Second call must hit cache — no additional sqlmock expectation.
+	var second []Row
+	require.NoError(t, db.Select(&second, query, cacheDuration))
+	require.Equal(t, first, second)
+}
+
+// TestSelectCacheHitSingleRow serves a single-row (*Row) dest from a cache
+// entry populated by a prior slice select (same cache key element type).
+func TestSelectCacheHitSingleRow(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	db.UseCache(NewWeakCache())
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	cacheDuration := time.Minute
+
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name"}).AddRow("bob"),
+	)
+
+	var slice []Row
+	require.NoError(t, db.Select(&slice, query, cacheDuration))
+	require.Equal(t, []Row{{Name: "bob"}}, slice)
+
+	// Single-row dest, same query+TTL → same key → cache hit, !multiRow break.
+	var row Row
+	require.NoError(t, db.Select(&row, query, cacheDuration))
+	require.Equal(t, Row{Name: "bob"}, row)
+}
+
+// TestSelectCacheHitSingleRowEmpty plants an empty msgpack slice under the
+// single-dest cache key; Select must return sql.ErrNoRows from the hit path
+// without querying MySQL.
+func TestSelectCacheHitSingleRowEmpty(t *testing.T) {
+	db, _, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	cache := NewWeakCache()
+	db.UseCache(cache)
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	cacheDuration := time.Minute
+
+	replacedQuery, _, err := db.InterpolateParams(query)
+	require.NoError(t, err)
+
+	cacheKey := selectCacheKey(reflect.TypeOf(Row{}), replacedQuery, cacheDuration)
+	emptyBlob, err := msgpack.Marshal([]Row{})
+	require.NoError(t, err)
+	require.NoError(t, cache.Set(context.Background(), cacheKey, emptyBlob, cacheDuration))
+
+	// No sqlmock expectation: served entirely from cache.
+	// cleanup's ExpectationsWereMet proves zero queries were issued.
+	var row Row
+	err = db.Select(&row, query, cacheDuration)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+// TestSelectCacheHitSendElementError covers the cache-hit sendElement error
+// path: an unbuffered channel with a cancelled context cannot accept the send.
+func TestSelectCacheHitSendElementError(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	db.UseCache(NewWeakCache())
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	cacheDuration := time.Minute
+
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name"}).AddRow("carol"),
+	)
+
+	var slice []Row
+	require.NoError(t, db.Select(&slice, query, cacheDuration))
+	require.Equal(t, []Row{{Name: "carol"}}, slice)
+
+	ch := make(chan Row) // unbuffered; nothing reading
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := db.SelectContext(ctx, ch, query, cacheDuration)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// flakyLockerCache wraps WeakCache with a Locker that fails once, then returns
+// an unlock func that always errors (to exercise the unlock-warn path).
+type flakyLockerCache struct {
+	*WeakCache
+	lockAttempts int
+}
+
+func (c *flakyLockerCache) Lock(ctx context.Context, key string) (func() error, error) {
+	c.lockAttempts++
+	if c.lockAttempts == 1 {
+		return nil, fmt.Errorf("lock contended")
+	}
+	return func() error { return fmt.Errorf("unlock failed") }, nil
+}
+
+// TestSelectCacheMissLockerRetryAndUnlockWarn covers Lock acquisition, the
+// lock-failure sleep+retry branch, and the deferred unlock-error warn on a
+// cold-cache Select that then succeeds from MySQL.
+func TestSelectCacheMissLockerRetryAndUnlockWarn(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	cache := &flakyLockerCache{WeakCache: NewWeakCache()}
+	db.UseCache(cache)
+
+	type Row struct {
+		Name string
+	}
+
+	const query = "select name from t"
+	cacheDuration := time.Minute
+
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name"}).AddRow("dave"),
+	)
+
+	var dest []Row
+	require.NoError(t, db.Select(&dest, query, cacheDuration))
+	require.Equal(t, []Row{{Name: "dave"}}, dest)
+	require.Equal(t, 2, cache.lockAttempts, "first Lock fails, second succeeds")
+
+	// Cache must hold a decodable blob after the successful DB path.
+	replacedQuery, _, err := db.InterpolateParams(query)
+	require.NoError(t, err)
+	cacheKey := selectCacheKey(reflect.TypeOf(Row{}), replacedQuery, cacheDuration)
+	b, err := cache.Get(context.Background(), cacheKey)
+	require.NoError(t, err)
+	var check []Row
+	require.NoError(t, msgpack.Unmarshal(b, &check))
+	require.Equal(t, dest, check)
 }
