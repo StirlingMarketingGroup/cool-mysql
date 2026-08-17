@@ -159,18 +159,11 @@ func applyNetTimeoutsToConfig(cfg *mysql.Config) {
 	}
 }
 
-// keepAliveNet is the private go-sql-driver network name cool-mysql registers
-// its keepalive-tuned dialer under. Using a dedicated name (rather than
-// re-registering "tcp") scopes the keepalive settings to cool-mysql's own pools
-// so other go-sql-driver users in the same process are unaffected.
-const keepAliveNet = "cool-mysql-tcp-keepalive"
-
-var registerKeepAliveOnce sync.Once
-
 // keepAliveDialer builds a *net.Dialer carrying the package-level keepalive
 // settings (read at dial time so a value set before pool open applies to every
 // conn the pool dials). go-sql-driver applies cfg.Timeout as a ctx deadline
-// around the dial, so the dialer itself sets no Timeout.
+// around the dial, so the dialer itself sets no Timeout. Zero-value when
+// TCPKeepAlive is unset — same semantics as the pre-DialFunc keepalive path.
 func keepAliveDialer() *net.Dialer {
 	d := &net.Dialer{}
 	if TCPKeepAlive > 0 {
@@ -184,25 +177,97 @@ func keepAliveDialer() *net.Dialer {
 	return d
 }
 
-func registerKeepAliveDialer() {
-	registerKeepAliveOnce.Do(func() {
-		mysql.RegisterDialContext(keepAliveNet, func(ctx context.Context, addr string) (net.Conn, error) {
-			return keepAliveDialer().DialContext(ctx, "tcp", addr)
-		})
-	})
-}
+// dialContextFunc is the go-sql-driver Config.DialFunc signature. The
+// retrying wrapper takes one as an injected inner dial so tests can drive
+// the loop without a real network.
+type dialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// applyKeepAliveToConfig switches a TCP pool onto cool-mysql's keepalive-tuned
-// dialer when TCPKeepAlive is set, so a half-open connection is torn down by the
-// OS and surfaces as a connection error for the swap-and-retry path — without a
-// whole-query socket read deadline. No-op when keepalive tuning is off or the
-// pool isn't TCP (e.g. a unix socket). See TCPKeepAlive and #174.
-func applyKeepAliveToConfig(cfg *mysql.Config) {
-	if TCPKeepAlive <= 0 || cfg.Net != "tcp" {
+const (
+	// dialRetryFastFailure is the threshold under which a failed dial is
+	// treated as a fast failure (connection-refused during RDS failover is
+	// ~1ms) and we pause before redialing so the loop can't spin.
+	dialRetryFastFailure = time.Second
+	dialRetryPause       = 250 * time.Millisecond
+)
+
+// applyDialerToConfig installs a per-config DialFunc that composes keepalive
+// settings with optional dial retry. cfg.Net is left as-is (tcp/tcp4/tcp6)
+// so DSN FormatDSN/ParseDSN round-trips stay clean and other go-sql-driver
+// users in the process are unaffected (unlike the previous registered-net
+// approach).
+//
+// DialFunc is set when TCPKeepAlive > 0 or when dial retry is active
+// (DialAttemptTimeout > 0 AND cfg.Timeout > 0 — the effective total budget
+// after applyNetTimeoutsToConfig, so a DSN timeout= counts). When neither
+// knob is on, DialFunc is left nil (stock driver path, zero behavior change).
+// TCP only — unix-socket pools are left untouched. See TCPKeepAlive,
+// DialAttemptTimeout, and #174.
+func applyDialerToConfig(cfg *mysql.Config) {
+	switch cfg.Net {
+	case "tcp", "tcp4", "tcp6":
+	default:
 		return
 	}
-	registerKeepAliveDialer()
-	cfg.Net = keepAliveNet
+	retry := dialRetryActive(cfg)
+	if TCPKeepAlive <= 0 && !retry {
+		return
+	}
+	cfg.DialFunc = wrapDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return keepAliveDialer().DialContext(ctx, network, addr)
+	}, retry)
+}
+
+// dialRetryActive reports whether this pool should retry failed dials.
+// Both a per-attempt cap and a total budget are required: without
+// cfg.Timeout the pool's background-opener ctx can be unbounded.
+func dialRetryActive(cfg *mysql.Config) bool {
+	return DialAttemptTimeout > 0 && cfg.Timeout > 0
+}
+
+// wrapDial returns inner unchanged when retry is off, so a keepalive-only
+// DialFunc does exactly one attempt with no extra deadline. When retry is
+// on, each call runs retryingDial around inner.
+func wrapDial(inner dialContextFunc, retry bool) dialContextFunc {
+	if !retry {
+		return inner
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return retryingDial(ctx, network, addr, inner)
+	}
+}
+
+// retryingDial redials on every failure until the outer ctx (the driver's
+// cfg.Timeout budget) is done. Each attempt is additionally bounded by
+// DialAttemptTimeout. Fast failures sleep dialRetryPause (bounded by the
+// outer ctx) so a connection-refused loop during failover can't spin.
+func retryingDial(ctx context.Context, network, addr string, inner dialContextFunc) (net.Conn, error) {
+	for {
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if DialAttemptTimeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, DialAttemptTimeout)
+		}
+		start := time.Now()
+		conn, err := inner(attemptCtx, network, addr)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			return conn, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%w (last dial error: %w)", ctxErr, err)
+		}
+		if time.Since(start) < dialRetryFastFailure {
+			timer := time.NewTimer(dialRetryPause)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, fmt.Errorf("%w (last dial error: %w)", ctx.Err(), err)
+			case <-timer.C:
+			}
+		}
+	}
 }
 
 func (db *Database) WriterWithSubdir(subdir string) *Database {
@@ -340,10 +405,9 @@ func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, err
 	// to the caller's deadline. See #172.
 	applyNetTimeoutsToConfig(cfg)
 
-	// Switch onto the keepalive-tuned dialer (off by default) so a half-open
-	// TCP conn is torn down at the network layer without a whole-query read
-	// cap — the liveness counterpart that doesn't cut healthy long reads (#174).
-	applyKeepAliveToConfig(cfg)
+	// Install the per-config DialFunc (off by default) composing keepalive
+	// with optional dial retry. cfg.Net stays "tcp". See applyDialerToConfig.
+	applyDialerToConfig(cfg)
 
 	// The driver hands BeforeConnect a fresh Clone() of cfg for every
 	// new conn, so mutating c here scopes to that one conn.
@@ -464,10 +528,12 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 // the caller built the pools with a non-UTC loc, set db.Loc explicitly so
 // time.Time literals format in a location matching the read-side parser.
 //
-// The ReadTimeout / WriteTimeout / DialTimeout defaults are NOT applied
-// here — the pools are already built, so their socket timeouts are fixed by
-// whatever DSN/connector the caller used. Bake readTimeout= into that DSN
-// if you want the half-open recovery described on ReadTimeout (#172).
+// The ReadTimeout / WriteTimeout / DialTimeout / DialAttemptTimeout /
+// TCPKeepAlive defaults are NOT applied here — the pools are already
+// built, so their socket timeouts and DialFunc are fixed by whatever
+// DSN/connector the caller used. Bake readTimeout= / timeout= into that
+// DSN if you want the half-open recovery described on ReadTimeout (#172)
+// or the dial-retry described on DialAttemptTimeout.
 func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 	db := new(Database)
 	db.testMx = new(sync.Mutex)
