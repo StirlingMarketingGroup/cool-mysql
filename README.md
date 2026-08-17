@@ -81,7 +81,8 @@ cool-mysql can be configured using environment variables:
 | `COOL_MYSQL_MAX_QUERY_LOG_LENGTH` | `4096` (bytes) | Maximum length of queries in error logs |
 | `COOL_READ_TIMEOUT` | `0` (off) | Socket read timeout (seconds) applied to every pool. Bounds a half-open connection that would otherwise hang the read until your context deadline; on timeout the query retries on a fresh connection. The driver resets it per packet read, so steady streaming queries are unaffected. A non-zero `readTimeout=` in the DSN wins. |
 | `COOL_WRITE_TIMEOUT` | `0` (off) | Socket write timeout (seconds), symmetric with `COOL_READ_TIMEOUT`. |
-| `COOL_DIAL_TIMEOUT` | `0` (off) | New-connection dial timeout (seconds). |
+| `COOL_DIAL_TIMEOUT` | `0` (off) | Total new-connection dial budget (seconds). A non-zero DSN `timeout=` wins. Together with `COOL_DIAL_ATTEMPT_TIMEOUT`, this enables dial retry. |
+| `COOL_DIAL_ATTEMPT_TIMEOUT` | `0` (off) | Per-attempt TCP dial cap (seconds). Retry is active only when this is > 0 **and** a total budget is set (`COOL_DIAL_TIMEOUT` or a DSN `timeout=`). Recommended deployment: 12s total / 3s per attempt. `0` = single-attempt (historical). |
 
 **Example:**
 

@@ -94,8 +94,20 @@ var WriteTimeout = time.Duration(getenvInt64("COOL_WRITE_TIMEOUT", 0)) * time.Se
 // Timeout). Zero relies on the OS / caller context deadline instead.
 var DialTimeout = time.Duration(getenvInt64("COOL_DIAL_TIMEOUT", 0)) * time.Second
 
+// DialAttemptTimeout is the per-attempt cap on TCP connection establishment.
+// Dial retry is active only when DialAttemptTimeout > 0 AND the pool's
+// effective total dial budget is > 0 — the effective cfg.Timeout AFTER
+// applyNetTimeoutsToConfig, which means a DSN's own nonzero timeout= counts,
+// not just the package-level DialTimeout (a DSN timeout= takes precedence
+// in this repo and must not silently disable retry). The total budget is
+// required because without cfg.Timeout the pool's background-opener ctx can
+// be effectively unbounded, which would make a retry loop unbounded.
+// 0 = off = current single-attempt behavior. Env COOL_DIAL_ATTEMPT_TIMEOUT
+// (whole seconds). See applyDialerToConfig.
+var DialAttemptTimeout = time.Duration(getenvInt64("COOL_DIAL_ATTEMPT_TIMEOUT", 0)) * time.Second
+
 // TCPKeepAlive, when > 0, switches the TCP pools cool-mysql opens onto a
-// keepalive-tuned dialer (see applyKeepAliveToConfig). It is the recommended
+// keepalive-tuned DialFunc (see applyDialerToConfig). It is the recommended
 // half-open-detection mechanism — the network-layer counterpart to ReadTimeout
 // that does NOT double as a whole-query read cap, so it catches a peer that
 // vanished (no FIN/RST) without cutting a healthy long-running non-streaming
