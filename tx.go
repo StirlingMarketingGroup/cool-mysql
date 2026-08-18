@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -20,6 +21,15 @@ type Tx struct {
 
 	PostCommitHooks   []func() error
 	PostRollbackHooks []func()
+
+	// Values is per-transaction storage for tx-scoped state — collectors that
+	// batch work into a PostCommitHook, for example. RunInTx abandons a
+	// retried-away attempt's Tx without firing any hooks (hooks are
+	// final-outcome only), so a package-level map keyed by *Tx leaks an
+	// entry per abandoned attempt: no code path can ever delete it. Storage
+	// on the Tx itself is released with the abandoned Tx by the garbage
+	// collector; no cleanup path is needed.
+	Values sync.Map
 }
 
 type txCancelFunc func() error
