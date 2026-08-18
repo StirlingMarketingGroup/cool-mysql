@@ -243,6 +243,52 @@ func TestRunInTxHooksFireOnceOnCommit(t *testing.T) {
 	require.Equal(t, 0, rollbackCount, "a retried-away attempt's rollback hooks must not fire")
 }
 
+// Tx.Values is attempt-scoped: a retried-away attempt is a different *Tx with
+// its own map, so state stored on attempt 1 is gone on attempt 2 (and the
+// abandoned Tx is just garbage-collected — no hook-based cleanup). Only the
+// winning attempt's PostCommitHooks fire.
+func TestRunInTxAttemptValuesAreAttemptScoped(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnError(&stdMysql.MySQLError{Number: 1213})
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	const sentinelKey = "attempt-1"
+
+	var txs []*Tx
+	var commitCounts []int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		tx := TxFromContext(ctx)
+		txs = append(txs, tx)
+		i := len(txs) - 1
+		commitCounts = append(commitCounts, 0)
+
+		if i == 1 {
+			_, seen := tx.Values.Load(sentinelKey)
+			require.False(t, seen, "attempt 2 must not see attempt 1's sentinel — Values is fresh per attempt")
+		}
+
+		tx.Values.Store(sentinelKey, "from-attempt-1")
+		tx.PostCommitHooks = append(tx.PostCommitHooks, func() error {
+			commitCounts[i]++
+			return nil
+		})
+		return tx.Exec("insert into `t` (`a`) values (1)")
+	})
+	require.NoError(t, err)
+	require.Len(t, txs, 2, "exactly 2 attempts")
+	require.NotSame(t, txs[0], txs[1], "each attempt gets a distinct Tx")
+	require.Equal(t, 0, commitCounts[0], "retried-away attempt's PostCommitHooks never fire")
+	require.Equal(t, 1, commitCounts[1], "winning attempt's PostCommitHooks fire once")
+}
+
 // When every attempt deadlocks and the bound is hit, the final outcome is a
 // rollback: the rollback hooks fire exactly once (not once per attempt) and the
 // commit hooks never fire.
