@@ -22,14 +22,52 @@ type Tx struct {
 	PostCommitHooks   []func() error
 	PostRollbackHooks []func()
 
+	// PostAbandonHooks fire every time this Tx ends without a durable COMMIT:
+	// a RunInTx retried-away attempt (in-tx deadlock or retryable COMMIT
+	// failure), the final failed attempt, and Cancel() on an uncommitted tx.
+	// Unlike PostRollbackHooks — which fire only for the transaction's final
+	// outcome, and only after a confirmed rollback — these are per-attempt
+	// and are not gated on rollback succeeding. Once the attempt is over
+	// without a durable commit the driver tx is dead server-side either way
+	// (a failed COMMIT already ended it; the later raw rollback reports
+	// sql.ErrTxDone), so externally-held per-attempt resources such as
+	// distributed locks are both safe and necessary to release. A replayed
+	// RunInTx closure runs on a fresh Tx and re-acquires them. Never fires
+	// after a successful COMMIT, and fires at most once per Tx even when
+	// multiple ending paths run (a Cancel inside a RunInTx closure, a
+	// repeated Cancel).
+	PostAbandonHooks []func()
+
 	// Values is per-transaction storage for tx-scoped state — collectors that
-	// batch work into a PostCommitHook, for example. RunInTx abandons a
-	// retried-away attempt's Tx without firing any hooks (hooks are
-	// final-outcome only), so a package-level map keyed by *Tx leaks an
-	// entry per abandoned attempt: no code path can ever delete it. Storage
-	// on the Tx itself is released with the abandoned Tx by the garbage
-	// collector; no cleanup path is needed.
+	// batch work into a PostCommitHook, for example. RunInTx's final-outcome
+	// hooks never fire for a retried-away attempt, so a package-level map
+	// keyed by *Tx would leak an entry per abandoned attempt. Storage on the
+	// Tx itself is released with the abandoned Tx by the garbage collector;
+	// no cleanup path is needed. Per-attempt resources that must be released
+	// before a replay (locks) belong in PostAbandonHooks.
 	Values sync.Map
+
+	// committed is set when commit() observes a nil from Tx.Commit(), so the
+	// non-commit ending paths (RunInTx's per-attempt defer, Cancel) know a
+	// durable commit happened even when the closure committed the tx itself.
+	// abandoned makes runPostAbandonHooks once-only when multiple ending
+	// paths run for the same Tx. Single-goroutine use; no locking.
+	committed bool
+	abandoned bool
+}
+
+// runPostAbandonHooks fires PostAbandonHooks at most once per Tx, and never
+// once the tx durably committed. Both ending paths (RunInTx's per-attempt
+// defer and Cancel) route through here so a Cancel inside a RunInTx closure,
+// or a repeated Cancel, can't double-fire non-idempotent cleanup.
+func (tx *Tx) runPostAbandonHooks() {
+	if tx.committed || tx.abandoned {
+		return
+	}
+	tx.abandoned = true
+	for _, hook := range tx.PostAbandonHooks {
+		hook()
+	}
 }
 
 type txCancelFunc func() error
@@ -90,6 +128,9 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 // back. PostCommitHooks / PostRollbackHooks set on the in-context tx fire exactly
 // once, for the final outcome: a retried-away attempt's rollback hooks never
 // fire, so they cannot prematurely undo work that is about to be redone.
+// PostAbandonHooks fire per attempt whenever that attempt's Tx ends without a
+// durable COMMIT, so per-attempt external resources can be released before a
+// replay.
 //
 // If a transaction already exists in ctx, RunInTx does NOT begin a new one or
 // retry: it runs fn exactly once on the existing tx and lets any deadlock
@@ -125,13 +166,13 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 	}
 
 	b := backoff.NewExponentialBackOff()
-	// lastTx is the most recent transaction we began; committed records whether
-	// it durably committed; lastRolledBack records whether its raw rollback
-	// actually rolled the tx back (Rollback() == nil). Together they drive the
-	// final-outcome rollback-hook firing after the retry loop settles, so hooks
-	// fire once, only on a confirmed rollback, and never on a committed tx.
+	// lastTx is the most recent transaction we began; lastRolledBack records
+	// whether its raw rollback actually rolled the tx back (Rollback() == nil).
+	// Together they drive the final-outcome rollback-hook firing after the
+	// retry loop settles, so hooks fire once, only on a confirmed rollback,
+	// and never on a committed tx (tx.committed, set by commit(), covers the
+	// durable-commit case — including a closure committing the tx itself).
 	var lastTx *Tx
-	var committed bool
 	var lastRolledBack bool
 
 	// budget is the total elapsed-time allowance for this RunInTx call: the
@@ -206,13 +247,24 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 		// driver tx done, so this returns sql.ErrTxDone and no rollback hooks
 		// fire (matching Cancel()/#139). A no-op once the tx durably committed.
 		defer func() {
-			if !committed {
+			if !tx.committed {
 				lastRolledBack = tx.Tx.Rollback() == nil
+				// PostAbandonHooks run synchronously in this attempt's defer,
+				// before backoff schedules the next attempt, so a replay can
+				// never race its own release. Not gated on lastRolledBack: a
+				// failed retryable COMMIT leaves sql.ErrTxDone yet still
+				// needs release before the replay. Once-only via tx.abandoned
+				// (a Cancel inside fn already fired them).
+				tx.runPostAbandonHooks()
 			}
 		}()
 
 		if err := fn(NewContextWithTx(ctx, tx)); err != nil {
-			if checkTxRetryError(err) {
+			// A closure that durably committed via the exposed Tx.Commit must
+			// never be replayed, even when its error happens to wrap a
+			// deadlock code (e.g. a post-commit hook's failure) — a replay
+			// would duplicate the committed writes.
+			if !tx.committed && checkTxRetryError(err) {
 				return struct{}{}, gateRetry(attemptStart, err)
 			}
 			return struct{}{}, backoff.Permanent(err)
@@ -230,7 +282,6 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 			}
 			return struct{}{}, backoff.Permanent(err)
 		}
-		committed = true
 
 		if err := tx.runPostCommitHooks(); err != nil {
 			return struct{}{}, backoff.Permanent(err)
@@ -278,6 +329,9 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 func (tx *Tx) commit() error {
 	start := time.Now()
 	err := tx.Tx.Commit()
+	if err == nil {
+		tx.committed = true
+	}
 	tx.db.callLog(LogDetail{
 		Query:    "commit",
 		Duration: time.Since(start),
@@ -328,6 +382,8 @@ func (tx *Tx) Cancel() error {
 		Attempt:  1,
 		Error:    err,
 	})
+
+	tx.runPostAbandonHooks()
 
 	if rolledBack {
 		for _, hook := range tx.PostRollbackHooks {

@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -287,6 +288,213 @@ func TestRunInTxAttemptValuesAreAttemptScoped(t *testing.T) {
 	require.NotSame(t, txs[0], txs[1], "each attempt gets a distinct Tx")
 	require.Equal(t, 0, commitCounts[0], "retried-away attempt's PostCommitHooks never fire")
 	require.Equal(t, 1, commitCounts[1], "winning attempt's PostCommitHooks fire once")
+}
+
+// PostAbandonHooks fire for every attempt that ends without a durable commit,
+// including a retried-away in-tx deadlock. The discarded attempt's abandon
+// hook must run (and finish) before the replayed closure starts, so a
+// per-attempt lock can be released before the next attempt re-acquires it.
+// The winning attempt's abandon hook must not fire, and no rollback hooks
+// fire — those stay final-outcome-only.
+func TestRunInTxAbandonHooksFireOnRetriedAttempt(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnError(errTestDeadlock)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	var events []string
+	attempt := 0
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		attempt++
+		n := attempt
+		events = append(events, fmt.Sprintf("enter-%d", n))
+		tx := TxFromContext(ctx)
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() {
+			events = append(events, fmt.Sprintf("abandon-%d", n))
+		})
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+			events = append(events, fmt.Sprintf("rollback-%d", n))
+		})
+		return tx.Exec("insert into `t` (`a`) values (1)")
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"enter-1", "abandon-1", "enter-2"}, events,
+		"attempt 1 abandon fires once before attempt 2 enters; attempt 2 abandon never fires; no rollback hooks")
+}
+
+// A retryable COMMIT-time 1213 ends the driver tx immediately; the raw
+// rollback then reports sql.ErrTxDone, so PostRollbackHooks (confirmed-
+// rollback gated) would miss this. PostAbandonHooks must still fire so
+// per-attempt resources are released before the replay.
+func TestRunInTxAbandonHooksFireOnRetryableCommitFailure(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit().WillReturnError(&stdMysql.MySQLError{Number: 1213})
+	// A failed Commit marks the driver tx done, so RunInTx's raw rollback
+	// returns sql.ErrTxDone without reaching the driver — sqlmock therefore
+	// sees no Rollback (same as TestRunInTxCommitDeadlockRetries). That is
+	// exactly the case rollback-confirmation gating would miss.
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	var events []string
+	attempt := 0
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		attempt++
+		n := attempt
+		events = append(events, fmt.Sprintf("enter-%d", n))
+		tx := TxFromContext(ctx)
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() {
+			events = append(events, fmt.Sprintf("abandon-%d", n))
+		})
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+			events = append(events, fmt.Sprintf("rollback-%d", n))
+		})
+		return tx.Exec("insert into `t` (`a`) values (1)")
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"enter-1", "abandon-1", "enter-2"}, events,
+		"failed COMMIT still fires attempt 1 abandon before attempt 2 enters; rollback-confirmation gating would miss this")
+}
+
+// Exhausted retries: every attempt's abandon hook fires, and the final
+// attempt's PostRollbackHooks fire too (both kinds for the terminal
+// rollback). Earlier attempts' rollback hooks never fire.
+func TestRunInTxAbandonHooksExhaustedRetries(t *testing.T) {
+	withMaxAttempts(t, 2)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnError(errTestDeadlock)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnError(errTestDeadlock)
+	mock.ExpectRollback()
+
+	var events []string
+	attempt := 0
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		attempt++
+		n := attempt
+		events = append(events, fmt.Sprintf("enter-%d", n))
+		tx := TxFromContext(ctx)
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() {
+			events = append(events, fmt.Sprintf("abandon-%d", n))
+		})
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() {
+			events = append(events, fmt.Sprintf("rollback-%d", n))
+		})
+		return tx.Exec("insert into `t` (`a`) values (1)")
+	})
+	require.Error(t, err)
+	require.Equal(t, []string{"enter-1", "abandon-1", "enter-2", "abandon-2", "rollback-2"}, events,
+		"each attempt abandons once; only the final attempt's rollback hooks fire")
+}
+
+// A closure may commit the tx itself through the exposed Tx.Commit. That is a
+// durable commit, so the attempt defer must not treat the attempt as abandoned
+// — tx.committed (set by commit()) is the gate, not RunInTx's own bookkeeping.
+// RunInTx's follow-up commit then fails with sql.ErrTxDone and surfaces as an
+// error, but no abandon or rollback hooks may fire on the committed tx.
+func TestRunInTxClosureSelfCommitDoesNotFireAbandonHooks(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	var abandonCount, rollbackCount, commitCount int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		tx := TxFromContext(ctx)
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() { abandonCount++ })
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() { rollbackCount++ })
+		tx.PostCommitHooks = append(tx.PostCommitHooks, func() error { commitCount++; return nil })
+		if err := tx.Exec("insert into `t` (`a`) values (1)"); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	require.Error(t, err, "RunInTx's own commit fails on the already-committed tx")
+	require.Equal(t, 0, abandonCount, "no abandon hooks after a durable self-commit")
+	require.Equal(t, 0, rollbackCount, "no rollback hooks after a durable self-commit")
+	require.Equal(t, 1, commitCount, "the closure's own Commit fired commit hooks once")
+}
+
+// A closure that durably self-commits and then fails with a deadlock-coded
+// error (e.g. its post-commit hook wraps one) must NOT be replayed — the
+// writes are committed, and a replay would duplicate them. sqlmock proves no
+// second Begin happened.
+func TestRunInTxSelfCommitRetryableHookErrorNotReplayed(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	var abandonCount, rollbackCount int
+	attempts := 0
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		attempts++
+		tx := TxFromContext(ctx)
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() { abandonCount++ })
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() { rollbackCount++ })
+		tx.PostCommitHooks = append(tx.PostCommitHooks, func() error { return errTestDeadlock })
+		if err := tx.Exec("insert into `t` (`a`) values (1)"); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, attempts, "the committed attempt must not be replayed despite the deadlock-coded error")
+	require.Equal(t, 0, abandonCount)
+	require.Equal(t, 0, rollbackCount)
+	require.NoError(t, mock.ExpectationsWereMet(), "exactly one Begin/Exec/Commit — no replay")
+}
+
+// Cancel inside the closure and the attempt defer are two ending paths for the
+// same Tx; abandon hooks must fire exactly once (tx.abandoned), not once per
+// path.
+func TestRunInTxCancelInsideClosureFiresAbandonHooksOnce(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	var abandonCount int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		tx := TxFromContext(ctx)
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() { abandonCount++ })
+		if err := tx.Cancel(); err != nil {
+			return err
+		}
+		return errors.New("giving up after cancel")
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, abandonCount, "Cancel fired the abandon hooks; the attempt defer must not fire them again")
 }
 
 // When every attempt deadlocks and the bound is hit, the final outcome is a
