@@ -115,6 +115,60 @@ func TestMultiCacheSkipsBackPopulateWithoutTTL(t *testing.T) {
 	}
 }
 
+// lockRecordingCache is a Cache+Locker that records Lock calls.
+type lockRecordingCache struct {
+	noTTLCache
+	lockKeys []string
+	unlocked int
+}
+
+func (l *lockRecordingCache) Lock(ctx context.Context, key string) (func() error, error) {
+	l.lockKeys = append(l.lockKeys, key)
+	return func() error {
+		l.unlocked++
+		return nil
+	}, nil
+}
+
+func TestMultiCacheLockDelegatesToLockingTier(t *testing.T) {
+	locking := &lockRecordingCache{}
+	m := NewMultiCache(NewWeakCache(), locking)
+	unlock, err := m.Lock(context.Background(), "k:mutex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locking.lockKeys) != 1 || locking.lockKeys[0] != "k:mutex" {
+		t.Fatalf("lock not delegated: %v", locking.lockKeys)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if locking.unlocked != 1 {
+		t.Fatalf("unlock not delegated: %d", locking.unlocked)
+	}
+}
+
+func TestMultiCacheLockWithoutLockingTierIsNoop(t *testing.T) {
+	m := NewMultiCache(NewWeakCache(), &noTTLCache{})
+	unlock, err := m.Lock(context.Background(), "k:mutex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestUseCacheMultiCacheSetsLocker proves the original bug can't return: a
+// MultiCache wrapping a locking tier must register as the Database's locker.
+func TestUseCacheMultiCacheSetsLocker(t *testing.T) {
+	db := &Database{}
+	db.UseCache(NewMultiCache(NewWeakCache(), &lockRecordingCache{}))
+	if db.locker == nil {
+		t.Fatal("UseCache(MultiCache with locking tier) must set db.locker")
+	}
+}
+
 func TestWeakCacheSetWithoutTTL(t *testing.T) {
 	c := NewWeakCache()
 	if err := c.Set(context.Background(), "k", []byte("v"), 0); err != nil {
