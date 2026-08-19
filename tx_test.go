@@ -123,6 +123,74 @@ func TestPostRollbackHooksNotRunOnCommit(t *testing.T) {
 	require.False(t, called, "PostRollbackHook should not run on commit")
 }
 
+func TestCancelFiresAbandonHooks(t *testing.T) {
+	t.Run("uncommitted", func(t *testing.T) {
+		db, mock, cleanup := getTestDatabase(t)
+		defer cleanup()
+
+		mock.ExpectBegin()
+		mock.ExpectRollback()
+
+		tx, _, err := db.BeginTx()
+		require.NoError(t, err)
+
+		var abandonCount, rollbackCount, commitCount int
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() { abandonCount++ })
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() { rollbackCount++ })
+		tx.PostCommitHooks = append(tx.PostCommitHooks, func() error { commitCount++; return nil })
+
+		err = tx.Cancel()
+		require.NoError(t, err)
+		require.Equal(t, 1, abandonCount, "Cancel on an uncommitted tx fires abandon hooks")
+		require.Equal(t, 1, rollbackCount, "Cancel on an uncommitted tx fires rollback hooks")
+		require.Equal(t, 0, commitCount, "Cancel must not fire commit hooks")
+	})
+
+	t.Run("twice", func(t *testing.T) {
+		db, mock, cleanup := getTestDatabase(t)
+		defer cleanup()
+
+		mock.ExpectBegin()
+		mock.ExpectRollback()
+
+		tx, _, err := db.BeginTx()
+		require.NoError(t, err)
+
+		var abandonCount int
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() { abandonCount++ })
+
+		require.NoError(t, tx.Cancel())
+		require.NoError(t, tx.Cancel())
+		require.Equal(t, 1, abandonCount, "a repeated Cancel must not double-fire abandon hooks")
+	})
+
+	t.Run("after commit", func(t *testing.T) {
+		db, mock, cleanup := getTestDatabase(t)
+		defer cleanup()
+
+		mock.ExpectBegin()
+		mock.ExpectCommit()
+
+		tx, cancel, err := db.BeginTx()
+		require.NoError(t, err)
+
+		var abandonCount, rollbackCount, commitCount int
+		tx.PostAbandonHooks = append(tx.PostAbandonHooks, func() { abandonCount++ })
+		tx.PostRollbackHooks = append(tx.PostRollbackHooks, func() { rollbackCount++ })
+		tx.PostCommitHooks = append(tx.PostCommitHooks, func() error { commitCount++; return nil })
+
+		err = tx.Commit()
+		require.NoError(t, err)
+		require.Equal(t, 1, commitCount, "Commit fires commit hooks once")
+
+		err = cancel()
+		require.NoError(t, err)
+		require.Equal(t, 0, abandonCount, "Cancel after a successful Commit must not fire abandon hooks")
+		require.Equal(t, 0, rollbackCount, "Cancel after a successful Commit must not fire rollback hooks")
+		require.Equal(t, 1, commitCount, "commit hooks stay at one after the deferred Cancel")
+	})
+}
+
 func TestPostRollbackHooksNotRunWhenAlreadyCommitted(t *testing.T) {
 	db, mock, cleanup := getTestDatabase(t)
 	defer cleanup()
