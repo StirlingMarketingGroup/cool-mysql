@@ -93,5 +93,21 @@ func (m *MultiCache) Set(ctx context.Context, key string, val []byte, ttl time.D
 	return lastErr
 }
 
+// Lock implements Locker by delegating to the first composed cache that
+// provides one. Without this, wrapping a locking cache (e.g. RedisCache) in a
+// MultiCache silently dropped stampede protection: Database.UseCache only
+// type-asserts the cache it's handed, so db.locker stayed nil and every
+// concurrent caller re-ran the query on cache expiry. When no composed cache
+// locks, the returned no-op unlock preserves the unlocked behavior.
+func (m *MultiCache) Lock(ctx context.Context, key string) (func() error, error) {
+	for _, c := range m.caches {
+		if l, ok := c.(Locker); ok {
+			return l.Lock(ctx, key)
+		}
+	}
+	return func() error { return nil }, nil
+}
+
 var _ Cache = (*MultiCache)(nil)
 var _ TTLCache = (*MultiCache)(nil)
+var _ Locker = (*MultiCache)(nil)
