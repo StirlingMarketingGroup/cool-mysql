@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -54,6 +55,16 @@ type Tx struct {
 	// paths run for the same Tx. Single-goroutine use; no locking.
 	committed bool
 	abandoned bool
+
+	// wrote is set by exec() after a successful statement so commit() can
+	// pin read-your-writes only for txs that actually wrote. Atomic because
+	// a transactional Upsert runs its update and insert legs in separate
+	// goroutines that both report through exec(). role is the pool the tx
+	// was begun on, stated by BeginTx/BeginReadsTx — a committed
+	// BeginReadsTx must not pin, even if it wrote (those rows landed on
+	// the replica, not the writer the pin is meant to follow).
+	wrote atomic.Bool
+	role  poolRole
 }
 
 // runPostAbandonHooks fires PostAbandonHooks at most once per Tx, and never
@@ -72,7 +83,7 @@ func (tx *Tx) runPostAbandonHooks() {
 
 type txCancelFunc func() error
 
-func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFunc, error) {
+func (db *Database) beginTx(conn *sql.DB, role poolRole, ctx context.Context) (*Tx, txCancelFunc, error) {
 	start := time.Now()
 
 	t, err := conn.BeginTx(ctx, nil)
@@ -80,6 +91,7 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 		db:   db,
 		Tx:   t,
 		Time: time.Now(),
+		role: role,
 	}
 
 	db.callLog(LogDetail{
@@ -98,22 +110,22 @@ func (db *Database) beginTx(conn *sql.DB, ctx context.Context) (*Tx, txCancelFun
 
 // BeginTx begins and returns a new transaction on the writes connection
 func (db *Database) BeginTx() (tx *Tx, cancel func() error, err error) {
-	return db.beginTx(db.Writes.(*sql.DB), context.Background())
+	return db.beginTx(db.Writes.(*sql.DB), poolWriter, context.Background())
 }
 
 // BeginTxContext begins and returns a new transaction on the writes connection
 func (db *Database) BeginTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
-	return db.beginTx(db.Writes.(*sql.DB), ctx)
+	return db.beginTx(db.Writes.(*sql.DB), poolWriter, ctx)
 }
 
 // BeginReadsTx begins and returns a new transaction on the writes connection
 func (db *Database) BeginReadsTx() (tx *Tx, cancel func() error, err error) {
-	return db.beginTx(db.Reads, context.Background())
+	return db.beginTx(db.Reads, poolReader, context.Background())
 }
 
 // BeginReadsTxContext begins and returns a new transaction on the reads connection
 func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel func() error, err error) {
-	return db.beginTx(db.Reads, ctx)
+	return db.beginTx(db.Reads, poolReader, ctx)
 }
 
 // RunInTx runs fn inside a transaction it owns, retrying the WHOLE closure from a
@@ -331,6 +343,9 @@ func (tx *Tx) commit() error {
 	err := tx.Tx.Commit()
 	if err == nil {
 		tx.committed = true
+		if tx.wrote.Load() && tx.role == poolWriter {
+			tx.db.markWrite()
+		}
 	}
 	tx.db.callLog(LogDetail{
 		Query:    "commit",
@@ -399,6 +414,7 @@ func (tx *Tx) DefaultInsertOptions() *Inserter {
 		db:   tx.db,
 		conn: tx.Tx,
 		tx:   tx,
+		role: tx.role,
 	}
 }
 
@@ -416,7 +432,7 @@ func (tx *Tx) InsertContext(ctx context.Context, insert string, source any) erro
 
 // ExecContextResult executes a query and nothing more
 func (tx *Tx) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return tx.db.exec(tx.Tx, ctx, tx, query, params...)
+	return tx.db.exec(tx.Tx, ctx, tx, tx.role, query, params...)
 }
 
 // ExecContext executes a query and nothing more

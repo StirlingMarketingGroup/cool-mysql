@@ -19,7 +19,8 @@ func (db *Database) Count(query string, cache time.Duration, params ...any) (int
 	}
 
 	start := time.Now()
-	rows, err := db.Reads.Query(replacedQuery)
+	conn, _ := db.readYourWrites(0)
+	rows, err := conn.Query(replacedQuery)
 	db.callLog(LogDetail{
 		Query:    replacedQuery,
 		Params:   normalizedParams,

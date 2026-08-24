@@ -14,7 +14,7 @@ import (
 )
 
 // exec executes a query and nothing more
-func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, query string, params ...any) (sql.Result, error) {
+func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, role poolRole, query string, params ...any) (sql.Result, error) {
 	replacedQuery, normalizedParams, err := db.interpolateParams(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to interpolate params: %w", err)
@@ -117,6 +117,16 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, q
 			ReplacedQuery: replacedQuery,
 			Params:        normalizedParams,
 		}
+	}
+
+	// poolUnknown (SetExecutor) never marks: the statement's effects may not
+	// have landed where tx/db think their writes go.
+	switch {
+	case role == poolUnknown:
+	case tx != nil:
+		tx.wrote.Store(true)
+	case role == poolWriter:
+		db.markWrite()
 	}
 
 	return res, nil

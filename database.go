@@ -13,12 +13,25 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
+)
+
+// poolRole is where a statement's effects land, stated by the API that
+// issued it rather than inferred from pool identity — Reads and Writes can be
+// the same *sql.DB, so pointer equality cannot tell InsertReads from Insert.
+// Only poolWriter statements count as read-your-writes.
+type poolRole int
+
+const (
+	poolUnknown poolRole = iota // SetExecutor escape hatch: never marks
+	poolWriter
+	poolReader
 )
 
 // Database is a cool MySQL connection
@@ -50,6 +63,22 @@ type Database struct {
 	// runtime with SetMaxConnectionTime so the underlying pools pick up
 	// the new value.
 	MaxConnectionTime time.Duration
+
+	// ReadYourWritesWindow is how long after a durable writer-pool write
+	// Select/Exists/Count should hit Writes instead of Reads so a lagging
+	// replica cannot hide those rows. Zero disables. Seeded from the
+	// package-level ReadYourWritesWindow at construction.
+	ReadYourWritesWindow time.Duration
+
+	// lastWrite is the last durable writer-pool write, as nanoseconds of
+	// monotonic time since rywEpoch — not a wall-clock stamp, so a host
+	// clock jump can neither expire the pin early nor extend it. A pointer
+	// so Clone() (clone := *db) shares it: a clone is a copy of the same
+	// database, not a new session, and a clone made after a write must
+	// still see that write. Zero means "never wrote" (any real write lands
+	// strictly after the epoch). Nil is tolerated (zero-value Database →
+	// no pinning).
+	lastWrite *atomic.Int64
 
 	cache  Cache
 	locker Locker
@@ -96,6 +125,46 @@ type Database struct {
 func (db *Database) Clone() *Database {
 	clone := *db
 	return &clone
+}
+
+// rywEpoch anchors lastWrite to the monotonic clock: time.Since(rywEpoch)
+// never observes wall-clock jumps.
+var rywEpoch = time.Now()
+
+func (db *Database) markWrite() {
+	if db.lastWrite == nil {
+		return
+	}
+	// CAS-max rather than a plain Store: a goroutine preempted between
+	// sampling the clock and storing must not drag the marker backward past
+	// a newer write's stamp, shortening that write's window.
+	now := int64(time.Since(rywEpoch))
+	for {
+		prev := db.lastWrite.Load()
+		if now <= prev || db.lastWrite.CompareAndSwap(prev, now) {
+			return
+		}
+	}
+}
+
+// readYourWrites picks the pool for a plain read. While a durable write on
+// this Database (or a Clone of it) is inside ReadYourWritesWindow it returns
+// the Writes pool and a zero cache duration, so neither a lagging replica nor
+// a cached pre-write result can hide those rows. Writes must be a *sql.DB —
+// file/io.Writer sinks cannot serve reads.
+func (db *Database) readYourWrites(cache time.Duration) (*sql.DB, time.Duration) {
+	if db.ReadYourWritesWindow <= 0 || db.lastWrite == nil {
+		return db.Reads, cache
+	}
+	ts := db.lastWrite.Load()
+	if ts == 0 || time.Since(rywEpoch)-time.Duration(ts) >= db.ReadYourWritesWindow {
+		return db.Reads, cache
+	}
+	w, ok := db.Writes.(*sql.DB)
+	if !ok {
+		return db.Reads, cache
+	}
+	return w, 0
 }
 
 // applyTimeZoneToConfig writes cfg.Loc's current offset to
@@ -430,6 +499,18 @@ func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, err
 	return conn, nil
 }
 
+// newDatabase seeds the per-instance state every constructor needs so a new
+// constructor cannot silently miss a package-default field.
+func newDatabase() *Database {
+	return &Database{
+		testMx:               new(sync.Mutex),
+		MaxExecutionTime:     MaxExecutionTime,
+		MaxConnectionTime:    MaxConnectionTime,
+		ReadYourWritesWindow: ReadYourWritesWindow,
+		lastWrite:            new(atomic.Int64),
+	}
+}
+
 // NewFromDSN creates a new Database from DSN strings for the writes and
 // reads connections.
 //
@@ -439,11 +520,8 @@ func openPool(dsn, connType string, connMaxLifetime time.Duration) (*sql.DB, err
 // (to avoid reads and writes contending for connections under concurrent
 // load), use NewFromDSNDualPool instead.
 func NewFromDSN(writes, reads string) (db *Database, err error) {
-	db = new(Database)
-	db.testMx = new(sync.Mutex)
+	db = newDatabase()
 	db.Logger = DefaultLogger()
-	db.MaxExecutionTime = MaxExecutionTime
-	db.MaxConnectionTime = MaxConnectionTime
 
 	writesConn, err := openPool(writes, "writes", db.MaxConnectionTime)
 	if err != nil {
@@ -486,12 +564,9 @@ func NewFromDSN(writes, reads string) (db *Database, err error) {
 // defeated by NewFromDSN(dsn, dsn) because equal DSN strings collapse to
 // a single shared pool.
 func NewFromDSNDualPool(dsn string) (db *Database, err error) {
-	db = new(Database)
-	db.testMx = new(sync.Mutex)
+	db = newDatabase()
 	db.Logger = DefaultLogger()
 	db.forceDualPool = true
-	db.MaxExecutionTime = MaxExecutionTime
-	db.MaxConnectionTime = MaxConnectionTime
 
 	writesConn, err := openPool(dsn, "writes", db.MaxConnectionTime)
 	if err != nil {
@@ -535,10 +610,7 @@ func NewFromDSNDualPool(dsn string) (db *Database, err error) {
 // DSN if you want the half-open recovery described on ReadTimeout (#172)
 // or the dial-retry described on DialAttemptTimeout.
 func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
-	db := new(Database)
-	db.testMx = new(sync.Mutex)
-	db.MaxExecutionTime = MaxExecutionTime
-	db.MaxConnectionTime = MaxConnectionTime
+	db := newDatabase()
 	db.Loc = time.UTC
 
 	// 1) Pull the server's max_allowed_packet value
@@ -572,17 +644,13 @@ func NewFromConn(writesConn, readsConn *sql.DB) (*Database, error) {
 }
 
 func NewLocalWriter(path string) (*Database, error) {
-	db := new(Database)
+	db := newDatabase()
 	sqlWriter := &sqlWriter{
 		path:   path,
 		index:  new(synct[int]),
 		logger: DefaultLogger(),
 	}
 	db.Writes = sqlWriter
-
-	db.testMx = new(sync.Mutex)
-	db.MaxExecutionTime = MaxExecutionTime
-	db.MaxConnectionTime = MaxConnectionTime
 	db.Loc = time.UTC
 
 	db.MaxInsertSize = new(synct[int])
@@ -594,15 +662,11 @@ func NewLocalWriter(path string) (*Database, error) {
 }
 
 func NewWriter(w io.Writer) (*Database, error) {
-	db := new(Database)
+	db := newDatabase()
 	writer := &writer{
 		Writer: w,
 	}
 	db.Writes = writer
-
-	db.testMx = new(sync.Mutex)
-	db.MaxExecutionTime = MaxExecutionTime
-	db.MaxConnectionTime = MaxConnectionTime
 	db.Loc = time.UTC
 
 	db.MaxInsertSize = new(synct[int])
@@ -743,6 +807,7 @@ func (db *Database) DefaultInsertOptions() *Inserter {
 	return &Inserter{
 		db:   db,
 		conn: db.Writes,
+		role: poolWriter,
 	}
 }
 
@@ -768,7 +833,7 @@ func (db *Database) InsertReadsContext(ctx context.Context, insert string, sourc
 
 // ExecContext executes a query and nothing more
 func (db *Database) ExecContextResult(ctx context.Context, query string, params ...any) (sql.Result, error) {
-	return db.exec(db.Writes, ctx, nil, query, params...)
+	return db.exec(db.Writes, ctx, nil, poolWriter, query, params...)
 }
 
 // ExecContext executes a query and nothing more
@@ -789,12 +854,14 @@ func (db *Database) Exec(query string, params ...any) error {
 }
 
 func (db *Database) Select(dest any, q string, cache time.Duration, params ...any) error {
-	return db.query(db.Reads, context.Background(), dest, q, cache, params...)
+	conn, cache := db.readYourWrites(cache)
+	return db.query(conn, context.Background(), dest, q, cache, params...)
 }
 
 func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Rows, error) {
 	var rows Rows
-	err := db.query(db.Reads, context.Background(), &rows, q, cache, params...)
+	conn, cache := db.readYourWrites(cache)
+	err := db.query(conn, context.Background(), &rows, q, cache, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -803,7 +870,8 @@ func (db *Database) SelectRows(q string, cache time.Duration, params ...any) (Ro
 }
 
 func (db *Database) SelectContext(ctx context.Context, dest any, q string, cache time.Duration, params ...any) error {
-	return db.query(db.Reads, ctx, dest, q, cache, params...)
+	conn, cache := db.readYourWrites(cache)
+	return db.query(conn, ctx, dest, q, cache, params...)
 }
 
 func (db *Database) SelectWrites(dest any, q string, cache time.Duration, params ...any) error {
@@ -835,12 +903,14 @@ func (db *Database) SelectJSONContext(ctx context.Context, dest any, query strin
 
 // Exists efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) Exists(query string, cache time.Duration, params ...any) (bool, error) {
-	return db.exists(db.Reads, context.Background(), query, cache, params...)
+	conn, cache := db.readYourWrites(cache)
+	return db.exists(conn, context.Background(), query, cache, params...)
 }
 
 // ExistsContext efficiently checks if there are any rows in the given query using the `Reads` connection
 func (db *Database) ExistsContext(ctx context.Context, query string, cache time.Duration, params ...any) (bool, error) {
-	return db.exists(db.Reads, ctx, query, cache, params...)
+	conn, cache := db.readYourWrites(cache)
+	return db.exists(conn, ctx, query, cache, params...)
 }
 
 // ExistsWrites efficiently checks if there are any rows in the given query using the `Writes` connection

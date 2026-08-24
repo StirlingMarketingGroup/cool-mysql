@@ -44,7 +44,7 @@ func TestExecRespectsMaxAttempts(t *testing.T) {
 	}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), nil, "SELECT 1")
+	_, err := db.exec(h, context.Background(), nil, poolWriter, "SELECT 1")
 	if err == nil {
 		t.Fatalf("expected error after retries exhausted")
 	}
@@ -94,7 +94,7 @@ func TestExecTxDeadlockSurfacesWithoutRetry(t *testing.T) {
 	h := &recordingExecHandler{errors: []error{errTestDeadlock}}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), &Tx{}, "insert into `t` (`a`) values (2)")
+	_, err := db.exec(h, context.Background(), &Tx{}, poolWriter, "insert into `t` (`a`) values (2)")
 	if err == nil {
 		t.Fatal("expected the deadlock error to surface")
 	}
@@ -127,7 +127,7 @@ func TestExecTxLockWaitTimeoutSurfacesWithoutRetry(t *testing.T) {
 	h := &recordingExecHandler{errors: []error{errTestLockWait}}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), &Tx{}, "insert into `t` (`a`) values (2)")
+	_, err := db.exec(h, context.Background(), &Tx{}, poolWriter, "insert into `t` (`a`) values (2)")
 	if err == nil {
 		t.Fatal("expected the lock-wait timeout to surface")
 	}
@@ -151,7 +151,7 @@ func TestExecAutocommitLockWaitTimeoutStillRetries(t *testing.T) {
 	h := &recordingExecHandler{errors: []error{errTestLockWait}}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), nil, "insert into `t` (`a`) values (2)")
+	_, err := db.exec(h, context.Background(), nil, poolWriter, "insert into `t` (`a`) values (2)")
 	if err != nil {
 		t.Fatalf("expected the autocommit retry to recover, got %v", err)
 	}
@@ -172,7 +172,7 @@ func TestExecAutocommitDeadlockStillRetries(t *testing.T) {
 	h := &recordingExecHandler{errors: []error{errTestDeadlock}}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), nil, "insert into `t` (`a`) values (2)")
+	_, err := db.exec(h, context.Background(), nil, poolWriter, "insert into `t` (`a`) values (2)")
 	if err != nil {
 		t.Fatalf("expected the autocommit retry to recover, got %v", err)
 	}
@@ -194,7 +194,7 @@ func TestExecTxInvalidConnFailsFastWithoutRetry(t *testing.T) {
 	h := &recordingExecHandler{errors: []error{stdMysql.ErrInvalidConn}}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), &Tx{}, "insert into `t` (`a`) values (2)")
+	_, err := db.exec(h, context.Background(), &Tx{}, poolWriter, "insert into `t` (`a`) values (2)")
 	if err == nil {
 		t.Fatal("expected ErrInvalidConn to surface inside a tx")
 	}
@@ -244,7 +244,7 @@ func TestExecInvalidConnPoolDownSurfacesError(t *testing.T) {
 		Logger:    DefaultLogger(),
 	}
 
-	_, err = db.exec(h, context.Background(), nil, "insert into `t` (`a`) values (2)")
+	_, err = db.exec(h, context.Background(), nil, poolWriter, "insert into `t` (`a`) values (2)")
 	if err == nil {
 		t.Fatal("expected the failed Test()/Reconnect error to surface, not a phantom success")
 	}

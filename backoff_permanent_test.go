@@ -47,7 +47,7 @@ func TestExecDoesNotLeakPermanentError(t *testing.T) {
 	h := &failingExecHandler{errors: []error{errPermanentProbe}}
 
 	db := &Database{}
-	_, err := db.exec(h, context.Background(), nil, "SELECT 1")
+	_, err := db.exec(h, context.Background(), nil, poolWriter, "SELECT 1")
 	assertNoPermanentWrapper(t, err)
 }
 

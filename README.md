@@ -83,6 +83,7 @@ cool-mysql can be configured using environment variables:
 | `COOL_WRITE_TIMEOUT` | `0` (off) | Socket write timeout (seconds), symmetric with `COOL_READ_TIMEOUT`. |
 | `COOL_DIAL_TIMEOUT` | `0` (off) | Total new-connection dial budget (seconds). A non-zero DSN `timeout=` wins. Together with `COOL_DIAL_ATTEMPT_TIMEOUT`, this enables dial retry. |
 | `COOL_DIAL_ATTEMPT_TIMEOUT` | `0` (off) | Per-attempt TCP dial cap (seconds). Retry is active only when this is > 0 **and** a total budget is set (`COOL_DIAL_TIMEOUT` or a DSN `timeout=`). Recommended deployment: 12s total / 3s per attempt. `0` = single-attempt (historical). |
+| `COOL_READ_YOUR_WRITES_WINDOW` | `5` (seconds) | After a durable write through cool-mysql, `Select`/`Exists`/`Count` on the same `*Database` are routed to the write pool (and skip the query cache) for this long so a lagging replica cannot hide those rows. `0` disables. |
 
 **Example:**
 
@@ -505,6 +506,10 @@ err := db.Insert("users", newUser)
 err := db.SelectWrites(&users, "SELECT * FROM users WHERE just_created = 1", nil)
 ```
 
+### Read-your-writes
+
+`Select` / `Exists` / `Count` normally use the `Reads` pool (a replica in dual-host setups). After a successful write through cool-mysql (`Exec`, `Insert`, `Upsert`, or a committed writer transaction), those reads go to `Writes` for `ReadYourWritesWindow` (default 5 seconds; env `COOL_READ_YOUR_WRITES_WINDOW` as integer seconds; `0` disables) and skip the query cache. `Clone()` shares the write marker. Use `SelectWrites` / `ExistsWrites` to always hit the writer regardless of recency. Direct `db.Writes` / `tx.Tx` use is not tracked. Provenance is stated by the API (`Insert`/`Exec`/`BeginTx` = writer, `InsertReads`/`BeginReadsTx` = reader); `Inserter.SetExecutor` drops provenance, so statements through a custom executor never mark.
+
 **Single DSN, two pools.** `NewFromDSN(dsn, dsn)` with identical strings
 collapses to one shared pool — fine for short-lived callers (Lambda,
 scripts) but can cause reads/writes contention under concurrent load for
@@ -607,8 +612,8 @@ err := db.Select(&users, query, cacheTTL, params)
    - Real-time data: no caching (TTL = 0)
 
 2. **Leverage read/write separation:**
-   - Use regular `Select()` for most reads
-   - Use `SelectWrites()` only when read-after-write consistency is critical
+   - Use regular `Select()` for most reads — recent writes on the same `*Database` are routed to the writer automatically for `ReadYourWritesWindow`
+   - Use `SelectWrites()` when you want the writer regardless of recency
 
 3. **Handle large datasets efficiently:**
    - Use channels for streaming large result sets
