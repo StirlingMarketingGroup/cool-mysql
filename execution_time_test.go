@@ -189,7 +189,7 @@ func TestExec_RespectsDBMaxExecutionTime(t *testing.T) {
 	db := &Database{MaxExecutionTime: time.Nanosecond}
 
 	start := time.Now()
-	_, err := db.exec(h, context.Background(), nil, "SELECT 1")
+	_, err := db.exec(h, context.Background(), nil, poolWriter, "SELECT 1")
 	elapsed := time.Since(start)
 
 	require.Error(t, err)

@@ -16,6 +16,7 @@ type Inserter struct {
 	db   *Database
 	conn handlerWithContext
 	tx   *Tx
+	role poolRole
 
 	AfterChunkExec func(start time.Time)
 	AfterRowExec   func(start time.Time)
@@ -40,9 +41,17 @@ func (in *Inserter) SetResultHandler(fn func(sql.Result)) *Inserter {
 	return in
 }
 
+// SetExecutor replaces where statements run. The Inserter can no longer
+// vouch for where their effects land, so it drops its pool provenance:
+// statements issued through a custom executor never mark read-your-writes
+// and never count toward an enclosing tx's wrote flag. The tx association
+// is deliberately kept — it is lifecycle, not provenance: a deadlock on a
+// tx-created Inserter must stay tx-fatal (#167) even through a custom
+// executor, or the statement retry would run in autocommit and strand
+// phantom rows.
 func (in *Inserter) SetExecutor(conn handlerWithContext) *Inserter {
 	in.conn = conn
-
+	in.role = poolUnknown
 	return in
 }
 
@@ -344,7 +353,7 @@ DUPE_KEY_SEARCH:
 
 		// One string copy per chunk (not per row) — amortized across thousands
 		// of rows, negligible next to the row-build savings.
-		result, err := in.db.exec(in.conn, ctx, in.tx, string(insertBuf))
+		result, err := in.db.exec(in.conn, ctx, in.tx, in.role, string(insertBuf))
 		if err != nil {
 			return err
 		}

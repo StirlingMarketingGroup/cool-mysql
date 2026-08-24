@@ -130,3 +130,9 @@ var TCPKeepAlive = time.Duration(getenvInt64("COOL_TCP_KEEPALIVE", 0)) * time.Se
 // platforms ignore the count and apply their own; the idle/interval still tune
 // detection there. Env COOL_TCP_KEEPALIVE_COUNT.
 var TCPKeepAliveCount = getenvInt("COOL_TCP_KEEPALIVE_COUNT", 3)
+
+// ReadYourWritesWindow is how long after a durable writer-pool write
+// Select/Exists/Count are routed to the Writes pool so a lagging replica
+// cannot hide those rows. Zero disables. Env COOL_READ_YOUR_WRITES_WINDOW
+// (whole seconds). Copied onto *Database.ReadYourWritesWindow at construction.
+var ReadYourWritesWindow = time.Duration(getenvInt64("COOL_READ_YOUR_WRITES_WINDOW", 5)) * time.Second
