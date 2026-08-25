@@ -23,6 +23,7 @@ func expectSelectInt(mock sqlmock.Sqlmock, query string, v int64) {
 func TestReadYourWrites_NoPriorWriteUsesReads(t *testing.T) {
 	db, _, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	expectSelectInt(readsMock, "SELECT 1", 1)
 
@@ -34,6 +35,7 @@ func TestReadYourWrites_NoPriorWriteUsesReads(t *testing.T) {
 func TestReadYourWrites_ExecThenSelectUsesWrites(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
 	expectSelectInt(writesMock, "SELECT 1", 1)
@@ -47,6 +49,7 @@ func TestReadYourWrites_ExecThenSelectUsesWrites(t *testing.T) {
 func TestReadYourWrites_SelectAfterWindowUsesReads(t *testing.T) {
 	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.ReadYourWritesWindow = 10 * time.Millisecond
 
@@ -63,6 +66,7 @@ func TestReadYourWrites_SelectAfterWindowUsesReads(t *testing.T) {
 func TestReadYourWrites_RunInTxCommitPins(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectBegin()
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -80,6 +84,7 @@ func TestReadYourWrites_RunInTxCommitPins(t *testing.T) {
 func TestReadYourWrites_RunInTxRollbackDoesNotPin(t *testing.T) {
 	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectBegin()
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -102,6 +107,7 @@ func TestReadYourWrites_RunInTxRollbackDoesNotPin(t *testing.T) {
 func TestReadYourWrites_BeginReadsTxDoesNotPin(t *testing.T) {
 	db, _, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	readsMock.ExpectBegin()
 	readsMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -122,6 +128,7 @@ func TestReadYourWrites_BeginReadsTxDoesNotPin(t *testing.T) {
 func TestReadYourWrites_CloneSharesMarker(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
 	expectSelectInt(writesMock, "SELECT 1", 1)
@@ -136,6 +143,7 @@ func TestReadYourWrites_CloneSharesMarker(t *testing.T) {
 func TestReadYourWrites_InsertReadsDoesNotPin(t *testing.T) {
 	db, _, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	const insert = "insert into`t`(`id`)values(1)"
 	readsMock.ExpectExec("^" + regexp.QuoteMeta(insert) + "$").
@@ -154,6 +162,7 @@ func TestReadYourWrites_InsertReadsDoesNotPin(t *testing.T) {
 func TestReadYourWrites_WindowZeroDisables(t *testing.T) {
 	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.ReadYourWritesWindow = 0
 
@@ -169,6 +178,7 @@ func TestReadYourWrites_WindowZeroDisables(t *testing.T) {
 func TestReadYourWrites_ExistsAndCountUseWrites(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
 	expectSelectInt(writesMock, "SELECT 1", 1)
@@ -188,6 +198,7 @@ func TestReadYourWrites_ExistsAndCountUseWrites(t *testing.T) {
 func TestReadYourWrites_BypassesCache(t *testing.T) {
 	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.UseCache(NewWeakCache())
 
@@ -217,6 +228,7 @@ func TestReadYourWrites_BypassesCache(t *testing.T) {
 func TestReadYourWrites_SelectRowsUsesWrites(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
 	expectSelectInt(writesMock, "SELECT 1", 1)
@@ -233,6 +245,7 @@ func TestReadYourWrites_SelectRowsUsesWrites(t *testing.T) {
 func TestReadYourWrites_NonPoolWritesFallsBackToReads(t *testing.T) {
 	db, _, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.Writes = &writer{Writer: io.Discard}
 	db.markWrite()
@@ -288,6 +301,7 @@ func TestReadYourWrites_SharedPoolInsertReadsDoesNotInvalidateCache(t *testing.T
 	disableGC(t)
 	db, mock, cleanup := getTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 	require.Same(t, db.Writes, db.Reads)
 
 	db.UseCache(NewWeakCache())
@@ -314,6 +328,7 @@ func TestReadYourWrites_SharedPoolBeginReadsTxDoesNotInvalidateCache(t *testing.
 	disableGC(t)
 	db, mock, cleanup := getTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.UseCache(NewWeakCache())
 	cacheDuration := time.Minute
@@ -343,6 +358,7 @@ func TestReadYourWrites_SharedPoolExecInvalidatesCache(t *testing.T) {
 	disableGC(t)
 	db, mock, cleanup := getTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.UseCache(NewWeakCache())
 	cacheDuration := time.Minute
@@ -366,6 +382,7 @@ func TestReadYourWrites_SharedPoolExecInvalidatesCache(t *testing.T) {
 func TestReadYourWrites_SetExecutorDoesNotSetTxWrote(t *testing.T) {
 	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectBegin()
 	expectInsertID(readsMock)
@@ -388,6 +405,7 @@ func TestReadYourWrites_RunInTxRetryThenSelectUsesWrites(t *testing.T) {
 
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectBegin()
 	writesMock.ExpectExec("insert into `t`").WillReturnError(errTestDeadlock)
@@ -412,6 +430,7 @@ func TestReadYourWrites_RunInTxRetryThenSelectUsesWrites(t *testing.T) {
 func TestReadYourWrites_ConcurrentExecSelect(t *testing.T) {
 	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.MatchExpectationsInOrder(false)
 	readsMock.MatchExpectationsInOrder(false)
@@ -448,6 +467,7 @@ func TestReadYourWrites_ReconnectKeepsMarkerOnNewWritesPool(t *testing.T) {
 
 	db, err := NewFromDSNDualPool(testDSN)
 	require.NoError(t, err)
+	db = db.NewSession()
 
 	mo.mocks[0].ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
 	require.NoError(t, db.Exec("insert into `t` (`a`) values (1)"))
@@ -473,7 +493,10 @@ func TestReadYourWrites_ConstructorsSeedWindowAndMarker(t *testing.T) {
 	assertSeeded := func(t *testing.T, db *Database) {
 		t.Helper()
 		require.Equal(t, want, db.ReadYourWritesWindow)
-		require.NotNil(t, db.lastWrite)
+		// A raw constructed Database has no marker — read-your-writes is a
+		// session property (NewSession allocates it).
+		require.Nil(t, db.lastWrite)
+		require.NotNil(t, db.NewSession().lastWrite)
 	}
 
 	t.Run("NewFromDSN", func(t *testing.T) {
@@ -519,6 +542,7 @@ func TestReadYourWrites_ConstructorsSeedWindowAndMarker(t *testing.T) {
 func TestReadYourWrites_SelectContextAndExistsContextUseWrites(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
 	expectSelectInt(writesMock, "SELECT 1", 1)
@@ -538,6 +562,7 @@ func TestReadYourWrites_SelectContextAndExistsContextUseWrites(t *testing.T) {
 func TestReadYourWrites_NilLastWriteDoesNotPin(t *testing.T) {
 	db, _, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	db.lastWrite = nil
 	expectSelectInt(readsMock, "SELECT 1", 1)
@@ -550,6 +575,7 @@ func TestReadYourWrites_NilLastWriteDoesNotPin(t *testing.T) {
 func TestReadYourWrites_BeginReadsTxContextDoesNotPin(t *testing.T) {
 	db, _, readsMock, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	readsMock.ExpectBegin()
 	readsMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -572,6 +598,7 @@ func TestReadYourWrites_BeginReadsTxContextDoesNotPin(t *testing.T) {
 func TestReadYourWrites_MarkWriteNeverMovesBackward(t *testing.T) {
 	db, _, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	future := int64(time.Since(rywEpoch)) + int64(time.Hour)
 	db.lastWrite.Store(future)
@@ -585,6 +612,7 @@ func TestReadYourWrites_MarkWriteNeverMovesBackward(t *testing.T) {
 func TestReadYourWrites_SetExecutorKeepsTxDeadlockFatal(t *testing.T) {
 	db, writesMock, _, cleanup := getDualPoolTestDatabase(t)
 	defer cleanup()
+	db = db.NewSession()
 
 	writesMock.ExpectBegin()
 	writesMock.ExpectExec("insert into`t`").WillReturnError(errTestDeadlock)
@@ -600,4 +628,48 @@ func TestReadYourWrites_SetExecutorKeepsTxDeadlockFatal(t *testing.T) {
 	// Exactly one exec attempt — a second would have shown up as an
 	// unmet/unexpected expectation on the mock.
 	require.NoError(t, writesMock.ExpectationsWereMet())
+}
+
+func TestReadYourWrites_SessionsIsolateMarkers(t *testing.T) {
+	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
+	defer cleanup()
+
+	sessionA := db.NewSession()
+	sessionB := db.NewSession()
+
+	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	expectSelectInt(writesMock, "SELECT 1", 1)
+	expectSelectInt(readsMock, "SELECT 1", 1)
+	expectSelectInt(readsMock, "SELECT 1", 1)
+
+	require.NoError(t, sessionA.Exec("insert into `t` (`a`) values (1)"))
+
+	// A's write pins A's reads...
+	var v int64
+	require.NoError(t, sessionA.Select(&v, "SELECT 1", 0))
+	// ...but not B's, and not the raw parent's.
+	require.NoError(t, sessionB.Select(&v, "SELECT 1", 0))
+	require.NoError(t, db.Select(&v, "SELECT 1", 0))
+	require.NotSame(t, sessionA.lastWrite, sessionB.lastWrite)
+}
+
+// A raw constructed Database has no marker and never pins — writes through
+// a shared singleton must not route other callers' reads to the writer.
+func TestReadYourWrites_RawDatabaseNeverPins(t *testing.T) {
+	db, writesMock, readsMock, cleanup := getDualPoolTestDatabase(t)
+	defer cleanup()
+
+	require.Nil(t, db.lastWrite)
+	writesMock.ExpectExec("insert into `t`").WillReturnResult(sqlmock.NewResult(1, 1))
+	expectSelectInt(readsMock, "SELECT 1", 1)
+
+	require.NoError(t, db.Exec("insert into `t` (`a`) values (1)"))
+	var v int64
+	require.NoError(t, db.Select(&v, "SELECT 1", 0))
+	require.Equal(t, int64(1), v)
+}
+
+func TestReadYourWrites_NewSessionAllocatesFromNil(t *testing.T) {
+	db := &Database{}
+	require.NotNil(t, db.NewSession().lastWrite)
 }

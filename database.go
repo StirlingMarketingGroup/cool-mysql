@@ -72,12 +72,12 @@ type Database struct {
 
 	// lastWrite is the last durable writer-pool write, as nanoseconds of
 	// monotonic time since rywEpoch — not a wall-clock stamp, so a host
-	// clock jump can neither expire the pin early nor extend it. A pointer
-	// so Clone() (clone := *db) shares it: a clone is a copy of the same
-	// database, not a new session, and a clone made after a write must
-	// still see that write. Zero means "never wrote" (any real write lands
-	// strictly after the epoch). Nil is tolerated (zero-value Database →
-	// no pinning).
+	// clock jump can neither expire the pin early nor extend it. Allocated
+	// ONLY by NewSession(): a session is the unit of read-your-writes, and
+	// a raw constructed Database (nil marker) never pins. A pointer so
+	// Clone() (clone := *db) shares it — a clone of a session is the same
+	// session and must still see its writes. Zero means "never wrote"
+	// (any real write lands strictly after the epoch).
 	lastWrite *atomic.Int64
 
 	cache  Cache
@@ -125,6 +125,20 @@ type Database struct {
 func (db *Database) Clone() *Database {
 	clone := *db
 	return &clone
+}
+
+// NewSession returns a copy of the db for a new unit of work — same pools,
+// caches and settings, plus its OWN read-your-writes marker. A session is
+// the unit of read-your-writes: a raw constructed Database has no marker
+// and never pins (so a process-wide singleton used by many requests can't
+// let one request's write route every other request's reads to the writer
+// and bypass their query caches). Make one session per request/unit of
+// work; Clone() remains a plain copy that shares whatever marker its
+// source has.
+func (db *Database) NewSession() *Database {
+	session := db.Clone()
+	session.lastWrite = new(atomic.Int64)
+	return session
 }
 
 // rywEpoch anchors lastWrite to the monotonic clock: time.Since(rywEpoch)
@@ -507,7 +521,6 @@ func newDatabase() *Database {
 		MaxExecutionTime:     MaxExecutionTime,
 		MaxConnectionTime:    MaxConnectionTime,
 		ReadYourWritesWindow: ReadYourWritesWindow,
-		lastWrite:            new(atomic.Int64),
 	}
 }
 
