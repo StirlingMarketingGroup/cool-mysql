@@ -42,7 +42,37 @@ type Database struct {
 	WritesDSN string
 	ReadsDSN  string
 
-	Log              LogFunc
+	Log LogFunc
+	// AfterInsert is called once per plain INSERT chunk after those rows are
+	// durable. An autocommit Insert fires it immediately after the chunk's
+	// exec returns no error. An insert executed on the Inserter's own
+	// cool-mysql Tx (tx.Insert, tx.I()) is buffered on that Tx and published,
+	// in order, when the tx COMMITS successfully, before PostCommitHooks run;
+	// a SetExecutor Inserter is judged by the executor it actually runs on
+	// (see below). A rollback (Cancel, RunInTx failure) or a
+	// retried-away RunInTx attempt discards its buffered events; they never
+	// fire.
+	//
+	// Plain inserts only — `INSERT [LOW_PRIORITY|HIGH_PRIORITY|DELAYED]
+	// [INTO] table` with no ON DUPLICATE KEY UPDATE. IGNORE anywhere in the
+	// prefix (an executable `/*! … */` comment is read as the SQL it is) and
+	// REPLACE never fire it: the executed chunk may have landed on rows that already
+	// existed, so the session cannot vouch that it created them. Upsert's
+	// UPDATE path never fires it for the same reason; only the rows that
+	// UPDATE missed and Upsert then inserted are reported. Fires only while
+	// the executor the chunk runs on is one this package can vouch for: a
+	// *sql.DB pool (durable when exec returns — InsertReads, or
+	// tx.I().SetExecutor(pool), included) or the Inserter's own cool-mysql
+	// Tx (at its commit). The SQL renderers (NewWriter / NewLocalWriter), a
+	// *sql.Tx that isn't the Inserter's own and any custom wrapper handed to
+	// SetExecutor never fire it (Tx.I() is the route to commit-time
+	// publication).
+	//
+	// InsertEvent.Rows carry the values as the caller supplied them: nil
+	// where the value was absent/nil (NULL) or a defaultzero zero (DEFAULT);
+	// []byte is snapshotted; a driver.Valuer, and a typed zero the marshaller
+	// renders as NULL (a zero time.Time), are passed as supplied.
+	AfterInsert      func(InsertEvent)
 	Finished         FinishedFunc
 	HandleCacheError HandleCacheError
 
@@ -395,6 +425,14 @@ type LogDetail struct {
 	RowsAffected int64
 	Attempt      int
 	Error        error
+}
+
+// InsertEvent describes one INSERT chunk that executed without error.
+type InsertEvent struct {
+	Table   string   // raw table name parsed from the statement
+	Columns []string // column names in statement order
+	Rows    [][]any  // one entry per row, Go values aligned to Columns; nil where the row had no value for that column
+	Result  sql.Result
 }
 
 // LogFunc is called after the query executes

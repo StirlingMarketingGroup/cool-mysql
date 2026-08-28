@@ -230,6 +230,10 @@ func (in *Inserter) upsert(ctx context.Context, query string, uniqueColumns, upd
 			}
 
 			if len(updateColumns) != 0 {
+				// AfterInsert is not fired here: an UPDATE that reports affected
+				// rows proves the row already existed. Rows reporting zero (no match
+				// — or, without CLIENT_FOUND_ROWS, an unchanged match) are sent to
+				// insert(), whose successful plain-insert path fires.
 				res, err := in.db.exec(in.conn, ctx, in.tx, in.role, q, r)
 				if err != nil {
 					return Wrap(fmt.Errorf("failed to update: %w", err), query, q, r)

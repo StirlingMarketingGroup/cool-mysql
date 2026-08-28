@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"reflect"
 	"strings"
@@ -191,6 +192,22 @@ DUPE_KEY_SEARCH:
 		return err
 	}
 
+	// AfterInsert reports only durable plain inserts: IGNORE (in any modifier
+	// position), ON DUPLICATE KEY UPDATE and REPLACE can land on rows this
+	// session did not create, and an executor that only renders SQL makes
+	// nothing durable at all.
+	// Nothing below runs for a nil hook — the common case pays one nil check.
+	var prefix insertPrefix
+	var durability insertDurability
+	hooked := in.db.AfterInsert != nil && onDuplicateKeyUpdate == ""
+	if hooked {
+		durability = in.durability()
+		// A plain classification always carries the table: no table name
+		// means no classification, so the hook simply stays off.
+		prefix = parseInsertPrefix(query)
+		hooked = durability != durableNever && prefix.kind == insertPlain
+	}
+
 	insertPart += "values"
 
 	// Both the insert buffer (whole INSERT statement) and the row scratch are
@@ -228,6 +245,8 @@ DUPE_KEY_SEARCH:
 	rowBuf = rowBuf[:0]
 
 	var rowBuffered bool
+	var pendingRows [][]any
+	var rowValues []any
 
 	multiCol := isMultiColumn(rt)
 	valuerFuncs := in.db.valuerFuncs
@@ -235,9 +254,20 @@ DUPE_KEY_SEARCH:
 
 	buildRow := func(row reflect.Value) error {
 		rowBuf = append(rowBuf[:0], '(')
+		if hooked {
+			rowValues = rowValues[:0]
+		}
 
+		// The one place a logical column becomes a value: the SQL literal and,
+		// when hooked, the InsertEvent value come from the same visit, so the
+		// event can never disagree with what was sent.
 		writeValue := func(r reflect.Value, opts marshalOpt, fieldName string) error {
+			supplied := r
 			r = reflectUnwrap(r)
+
+			if hooked {
+				rowValues = append(rowValues, insertEventValue(supplied, r))
+			}
 
 			if !r.IsValid() {
 				rowBuf = append(rowBuf, "null"...)
@@ -268,6 +298,11 @@ DUPE_KEY_SEARCH:
 				f := row.FieldByIndex(colOpts[col].index)
 				v := reflectUnwrap(f)
 
+				// One decision per column: DEFAULT (the bare keyword — valid in
+				// a VALUES list, unlike the DEFAULT(`col`) function form, which
+				// evaluates to the ZERO DATE for DEFAULT CURRENT_TIMESTAMP
+				// columns) or a value. Both the SQL and the event follow it.
+				useDefault := false
 				if colOpts[col].insertDefault {
 					pv := v
 					if v.Kind() != reflect.Pointer {
@@ -275,37 +310,32 @@ DUPE_KEY_SEARCH:
 						pv.Elem().Set(v)
 					}
 
-					if v, ok := pv.Interface().(Zeroer); ok {
+					if zeroer, ok := pv.Interface().(Zeroer); ok {
 						if pv.IsNil() {
-							if _, ok := pv.Type().Elem().MethodByName("IsZero"); ok {
-								rowBuf = append(rowBuf, "default"...)
-								continue
-							}
+							_, hasIsZero := pv.Type().Elem().MethodByName("IsZero")
+							useDefault = hasIsZero
 						}
-
-						if v.IsZero() {
-							rowBuf = append(rowBuf, "default"...)
-							continue
+						if !useDefault && zeroer.IsZero() {
+							useDefault = true
 						}
 					}
 
-					if !f.IsValid() || f.IsZero() {
-						rowBuf = append(rowBuf, "default"...)
-						continue
+					if !useDefault && (!f.IsValid() || f.IsZero()) {
+						useDefault = true
 					}
 				}
-
-				marshalOpts := marshalOptNone
-				if colOpts[col].defaultZero {
-					marshalOpts |= marshalOptDefaultZero
+				if !useDefault && colOpts[col].defaultZero && v.IsValid() && isZero(v.Interface()) {
+					useDefault = true
 				}
-				// Empty fieldName so a zero value renders as the bare DEFAULT
-				// keyword, which is valid in a VALUES list. The DEFAULT(`col`)
-				// function form (needed when interpolating into arbitrary
-				// expression positions like WHERE clauses) evaluates to the
-				// ZERO DATE for DEFAULT CURRENT_TIMESTAMP columns — under
-				// non-strict sql_mode that silently inserts '0000-00-00'.
-				if err := writeValue(v, marshalOpts, ""); err != nil {
+				if useDefault {
+					rowBuf = append(rowBuf, "default"...)
+					if hooked {
+						rowValues = append(rowValues, nil)
+					}
+					continue
+				}
+
+				if err := writeValue(f, marshalOptNone, ""); err != nil {
 					return err
 				}
 			}
@@ -318,6 +348,9 @@ DUPE_KEY_SEARCH:
 				v := row.MapIndex(reflect.ValueOf(col))
 				if !v.IsValid() {
 					rowBuf = append(rowBuf, "default"...)
+					if hooked {
+						rowValues = append(rowValues, nil)
+					}
 					continue
 				}
 
@@ -353,7 +386,39 @@ DUPE_KEY_SEARCH:
 
 		// One string copy per chunk (not per row) — amortized across thousands
 		// of rows, negligible next to the row-build savings.
-		result, err := in.db.exec(in.conn, ctx, in.tx, in.role, string(insertBuf))
+		//
+		// A tx-scoped insert holds the tx's inserting lock from exec through
+		// buffering (released by defer, so a panicking Log callback can't
+		// leak it), so Commit can't take the buffer in between and publish
+		// without this chunk's event.
+		result, err := func() (sql.Result, error) {
+			if hooked && durability == durableAtCommit {
+				defer in.tx.holdForInsert()()
+			}
+			result, err := in.db.exec(in.conn, ctx, in.tx, in.role, string(insertBuf))
+			if err != nil {
+				return nil, err
+			}
+			// The rows are durable (or tx-buffered) from here, so the event is
+			// recorded before the caller's optional callbacks get a chance to
+			// panic past it.
+			if hooked {
+				ev := InsertEvent{
+					Table:   prefix.table,
+					Columns: columnNames,
+					Rows:    pendingRows,
+					Result:  result,
+				}
+				if durability == durableAtCommit {
+					in.tx.bufferInsert(ev)
+				} else {
+					in.db.AfterInsert(ev)
+				}
+				// Fresh slice: the hook may retain Rows.
+				pendingRows = nil
+			}
+			return result, nil
+		}()
 		if err != nil {
 			return err
 		}
@@ -392,6 +457,10 @@ DUPE_KEY_SEARCH:
 		}
 
 		insertBuf = append(insertBuf, rowBuf...)
+		if hooked {
+			// rowValues is scratch reused per row; the event keeps its own copy.
+			pendingRows = append(pendingRows, append([]any(nil), rowValues...))
+		}
 
 		rowBuffered = true
 
@@ -414,6 +483,221 @@ DUPE_KEY_SEARCH:
 	*rowBufP = rowBuf
 
 	return nil
+}
+
+// insertEventValue is the Go value an InsertEvent carries for a column that
+// is being written as a value (DEFAULT was decided before this): the value
+// the caller supplied, or nil where the statement sends NULL for an
+// absent/nil one. A driver.Valuer is passed as the Valuer, not pre-rendered
+// — the consumer that keys rows can call Value itself — so a pointer whose
+// Value method has a pointer receiver stays a pointer. Byte slices (any
+// defined type) are snapshotted so a caller reusing its buffer after Insert
+// can't rewrite a buffered event.
+func insertEventValue(supplied, unwrapped reflect.Value) any {
+	if !unwrapped.IsValid() {
+		return nil
+	}
+	switch unwrapped.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice:
+		if unwrapped.IsNil() {
+			return nil
+		}
+	}
+	v := unwrapped.Interface()
+	if _, valuer := v.(driver.Valuer); !valuer && supplied.IsValid() {
+		if _, ok := supplied.Interface().(driver.Valuer); ok {
+			return supplied.Interface()
+		}
+	}
+	if unwrapped.Kind() == reflect.Slice && unwrapped.Type().Elem().Kind() == reflect.Uint8 {
+		snapshot := reflect.MakeSlice(unwrapped.Type(), unwrapped.Len(), unwrapped.Len())
+		reflect.Copy(snapshot, unwrapped)
+		return snapshot.Interface()
+	}
+	return v
+}
+
+// insertDurability is when a chunk this Inserter executes becomes durable —
+// the moment AfterInsert may report it. Only executors this package can
+// vouch for are classified; everything else is never.
+type insertDurability int
+
+const (
+	// durableNever: nothing this package can vouch for — an executor that
+	// only renders SQL (NewWriter / NewLocalWriter), a *sql.Tx that isn't the
+	// Inserter's own cool-mysql Tx (use Tx.I() for commit-time publication),
+	// or any custom SetExecutor wrapper.
+	durableNever insertDurability = iota
+	// durableNow: autocommit on a *sql.DB pool; durable when exec returns.
+	durableNow
+	// durableAtCommit: the Inserter's own cool-mysql Tx; buffered until it commits.
+	durableAtCommit
+)
+
+// durability is decided by the executor the chunk actually runs on, not by
+// the Inserter's tx association: tx.I().SetExecutor(pool) autocommits on the
+// pool and is durable at once, whatever the tx later does.
+func (in *Inserter) durability() insertDurability {
+	switch conn := in.conn.(type) {
+	case *sql.DB:
+		return durableNow
+	case *sql.Tx:
+		if in.tx != nil && conn == in.tx.Tx {
+			return durableAtCommit
+		}
+	}
+	return durableNever
+}
+
+// insertKind classifies an INSERT statement's prefix (everything before the
+// table name) for AfterInsert eligibility.
+type insertKind int
+
+const (
+	// insertOther is anything the hook must not treat as a plain insert: a
+	// statement that isn't INSERT (REPLACE), an unrecognised modifier, an
+	// executable comment that could hide one, or no table name.
+	insertOther insertKind = iota
+	insertPlain
+	insertIgnore
+)
+
+// insertPrefix is the one parse of `INSERT [modifiers] [INTO] table` the hook
+// relies on: what kind of insert it is and which table it targets.
+type insertPrefix struct {
+	kind  insertKind
+	table string
+}
+
+// parseInsertPrefix scans the statement up to and including the table name
+// and stops there; what follows (columns, VALUES, a partition clause) is not
+// its concern. It reads MySQL's own identifier grammar — unquoted
+// `[0-9A-Za-z$_]` plus any non-ASCII byte, or backtick-quoted with “
+// doubling — so the table it reports is the table MySQL will insert into,
+// components of a qualified name joined with a dot. MySQL accepts the
+// priority modifiers and IGNORE in any order before the table and makes INTO
+// optional, so IGNORE counts wherever it appears in that prefix. Ordinary
+// comments and whitespace are skipped; an executable comment (`/*! … */`,
+// optionally versioned) is SQL to the server, so its body is read as such —
+// `insert /*! ignore */ into t` is an INSERT IGNORE.
+func parseInsertPrefix(query string) insertPrefix {
+	s := insertPrefixScanner{query: query}
+	if word, quoted, ok := s.identifier(); !ok || quoted || !strings.EqualFold(word, "insert") {
+		return insertPrefix{}
+	}
+	kind := insertPlain
+	var tableParts []string
+	for len(tableParts) == 0 {
+		word, quoted, ok := s.identifier()
+		if !ok {
+			return insertPrefix{}
+		}
+		if quoted {
+			tableParts = append(tableParts, word)
+			break
+		}
+		switch strings.ToLower(word) {
+		case "into", "low_priority", "high_priority", "delayed":
+		case "ignore":
+			kind = insertIgnore
+		default:
+			tableParts = append(tableParts, word)
+		}
+	}
+	for s.dot() {
+		word, _, ok := s.identifier()
+		if !ok {
+			return insertPrefix{}
+		}
+		tableParts = append(tableParts, word)
+	}
+	return insertPrefix{kind: kind, table: strings.Join(tableParts, ".")}
+}
+
+type insertPrefixScanner struct {
+	query string
+	i     int
+}
+
+// skip consumes whitespace and comments. An executable comment is spliced
+// into the scan as the SQL it is (`/*!50100 body */` reads as ` body `);
+// only reached between tokens, so a quoted identifier containing one is
+// never touched.
+func (s *insertPrefixScanner) skip() {
+	for s.i < len(s.query) {
+		switch c := s.query[s.i]; {
+		case c == ' ', c == '\t', c == '\n', c == '\r':
+			s.i++
+		case c == '#' || startsDashComment(s.query, s.i):
+			for s.i < len(s.query) && s.query[s.i] != '\n' {
+				s.i++
+			}
+		case strings.HasPrefix(s.query[s.i:], "/*!"):
+			end := strings.Index(s.query[s.i+3:], "*/")
+			if end < 0 {
+				s.i = len(s.query)
+				return
+			}
+			body := strings.TrimLeft(s.query[s.i+3:s.i+3+end], "0123456789")
+			s.query = s.query[:s.i] + " " + body + " " + s.query[s.i+3+end+2:]
+			s.i++
+		case strings.HasPrefix(s.query[s.i:], "/*"):
+			end := strings.Index(s.query[s.i+2:], "*/")
+			if end < 0 {
+				s.i = len(s.query)
+				return
+			}
+			s.i += 2 + end + 2
+		default:
+			return
+		}
+	}
+}
+
+func isMySQLIdentifierByte(c byte) bool {
+	return c == '$' || c == '_' || c >= 0x80 ||
+		('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+}
+
+// identifier reads the next identifier, unquoted or backtick-quoted (with
+// “ doubling unescaped). ok is false when what follows isn't one.
+func (s *insertPrefixScanner) identifier() (word string, quoted, ok bool) {
+	s.skip()
+	if s.i >= len(s.query) {
+		return "", false, false
+	}
+	if s.query[s.i] == '`' {
+		var b strings.Builder
+		for s.i++; s.i < len(s.query); s.i++ {
+			if s.query[s.i] != '`' {
+				b.WriteByte(s.query[s.i])
+				continue
+			}
+			if s.i+1 < len(s.query) && s.query[s.i+1] == '`' {
+				b.WriteByte('`')
+				s.i++
+				continue
+			}
+			s.i++
+			return b.String(), true, b.Len() != 0
+		}
+		return "", true, false // unterminated
+	}
+	start := s.i
+	for s.i < len(s.query) && isMySQLIdentifierByte(s.query[s.i]) {
+		s.i++
+	}
+	return s.query[start:s.i], false, s.i != start
+}
+
+// dot consumes a qualifier dot, with any whitespace or comments around it.
+func (s *insertPrefixScanner) dot() bool {
+	s.skip()
+	if s.i < len(s.query) && s.query[s.i] == '.' {
+		s.i++
+		return true
+	}
+	return false
 }
 
 // Retention caps for the scratch pools. Buffers that grow past these bounds

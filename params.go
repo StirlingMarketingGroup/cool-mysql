@@ -219,6 +219,14 @@ const (
 	queryTokenKindMisc
 )
 
+// startsDashComment reports whether query[i:] opens a `--` line comment.
+// MySQL requires the second dash to be followed by whitespace or a control
+// character; `1--1` is arithmetic.
+func startsDashComment(query string, i int) bool {
+	return i+2 < len(query) && query[i] == '-' && query[i+1] == '-' &&
+		(query[i+2] == ' ' || query[i+2] < 0x20 || query[i+2] == 0x7f)
+}
+
 func parseQuery(query string) []queryToken {
 	i := 0
 	start := 0
@@ -326,7 +334,7 @@ func parseQuery(query string) []queryToken {
 				i = l - 1
 			}
 			pushToken(queryTokenKindMisc)
-		case b == '-' && i+2 < l && query[i+1] == '-' && (query[i+2] == ' ' || query[i+2] == '\t' || query[i+2] == '\n' || query[i+2] == '\r'):
+		case startsDashComment(query, i):
 			for i < l && query[i] != '\n' && query[i] != '\r' {
 				next()
 			}
