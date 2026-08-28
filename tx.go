@@ -65,6 +65,58 @@ type Tx struct {
 	// the replica, not the writer the pin is meant to follow).
 	wrote atomic.Bool
 	role  poolRole
+
+	// pendingInserts are AfterInsert events for this tx's plain inserts.
+	// They are published on a successful COMMIT (before PostCommitHooks)
+	// and discarded on every rollback path so a retried-away RunInTx
+	// attempt never reports rows that did not become durable. Guarded
+	// because a transactional Upsert inserts from a second goroutine and
+	// callers may issue tx.Insert from several.
+	pendingMu      sync.Mutex
+	pendingInserts []InsertEvent
+	// inserting is held by each hooked insert from its exec through
+	// bufferInsert, and by takePendingInserts, so the tx can't commit
+	// between a chunk landing and its event being buffered — database/sql's
+	// own tx lock is released the moment ExecContext returns — and events
+	// are buffered in the order their statements ran (tx statements are
+	// serialized on one connection anyway, so exclusivity costs nothing).
+	inserting sync.Mutex
+}
+
+func (tx *Tx) holdForInsert() (release func()) {
+	tx.inserting.Lock()
+	return tx.inserting.Unlock
+}
+
+func (tx *Tx) bufferInsert(ev InsertEvent) {
+	tx.pendingMu.Lock()
+	tx.pendingInserts = append(tx.pendingInserts, ev)
+	tx.pendingMu.Unlock()
+}
+
+// discardPendingInserts drops the buffer without taking the inserting lock:
+// abandon (Cancel, RunInTx's per-attempt rollback) may run while an insert
+// on another goroutine still holds it, and a tx-fatal error surfaces through
+// exec's own return path before the lock is released, so waiting here could
+// deadlock. An insert that buffers after this lands on a tx that can never
+// commit, so its event is unreachable either way.
+func (tx *Tx) discardPendingInserts() {
+	tx.pendingMu.Lock()
+	tx.pendingInserts = nil
+	tx.pendingMu.Unlock()
+}
+
+// takePendingInserts waits for the in-flight hooked insert, then hands back
+// and clears the buffer so the caller publishes without holding either lock.
+// Commit only — never from a path exec can reach.
+func (tx *Tx) takePendingInserts() []InsertEvent {
+	tx.inserting.Lock()
+	defer tx.inserting.Unlock()
+	tx.pendingMu.Lock()
+	events := tx.pendingInserts
+	tx.pendingInserts = nil
+	tx.pendingMu.Unlock()
+	return events
 }
 
 // runPostAbandonHooks fires PostAbandonHooks at most once per Tx, and never
@@ -76,6 +128,7 @@ func (tx *Tx) runPostAbandonHooks() {
 		return
 	}
 	tx.abandoned = true
+	tx.discardPendingInserts()
 	for _, hook := range tx.PostAbandonHooks {
 		hook()
 	}
@@ -346,6 +399,10 @@ func (tx *Tx) commit() error {
 		if tx.wrote.Load() && tx.role == poolWriter {
 			tx.db.markWrite()
 		}
+		// The one durable-commit transition: events go out here, before the
+		// Log callback and before PostCommitHooks, so nothing a caller runs
+		// after the commit can panic past them.
+		tx.publishPendingInserts()
 	}
 	tx.db.callLog(LogDetail{
 		Query:    "commit",
@@ -366,6 +423,18 @@ func (tx *Tx) runPostCommitHooks() error {
 		}
 	}
 	return nil
+}
+
+// publishPendingInserts reports buffered insert events; called from commit()
+// alone, right after the driver's COMMIT succeeded.
+func (tx *Tx) publishPendingInserts() {
+	events := tx.takePendingInserts()
+	if tx.db.AfterInsert == nil {
+		return
+	}
+	for _, ev := range events {
+		tx.db.AfterInsert(ev)
+	}
 }
 
 // Commit commits the transaction

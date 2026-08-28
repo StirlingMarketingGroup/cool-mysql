@@ -348,6 +348,7 @@ func Test_paramInCommaSeparatedList(t *testing.T) {
 		{"WHERE a IN /* ids */ (@@x)", true},
 		{"WHERE a IN -- ids\n (@@x)", true},
 		{"WHERE a IN -- ids\r (@@x)", true},
+		{"WHERE a IN --\vids\n (@@x)", true},
 		{"WHERE a IN # ids\n (@@x)", true},
 		{"WHERE a IN # ids\r (@@x)", true},
 		// MySQL requires `--` to be followed by whitespace to be a comment;
