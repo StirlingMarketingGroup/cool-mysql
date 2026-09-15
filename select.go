@@ -317,7 +317,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			return 0, err
 		}
 
-		if t != mapRowType {
+		if indirectType != mapRowType {
 			// since the map keys are literally the column names, we don't need to compare
 			// without case sensitivity. But for structs, we do.
 			for i := range columns {
@@ -333,13 +333,6 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 		i := 0
 		for rows.Next() {
 			el := reflect.New(t).Elem()
-			switch indirectType {
-			case mapRowType:
-				el.Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
-			case sliceRowType:
-				el.Set(reflect.MakeSlice(reflect.SliceOf(t.Elem()), len(columns), len(columns)))
-			}
-
 			updateElementPtrs(el, &ptrs, jsonFields, columns, fieldsMap, ptrDests)
 
 			if err := rows.Scan(ptrs...); err != nil {
@@ -370,7 +363,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 				}
 
 				if !isStruct {
-					if err := json.Unmarshal(jsonField.j, el.Interface()); err != nil {
+					if err := json.Unmarshal(jsonField.j, el.Addr().Interface()); err != nil {
 						return i, fmt.Errorf("failed to unmarshal json into dest: %w", err)
 					}
 				} else {
@@ -658,6 +651,9 @@ func setupElementPtrs(db *Database, t reflect.Type, indirectType reflect.Type, c
 	}
 }
 
+// updateElementPtrs allocates the row behind ref (the pointer for a pointer
+// element, the map or slice for a MapRow or SliceRow) and points ptrs at the
+// scan destinations inside it.
 func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, columns []string, fieldsMap map[string][]int, ptrDests map[int]*ptrDest) {
 	indirectType := ref.Type()
 	indirectRef := ref
@@ -665,6 +661,12 @@ func updateElementPtrs(ref reflect.Value, ptrs *[]any, jsonFields []jsonField, c
 		ref.Set(reflect.New(indirectType.Elem()))
 		indirectRef = ref.Elem()
 		indirectType = indirectType.Elem()
+	}
+	switch indirectType {
+	case mapRowType:
+		indirectRef.Set(reflect.MakeMapWithSize(mapRowType, len(columns)))
+	case sliceRowType:
+		indirectRef.Set(reflect.MakeSlice(sliceRowType, len(columns), len(columns)))
 	}
 	x := new(any)
 
