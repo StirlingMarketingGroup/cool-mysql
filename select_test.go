@@ -1405,3 +1405,67 @@ func TestSelectCacheGetErrorSwallowed(t *testing.T) {
 	require.Equal(t, []Row{{Name: "erin"}}, dest)
 	require.ErrorContains(t, handled, "redis down")
 }
+
+// TestSelectSliceOfPointerMapRows: pointer MapRow elements scan into freshly
+// allocated maps instead of panicking on a nil pointer.
+func TestSelectSliceOfPointerMapRows(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT n$").WillReturnRows(
+		sqlmock.NewRows([]string{"n"}).AddRow(int64(7)),
+	)
+
+	var dest []*MapRow
+	require.NoError(t, db.Select(&dest, "SELECT n", 0))
+	require.Len(t, dest, 1)
+	require.Equal(t, int64(7), (*dest[0])["n"])
+}
+
+// TestSelectPointerMapRowsKeepColumnCase: MapRow keys are the column names as
+// the query returned them, for pointer elements exactly as for values.
+func TestSelectPointerMapRowsKeepColumnCase(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT MixedCase$").WillReturnRows(
+		sqlmock.NewRows([]string{"MixedCase"}).AddRow(int64(8)),
+	)
+
+	var dest []*MapRow
+	require.NoError(t, db.Select(&dest, "SELECT MixedCase", 0))
+	require.Len(t, dest, 1)
+	require.Equal(t, int64(8), (*dest[0])["MixedCase"])
+}
+
+// TestSelectPlainMapRows: an ordinary map row is decoded from its single JSON
+// column into an addressable destination.
+func TestSelectPlainMapRows(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT j$").WillReturnRows(
+		sqlmock.NewRows([]string{"j"}).AddRow([]byte(`{"n":1}`)).AddRow([]byte(`{"n":2}`)),
+	)
+
+	var dest []map[string]any
+	require.NoError(t, db.Select(&dest, "SELECT j", 0))
+	require.Equal(t, []map[string]any{{"n": float64(1)}, {"n": float64(2)}}, dest)
+}
+
+// TestSelectPlainMapInvalidJSONReturnsError: a plain map row whose JSON column
+// does not parse surfaces the decode error instead of a partial row.
+func TestSelectPlainMapInvalidJSONReturnsError(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectQuery("^SELECT j$").WillReturnRows(
+		sqlmock.NewRows([]string{"j"}).AddRow([]byte(`{invalid json}`)),
+	)
+
+	var dest []map[string]any
+	err := db.Select(&dest, "SELECT j", 0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to unmarshal json into dest")
+	require.Empty(t, dest)
+}
