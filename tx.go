@@ -182,10 +182,11 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 }
 
 // RunInTx runs fn inside a transaction it owns, retrying the WHOLE closure from a
-// fresh Begin when fn fails with a deadlock (1213, SQLSTATE 40001) or a lock-wait
-// timeout (1205). Because the entire unit of work — the caller's Go logic and
-// every statement it issues — lives inside fn, re-running it is atomic and
-// correct, unlike the statement-level replay removed in #167.
+// fresh Begin when fn fails with a deadlock (1213, SQLSTATE 40001), a lock-wait
+// timeout (1205), or a table definition change from a concurrent DDL (1412).
+// Because the entire unit of work — the caller's Go logic and every statement
+// it issues — lives inside fn, re-running it is atomic and correct, where
+// replaying single statements is not.
 //
 // RunInTx puts the transaction it begins into the context passed to fn, so
 // TxOrDatabaseFromContext / GetOrCreateTxFromContext inside fn (and any helpers
@@ -210,11 +211,11 @@ func (db *Database) BeginReadsTxContext(ctx context.Context) (tx *Tx, cancel fun
 // genuinely blocked on innodb_lock_wait_timeout (MySQL error 1205) is excused
 // from that budget, up to MaxExcusedLockWaits attempts: that time isn't retry
 // effort, it's the unavoidable cost of correctly waiting for someone else's
-// transaction to release a lock, and charging it against the same budget that
-// bounds real retries made a genuine prod 1205 (lock-wait timeout 50s,
-// MaxExecutionTime 27s) structurally un-retriable — the whole budget was
-// always spent inside the first attempt's own block (#7829). Deadlocks (1213)
-// get the mirror-image guarantee at the budget gate: their attempt time is
+// transaction to release a lock. Charging it would spend the whole budget
+// inside the first attempt's own block whenever the lock-wait timeout exceeds
+// it (prod: 50s against MaxExecutionTime 27s, #7829), so a 1205 would never
+// be retried. Deadlocks (1213) and table definition changes (1412) get the
+// mirror-image guarantee at the budget gate: their attempt time is
 // real work and is charged in full, but once the budget is exhausted a
 // deadlock is still granted up to MaxExcusedDeadlocks replays — otherwise a
 // closure whose single attempt outruns the budget under load would surface
@@ -270,11 +271,11 @@ func (db *Database) RunInTx(ctx context.Context, fn func(ctx context.Context) er
 			// A deadlock's own kill is near-instant, so unlike a 1205 there is
 			// no blocked time to excuse — but when the closure's real work
 			// alone outruns the budget (a slow attempt under load), a 1213 on
-			// the first attempt would surface with ZERO replays, making it
-			// structurally un-retriable exactly like the pre-#7829 1205. So
-			// past-budget deadlocks (and 40001 vendor variants — anything here
-			// that isn't a 1205) are still granted up to MaxExcusedDeadlocks
-			// replays before the budget gate turns terminal. Exhausted-excuse
+			// the first attempt would surface with ZERO replays. So
+			// past-budget deadlocks (and 40001 vendor variants and 1412s —
+			// anything here that isn't a 1205) are still granted up to
+			// MaxExcusedDeadlocks replays before the budget gate turns
+			// terminal. Exhausted-excuse
 			// 1205s falling through to here do NOT get a second excuse pool:
 			// their cap already bounded a permanently stuck lock, and stacking
 			// the two would double the worst case.

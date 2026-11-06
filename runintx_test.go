@@ -34,8 +34,8 @@ func withMaxExcusedDeadlocks(t *testing.T, n int) {
 }
 
 // checkTxRetryError is the narrow gate for whole-transaction retries: a deadlock
-// (1213), a lock-wait timeout (1205), or anything reporting SQLSTATE 40001 — and
-// nothing else, including other retryable-in-autocommit MySQL errors.
+// (1213), a lock-wait timeout (1205), a table definition change (1412), or
+// anything reporting SQLSTATE 40001 — and nothing else, including other retryable-in-autocommit MySQL errors.
 func TestCheckTxRetryError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -44,6 +44,7 @@ func TestCheckTxRetryError(t *testing.T) {
 	}{
 		{"deadlock 1213", &stdMysql.MySQLError{Number: 1213}, true},
 		{"lock wait timeout 1205", &stdMysql.MySQLError{Number: 1205}, true},
+		{"table definition changed 1412", &stdMysql.MySQLError{Number: 1412}, true},
 		{"foreign vendor code, sqlstate 40001", &stdMysql.MySQLError{Number: 1637, SQLState: [5]byte{'4', '0', '0', '0', '1'}}, true},
 		{"deadlock wrapped in Error", Error{Err: &stdMysql.MySQLError{Number: 1213}}, true},
 		{"other mysql error (dup key)", &stdMysql.MySQLError{Number: 1062}, false},
@@ -98,6 +99,31 @@ func TestRunInTxRetriesDeadlockThenCommits(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, 2, calls, "fn should run twice: deadlock then success")
+}
+
+// A DDL that rebuilds a table while a transaction is open fails that
+// transaction's next statement on the table with 1412. RunInTx rolls back and
+// runs the closure again in a fresh transaction, which commits.
+func TestRunInTxRetriesTableDefinitionChangedThenCommits(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("update `t`").WillReturnError(errTestTableDefChanged)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("update `t`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	var calls int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		return TxFromContext(ctx).Exec("update `t` set `a` = 1")
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "fn should run twice: 1412 then success")
 }
 
 // Directly exercises the "no phantom rows" acceptance criterion: attempt 1
@@ -649,6 +675,34 @@ func TestSelectTxDeadlockSurfacesWithoutRetry(t *testing.T) {
 	require.Error(t, err)
 	var mysqlErr *stdMysql.MySQLError
 	require.True(t, errors.As(err, &mysqlErr) && mysqlErr.Number == 1213, "want 1213, got %v", err)
+}
+
+// A 1412 on a locking read inside RunInTx (a concurrent DDL on the table)
+// surfaces from Select without a statement retry, and RunInTx replays the
+// whole closure in a fresh transaction.
+func TestRunInTxSelectTableDefinitionChangedReplays(t *testing.T) {
+	withMaxAttempts(t, 3)
+
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("select `a` from `t`").WillReturnError(errTestTableDefChanged)
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectQuery("select `a` from `t`").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow(1))
+	mock.ExpectCommit()
+
+	var calls int
+	var out []int
+	err := db.RunInTx(context.Background(), func(ctx context.Context) error {
+		calls++
+		out = nil
+		return TxFromContext(ctx).Select(&out, "select `a` from `t` for update", 0)
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "fn should run twice: 1412 then success")
+	require.Equal(t, []int{1}, out)
 }
 
 // The same in-tx surfacing applies to Exists (a lock-wait timeout here): no
