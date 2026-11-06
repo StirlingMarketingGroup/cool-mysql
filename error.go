@@ -68,12 +68,14 @@ func checkRetryError(err error) (ok bool) {
 
 // checkTxRetryError reports whether err is a transaction-fatal MySQL error that
 // can only be recovered by restarting the whole transaction from a fresh Begin:
-// a deadlock (1213, SQLSTATE 40001) or a lock-wait timeout (1205). Inside an
-// explicit transaction these can end the transaction on the session — a deadlock
-// always, a lock-wait timeout when innodb_rollback_on_timeout is ON — leaving
-// the connection in autocommit mode, so replaying individual statements would
-// commit piecewise outside the caller's transaction and strand phantom rows (the
-// unsound path removed in #167). exec/query/exists therefore surface these
+// a deadlock (1213, SQLSTATE 40001), a lock-wait timeout (1205), or a table
+// definition change (1412). Inside an explicit transaction a deadlock always
+// ends the transaction on the session, and a lock-wait timeout does when
+// innodb_rollback_on_timeout is ON, leaving the connection in autocommit mode,
+// so replaying individual statements would commit piecewise outside the
+// caller's transaction and strand phantom rows. A 1412 means a DDL rebuilt a
+// table after this transaction began; InnoDB refuses that table to this
+// transaction, locking reads included, so only a fresh Begin gets past it. exec/query/exists therefore surface these
 // unchanged when in a tx instead of retrying them statement-by-statement, and
 // db.RunInTx restarts the whole closure on them. It is intentionally narrower
 // than checkRetryError, whose broader set is safe to re-run in place in
@@ -84,7 +86,7 @@ func checkTxRetryError(err error) (ok bool) {
 		return false
 	}
 	switch mysqlErr.Number {
-	case 1213, 1205:
+	case 1213, 1205, 1412:
 		return true
 	}
 	// Galera/PXC and some proxies surface a deadlock under SQLSTATE 40001 with a

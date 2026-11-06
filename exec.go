@@ -54,17 +54,11 @@ func (db *Database) exec(conn handlerWithContext, ctx context.Context, tx *Tx, r
 			Error:        err,
 		})
 		if err != nil {
-			// Within an explicit transaction a deadlock (1213) — and a lock-wait
-			// timeout (1205) when innodb_rollback_on_timeout is ON — rolls back
-			// AND ends the whole transaction on the session, leaving the
-			// connection in autocommit mode. We cannot transparently retry:
-			// re-running the failing statement — or replaying the transaction's
-			// earlier writes — would execute in autocommit and commit piecewise,
-			// outside the caller's transaction and beyond the reach of its
-			// eventual COMMIT/ROLLBACK, stranding phantom rows. The only way to
-			// preserve atomicity is to restart the whole transaction from Begin,
-			// so surface these tx-fatal errors instead of retrying them (#167);
-			// db.RunInTx automates that restart.
+			// An error checkTxRetryError classifies needs a fresh transaction:
+			// re-running the failing statement, or the transaction's earlier
+			// writes, on this session would fail again or commit piecewise in
+			// autocommit, stranding phantom rows. Surface it unchanged so the
+			// caller or db.RunInTx restarts the whole unit of work from Begin.
 			if tx != nil && checkTxRetryError(err) {
 				return nil, backoff.Permanent(err)
 			}

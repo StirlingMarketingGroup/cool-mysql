@@ -76,6 +76,7 @@ func (h *recordingExecHandler) QueryContext(ctx context.Context, query string, a
 }
 
 var errTestDeadlock = &stdMysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock; try restarting transaction"}
+var errTestTableDefChanged = &stdMysql.MySQLError{Number: 1412, Message: "Table definition has changed, please retry transaction"}
 
 var errTestLockWait = &stdMysql.MySQLError{Number: 1205, Message: "Lock wait timeout exceeded; try restarting transaction"}
 

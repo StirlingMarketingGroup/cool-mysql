@@ -27,25 +27,23 @@ var MaxAttempts = getenvInt("COOL_MAX_ATTEMPTS", 0)
 // (not a separate elapsed-time ceiling) keeps the worst case bounded and
 // simple: at most MaxExcusedLockWaits full lock-wait-timeout blocks before a
 // 1205 is charged normally like any other error. <=0 disables excusing
-// entirely (every 1205 is charged in full, matching pre-#7829 behavior).
+// entirely (every 1205 is charged in full).
 //
 // Only applies when RunInTx's ctx carries no deadline — a caller-supplied
 // deadline is an absolute ceiling and is never excused (see RunInTx in tx.go).
 var MaxExcusedLockWaits = getenvInt("COOL_MAX_EXCUSED_LOCK_WAITS", 3)
 
-// MaxExcusedDeadlocks caps how many deadlock (1213 / SQLSTATE 40001, not 1205)
-// replays a single RunInTx call may be granted AFTER its elapsed-time retry
-// budget is exhausted. A deadlock's attempt time is genuine work and stays
-// charged in full — but a closure slow enough that one attempt outruns the
-// budget (heavy unit of work under load) would otherwise surface its first
-// 1213 with zero replays, making the deadlock structurally un-retriable: the
-// same failure shape MaxExcusedLockWaits fixed for 1205s (#7829), reached
-// through work time instead of blocked time. Capping the excused replays (not
-// adding a second elapsed-time ceiling) keeps a genuinely stuck deadlock loop
-// bounded: at most MaxExcusedDeadlocks past-budget re-runs before the 1213
-// surfaces. <=0 disables the grant (past-budget deadlocks are terminal
-// immediately, matching prior behavior). Under-budget deadlocks are unaffected
-// — they retry as always without consuming this allowance.
+// MaxExcusedDeadlocks caps how many deadlock (1213 / SQLSTATE 40001) and table
+// definition change (1412) replays, never 1205 ones, a single RunInTx call may
+// be granted AFTER its elapsed-time retry budget is exhausted. Their attempt
+// time is genuine work and stays charged in full, but a closure slow enough
+// that one attempt outruns the budget (heavy unit of work under load) would
+// otherwise surface its first 1213 or 1412 with zero replays. Capping the
+// excused replays (not adding a second elapsed-time ceiling) keeps a
+// genuinely stuck deadlock loop bounded: at most MaxExcusedDeadlocks
+// past-budget re-runs before the error surfaces. <=0 disables the grant
+// (past-budget deadlocks are terminal immediately). Under-budget deadlocks
+// retry without consuming this allowance.
 //
 // Only applies when RunInTx's ctx carries no deadline — a caller-supplied
 // deadline is an absolute ceiling and is never excused (see RunInTx in tx.go).
