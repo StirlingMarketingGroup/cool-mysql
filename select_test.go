@@ -1060,7 +1060,7 @@ func TestExistsTxFailsFastOnMidStreamConnDrop(t *testing.T) {
 // selectCacheKey computes the cache key the same way Database.query does for a
 // multi-row (slice) select whose element type is elemType.
 func selectCacheKey(elemType reflect.Type, replacedQuery string, cacheDuration time.Duration) string {
-	key := "cool-mysql:" + elemType.String() + ":" + replacedQuery + ":" + strconv.FormatInt(int64(cacheDuration), 10)
+	key := "cool-mysql:" + typeFingerprint(elemType) + ":" + replacedQuery + ":" + strconv.FormatInt(int64(cacheDuration), 10)
 	h := sha3.Sum224([]byte(key))
 	return hex.EncodeToString(h[:])
 }
@@ -1106,11 +1106,12 @@ func TestSelectUndecodableCacheTreatedAsMiss_Garbage(t *testing.T) {
 	require.Equal(t, dest, check)
 }
 
-// TestSelectUndecodableCacheTreatedAsMiss_ShapeChange reproduces the prod panic
-// shape from SMG#8686: a msgpack blob written for a struct with *time.Time is
-// read into a same-named type with time.Time. Before the fix, msgpack's
-// nilAwareDecoder panics with 'reflect: call of reflect.Value.IsNil on struct
-// Value'. After the fix, Select must treat it as a cache miss and succeed from DB.
+// TestSelectUndecodableCacheTreatedAsMiss_ShapeChange plants a msgpack blob
+// written for *time.Time under the reader's own key and selects into a
+// same-named type with time.Time. That is the case the cache key cannot
+// prevent, so the decode backstop must turn it into a miss. msgpack's
+// nilAwareDecoder panics with 'reflect: call of reflect.Value.IsNil on
+// struct Value' on that blob; Select must succeed from the database.
 func TestSelectUndecodableCacheTreatedAsMiss_ShapeChange(t *testing.T) {
 	// Old shape: Created is a pointer (nil in the cached blob).
 	type Row struct {
@@ -1120,18 +1121,13 @@ func TestSelectUndecodableCacheTreatedAsMiss_ShapeChange(t *testing.T) {
 	oldBlob, err := msgpack.Marshal([]Row{{Name: "old", Created: nil}})
 	require.NoError(t, err)
 
-	// Nested scope so the new-shape type can reuse the name "Row" — the cache
-	// key uses t.String() which for a local named type includes the package
-	// path and function name, so old vs new type names need not collide; we
-	// still name both Row for fidelity to the deploy-time shape flip.
 	t.Run("new-shape-reader", func(t *testing.T) {
 		type Row struct {
 			Name    string
 			Created time.Time
 		}
 
-		// Confirm the raw decode panics with the prod IsNil message (documents
-		// the failure mode even after the library fix swallows it).
+		// The raw decode panics with the IsNil message; Select below must not.
 		func() {
 			defer func() {
 				r := recover()
@@ -1175,6 +1171,74 @@ func TestSelectUndecodableCacheTreatedAsMiss_ShapeChange(t *testing.T) {
 		require.Equal(t, "alice", dest[0].Name)
 		require.True(t, dest[0].Created.Equal(wantTime), "Created = %v, want %v", dest[0].Created, wantTime)
 	})
+}
+
+// TestSelectCacheKeyFollowsDestShape shows two same-named structs with different
+// fields use different select cache keys, so each keeps its own cached rows.
+func TestSelectCacheKeyFollowsDestShape(t *testing.T) {
+	db, mock, cleanup := getTestDatabase(t)
+	defer cleanup()
+
+	cache := &noTTLCache{}
+	db.UseCache(cache)
+
+	const query = "select name, created from t"
+	cacheDuration := time.Minute
+
+	type Row struct {
+		Name    string
+		Created *time.Time
+	}
+	oldType := reflect.TypeOf(Row{})
+
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"Name", "Created"}).AddRow("old", nil),
+	)
+
+	var oldRows []Row
+	require.NoError(t, db.Select(&oldRows, query, cacheDuration))
+	require.Equal(t, []Row{{Name: "old", Created: nil}}, oldRows)
+
+	var newType reflect.Type
+	wantTime := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
+	t.Run("new-shape", func(t *testing.T) {
+		type Row struct {
+			Name    string
+			Created time.Time
+		}
+		newType = reflect.TypeOf(Row{})
+
+		mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+			sqlmock.NewRows([]string{"Name", "Created"}).AddRow("new", wantTime),
+		)
+
+		var dest []Row
+		require.NoError(t, db.Select(&dest, query, cacheDuration))
+		require.Len(t, dest, 1)
+		require.Equal(t, "new", dest[0].Name)
+		require.True(t, dest[0].Created.Equal(wantTime), "Created = %v, want %v", dest[0].Created, wantTime)
+
+		var again []Row
+		require.NoError(t, db.Select(&again, query, cacheDuration))
+		require.Len(t, again, 1)
+		require.Equal(t, dest[0].Name, again[0].Name)
+		require.True(t, dest[0].Created.Equal(again[0].Created))
+	})
+
+	var oldAgain []Row
+	require.NoError(t, db.Select(&oldAgain, query, cacheDuration))
+	require.Equal(t, []Row{{Name: "old", Created: nil}}, oldAgain)
+
+	replacedQuery, _, err := db.InterpolateParams(query)
+	require.NoError(t, err)
+	require.Equal(t, query, replacedQuery)
+
+	oldKey := selectCacheKey(oldType, replacedQuery, cacheDuration)
+	newKey := selectCacheKey(newType, replacedQuery, cacheDuration)
+	require.NotEqual(t, oldKey, newKey)
+	require.Len(t, cache.vals, 2)
+	require.Contains(t, cache.vals, oldKey)
+	require.Contains(t, cache.vals, newKey)
 }
 
 // TestSelectCacheHitSlice populates the cache via a first Select, then serves a

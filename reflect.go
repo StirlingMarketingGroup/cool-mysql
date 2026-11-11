@@ -1,9 +1,13 @@
 package mysql
 
 import (
+	"crypto/sha3"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +54,72 @@ func structFieldIndexes(t reflect.Type, indexPrefix []int) [][]int {
 	}
 
 	return indexes
+}
+
+var typeFingerprints sync.Map
+
+// typeFingerprint hashes a type's whole reflected definition: its package,
+// name and kind and, for every struct it reaches, each field's name, type and
+// tag. The select cache key carries it so two binaries whose models differ
+// never read each other's cached rows (#181).
+func typeFingerprint(t reflect.Type) string {
+	if v, ok := typeFingerprints.Load(t); ok {
+		return v.(string)
+	}
+
+	definition := new(strings.Builder)
+	writeTypeDefinition(definition, t, make(map[reflect.Type]bool))
+	h := sha3.Sum224([]byte(definition.String()))
+	fingerprint := hex.EncodeToString(h[:])
+	typeFingerprints.Store(t, fingerprint)
+	return fingerprint
+}
+
+func writeTypeDefinition(b *strings.Builder, t reflect.Type, seen map[reflect.Type]bool) {
+	// a named type's String has only its package's name, which two packages
+	// can share, and says nothing of what the type is underneath
+	b.WriteString(t.PkgPath())
+	b.WriteByte(' ')
+	b.WriteString(t.String())
+	b.WriteByte(' ')
+	b.WriteString(t.Kind().String())
+
+	// a type is spelled out once; a recursive type would never end otherwise
+	if seen[t] {
+		return
+	}
+	seen[t] = true
+
+	switch t.Kind() {
+	case reflect.Array:
+		b.WriteString(strconv.Itoa(t.Len()))
+		fallthrough
+	case reflect.Pointer, reflect.Slice:
+		b.WriteByte('<')
+		writeTypeDefinition(b, t.Elem(), seen)
+		b.WriteByte('>')
+	case reflect.Map:
+		b.WriteByte('<')
+		writeTypeDefinition(b, t.Key(), seen)
+		b.WriteByte(',')
+		writeTypeDefinition(b, t.Elem(), seen)
+		b.WriteByte('>')
+	case reflect.Struct:
+		b.WriteByte('{')
+		for i := range t.NumField() {
+			f := t.Field(i)
+			if f.Anonymous {
+				b.WriteString("embedded ")
+			}
+			b.WriteString(f.Name)
+			b.WriteByte(' ')
+			writeTypeDefinition(b, f.Type, seen)
+			b.WriteByte(' ')
+			b.WriteString(strconv.Quote(string(f.Tag)))
+			b.WriteByte(';')
+		}
+		b.WriteByte('}')
+	}
 }
 
 func reflectUnwrap(v reflect.Value) reflect.Value {
