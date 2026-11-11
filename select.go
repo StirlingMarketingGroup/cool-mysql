@@ -27,10 +27,10 @@ var (
 	ErrUnexportedField = fmt.Errorf("cool-mysql: struct has unexported fields and cannot be used with channels")
 )
 
-// unmarshalCacheValue decodes a cached msgpack blob, converting decode
-// panics (reflect panics when the blob was written for a differently-shaped
-// dest type by another binary) into errors so a bad entry can be treated as
-// a cache miss.
+// unmarshalCacheValue decodes a cached msgpack blob, converting a decode
+// panic into an error so a bad entry can be treated as a cache miss. msgpack
+// panics, where it could return an error, on some blobs that do not fit the
+// dest (a nil where a struct value belongs).
 func unmarshalCacheValue(b []byte, dest any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -119,7 +119,7 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 
 		key := new(strings.Builder)
 		key.WriteString("cool-mysql:")
-		key.WriteString(t.String())
+		key.WriteString(typeFingerprint(t))
 		key.WriteByte(':')
 		key.WriteString(replacedQuery)
 		key.WriteByte(':')
@@ -153,10 +153,11 @@ func (db *Database) query(conn handlerWithContext, ctx context.Context, dest any
 			})
 
 			if decodeErr := unmarshalCacheValue(b, cacheSlice.Addr().Interface()); decodeErr != nil {
-				// Blob was written for a differently-shaped dest (e.g. after a
-				// deploy flipped pointer fields to values). Treat as a miss so
-				// we re-query MySQL and overwrite the bad entry — never fail
-				// the select for reconstructible cache data (SMG#8686).
+				// The key vouches for the dest's reflected definition, not for
+				// the bytes: a type's own marshaler can change its wire format,
+				// and a cache can hand back garbage. Treat as a miss so we
+				// re-query MySQL and overwrite the bad entry — never fail the
+				// select for reconstructible cache data (SMG#8686).
 				db.Logger.Warn("failed to decode cached select result; treating as cache miss", "err", decodeErr)
 				cacheSlice = reflect.New(reflect.SliceOf(t)).Elem()
 				cacheMiss = true
